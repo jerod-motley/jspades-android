@@ -1,10 +1,10 @@
 # jSpades2
 
-jSpades2 is a digital implementation of the card game Spades. It bundles several playable modes (team and solo variants), an offline AI opponent, a set of built-in challenges, and common gameplay options. The original iOS app (in `jspades-2-ios`) contains the rules, help pages, and the game logic used to drive play and scoring.
+jSpades2 is a digital implementation of the card game Spades. It bundles several playable modes (team and solo variants), an offline AI opponent, a set of built-in challenges, and common gameplay options. A reference implementation contains the rules, help pages, and the game logic that informed this project.
 
 Key points
 - **Core gameplay**: Standard Spades trick-taking rules (spades are permanent trumps). Players bid before each hand and score points for making bids. Overtricks ("bags") are tracked and penalized when accumulated.
-- **AI & multiplayer**: Includes CPU opponents and local multiplayer support classes; the code references `PlayerCpu` and `PlayerMulti`. Online multiplayer was planned but gated on sufficient users.
+- **AI & multiplayer**: Includes CPU opponents and local multiplayer support classes; the code references `PlayerCpu` and `PlayerMulti`. Online multiplayer was considered but depends on available infrastructure and player base.
 
 Modes (available game types)
 - **jSpades (two-team)**: Team-based play where teammates share a single team bid. Typical 4-player, 13-cards-per-player game with team scoring.
@@ -26,19 +26,17 @@ Options and rules you can configure
 Scoring summary
 - Successful bids typically score 10 points per book (trick) bid; large/10+ bids may score double (per classic/jSpades rules implemented). Blind bids usually use a 20× multiplier. Overtricks (bags) are counted and accumulated; reaching 10 bags triggers a −100 penalty and bag counters are reduced.
 
-Implementation notes (from the iOS sources)
+Implementation notes (reference implementation)
 - Persistent storage: lightweight SQLite DB seeded with settings, challenges, and basic tables for games/players/hands.
-- Decks: Several deck variants exist (52-card, 54-card with jokers, a "jokers but no deuces" variant) to support different modes.
-- Code organization: Mode-specific logic lives in subclasses of `Game` (e.g. `GameFourClassic`, `GameFourKitty`, `GameFourSolo`, `GameTwoPlayer`, `GameThreePlayer`). UI controllers include `GameViewController*`, `HelpViewController`, `ChallengeViewController`, and `SettingsViewController`.
+- Decks: Several deck variants exist (52-card, 54-card with jokers, a "jokers but no deuces" variant) to support different modes. Note: in Spades variants that include jokers, jokers are treated as spades (typically the highest spade ranks) and do not require their own separate suit — they are played and compared as spades.
+- Code organization: Mode-specific logic lives in subclasses of `Game` (e.g. `GameFourClassic`, `GameFourKitty`, `GameFourSolo`, `GameTwoPlayer`, `GameThreePlayer`). UI controllers and screens include help pages, challenge lists, and settings screens.
 
-Where to look in the source
-- Help pages and mode-specific rules: jspades-2-ios/help_*.html
-- Mode implementations: jspades-2-ios/GameFourClassic.*, jspades-2-ios/GameFourKitty.*, jspades-2-ios/GameFourSolo.*, jspades-2-ios/GameTwoPlayer.*, jspades-2-ios/GameThreePlayer.*
-- Challenges and seeded data: jspades-2-ios/DataHelper.m (DB creation and challenge list)
-- Options UI: jspades-2-ios/SettingsViewController.*
+Where to look in the source (reference implementation)
+- Help pages and mode-specific rules: look for help HTML or documentation files in the project.
+- Mode implementations: search for `Game*` classes (for example `GameFourClassic`, `GameFourKitty`, `GameFourSolo`, `GameTwoPlayer`, `GameThreePlayer`).
+- Challenges and seeded data: search for a data helper or seed data that creates the challenge list and default settings.
+- Options UI: check the settings screen or settings controller/viewmodel implementations.
 
 If you want, I can:
 - Turn this into a more user-facing README section (with screenshots or play instructions), or
-- Produce a distilled CHANGELOG of differences between `jspades-2-ios` and the current `jSpades2` folder.
-
-— extracted from `jspades-2-ios` sources (help HTML and Objective-C code)
+- Produce a distilled CHANGELOG of differences between a reference implementation and this `jSpades2` project.
