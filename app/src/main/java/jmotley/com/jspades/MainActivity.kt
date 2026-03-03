@@ -38,6 +38,11 @@ import jmotley.com.jspades.data.Card
 import jmotley.com.jspades.data.Rank
 import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.ui.theme.JSpadesTheme
+import jmotley.com.jspades.screens.MainMenuScreen
+import jmotley.com.jspades.screens.PlayScreen
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
 import kotlinx.coroutines.delay
 import kotlin.random.Random
 import kotlinx.coroutines.launch
@@ -49,7 +54,22 @@ class MainActivity : ComponentActivity() {
         setContent {
             JSpadesTheme {
                 Surface(color = MaterialTheme.colorScheme.background) {
-                    GameScreen()
+                    val navController = rememberNavController()
+                    NavHost(navController = navController, startDestination = "menu") {
+                        composable("menu") {
+                            MainMenuScreen { gameType ->
+                                navController.navigate("play/$gameType")
+                            }
+                        }
+                        composable("play/{gameType}") { backStackEntry ->
+                            val gameType = backStackEntry.arguments
+                                ?.getString("gameType") ?: "Classic"
+                            PlayScreen(
+                                localPlayerId = "south",
+                                gameType = gameType
+                            )
+                        }
+                    }
                 }
             }
         }

@@ -104,7 +104,7 @@ data class Score(
 )
 
 /** High-level phases used by the engine to drive UI and side-effects. */
-enum class GamePhase { Lobby, Deal, Bid, Play, TrickResolve, Score, Finished }
+enum class GamePhase { Lobby, Deal, Kitty, Bid, Play, TrickResolve, Score, Finished }
 
 /** Lightweight metadata for snapshots. */
 data class Metadata(val id: String? = null, val timestampMs: Long? = null)
@@ -130,6 +130,16 @@ data class GameState(
 /** Helpers */
 fun GameState.playerById(id: String): Player? = players.find { it.id == id }
 fun GameState.handForPlayer(id: String): Hand = hands[id] ?: Hand()
+
+/**
+ * Convenience: returns the local player's current card list.
+ * Prefers `hands[localPlayerId]` (live state), falls back to the last
+ * Deal-phase snapshot so the Hand view always has something to show.
+ */
+fun GameState.localHand(localPlayerId: String): List<Card> =
+    hands[localPlayerId]?.perPlayer?.get(localPlayerId)?.hand
+        ?: phaseHands[GamePhase.Deal]?.lastOrNull()?.perPlayer?.get(localPlayerId)?.hand
+        ?: emptyList()
 
 /** Helpers to create default player states with teams 0/1 assigned to seats 0..3. */
 fun defaultFourPlayers(ids: List<String>, names: List<String>): List<Player> {
