@@ -38,6 +38,8 @@ import jmotley.com.jspades.data.Card
 import jmotley.com.jspades.data.Rank
 import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.ui.theme.JSpadesTheme
+import kotlinx.coroutines.delay
+import kotlin.random.Random
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -114,21 +116,65 @@ fun GameScreen() {
         val animWX = remember { Animatable(offRightX) }
         val animWY = remember { Animatable(middleY) }
 
-        // launch animations sequentially: north, east, south, west one at a time
+        // Event-driven sequential animation: fire-and-forget cleanup between 3 rounds.
+        // Each card slides in one at a time, clockwise from a random starting seat.
+        // Seats: 0=north, 1=east, 2=south, 3=west
         LaunchedEffect(Unit) {
-            val duration = 600
-            // north slides in from the top
-            launch { animNX.animateTo(northX, animationSpec = tween(durationMillis = duration)) }
-            animNY.animateTo(northY, animationSpec = tween(durationMillis = duration))
-            // east slides in from the left
-            launch { animEY.animateTo(middleY, animationSpec = tween(durationMillis = duration)) }
-            animEX.animateTo(eastX, animationSpec = tween(durationMillis = duration))
-            // south slides in from the bottom
-            launch { animSX.animateTo(southX, animationSpec = tween(durationMillis = duration)) }
-            animSY.animateTo(southY, animationSpec = tween(durationMillis = duration))
-            // west slides in from the right
-            launch { animWY.animateTo(middleY, animationSpec = tween(durationMillis = duration)) }
-            animWX.animateTo(westX, animationSpec = tween(durationMillis = duration))
+            val slideDuration = 600
+            val pauseMs = 250L
+            val cleanupDuration = 400
+
+            // helper: animate one card into its diamond position and await completion
+            suspend fun playCard(seat: Int) {
+                when (seat) {
+                    0 -> { // north: slide down from above
+                        launch { animNX.animateTo(northX, animationSpec = tween(slideDuration)) }
+                        animNY.animateTo(northY, animationSpec = tween(slideDuration))
+                    }
+                    1 -> { // east: slide right from left
+                        launch { animEY.animateTo(middleY, animationSpec = tween(slideDuration)) }
+                        animEX.animateTo(eastX, animationSpec = tween(slideDuration))
+                    }
+                    2 -> { // south: slide up from below
+                        launch { animSX.animateTo(southX, animationSpec = tween(slideDuration)) }
+                        animSY.animateTo(southY, animationSpec = tween(slideDuration))
+                    }
+                    3 -> { // west: slide left from right
+                        launch { animWY.animateTo(middleY, animationSpec = tween(slideDuration)) }
+                        animWX.animateTo(westX, animationSpec = tween(slideDuration))
+                    }
+                }
+            }
+
+            // helper: fire-and-forget cleanup — fly all cards off-screen then reset positions
+            fun cleanup() {
+                launch {
+                    launch { animNY.animateTo(offTopY, animationSpec = tween(cleanupDuration)) }
+                    launch { animEX.animateTo(offLeftX, animationSpec = tween(cleanupDuration)) }
+                    launch { animSY.animateTo(offBottomY, animationSpec = tween(cleanupDuration)) }
+                    animWX.animateTo(offRightX, animationSpec = tween(cleanupDuration))
+                    // brief pause to let them exit before snapping back off-screen for next round
+                    delay(100L)
+                    animNX.snapTo(northX);  animNY.snapTo(offTopY)
+                    animEX.snapTo(offLeftX); animEY.snapTo(middleY)
+                    animSX.snapTo(southX);  animSY.snapTo(offBottomY)
+                    animWX.snapTo(offRightX); animWY.snapTo(middleY)
+                }
+            }
+
+            repeat(3) {
+                // pick a random starting seat, then fill clockwise
+                val startSeat = Random.nextInt(4)
+                val sequence = List(4) { i -> (startSeat + i) % 4 }
+
+                for (seat in sequence) {
+                    playCard(seat)                 // animate card, suspends until done
+                    delay(pauseMs)                 // background sleep before next card
+                }
+
+                cleanup()                          // fire-and-forget: cards exit screen concurrently
+                delay(cleanupDuration + 200L)      // wait for cleanup to finish before next round
+            }
         }
 
         // render cards at animated positions (compose Offset from X/Y animatables)

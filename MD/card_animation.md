@@ -122,6 +122,83 @@ The UI exposes a `PlayerDiamond` view that represents the four cardinal play tar
     - All offsets should be computed from measured card dimensions at runtime so the layout adapts to different screen sizes and card scaling.
     - Positioning is independent of the canonical `players[]` array order; the `PlayerDiamond` is purely a visual mapping of play targets.
 
+## Proof-of-Concept: Sequential animations, background sleep, and fire-and-forget cleanup
+
+What we built (POC)
+- A simple POC in `MainActivity.kt` that animates four card images into the Player Diamond targets one at a time.
+- Each run picks a random starting seat (north/east/south/west) and fills the remaining seats clockwise.
+- After each card animation completes, the POC waits 250 ms (background sleep) before starting the next card.
+- After all four cards are placed, a fire-and-forget cleanup coroutine animates all cards off-screen and snaps them back to start; the process repeats three times.
+
+Why we kept it as a POC
+- The real game engine drives plays from authoritative game state (players take turns, AI or network events), and collection animations converge to a single winner location. This POC intentionally simplifies those rules to demonstrate the animation/scheduling pattern (one-at-a-time, sleeps, and fire-and-forget cleanup).
+
+Key implementation notes
+- Asset lookup: card filenames are generated with `Card.assetFileName()` which maps rank+suit to asset names like `c2_1.png`.
+
+Code snippets (core ideas)
+
+1) Card asset helper (from `Game.kt`)
+
+```kotlin
+fun assetFileName(): String {
+        val suitIndex = if (rank == Rank.LITTLEJOKER || rank == Rank.BIGJOKER) {
+                Suit.SPADES.ordinal + 1
+        } else {
+                suit.ordinal + 1
+        }
+        return "c${rank.value}_$suitIndex.png"
+}
+```
+
+2) Animatables (X/Y floats to avoid Offset converter issues)
+
+```kotlin
+val animNX = remember { Animatable(northX) }
+val animNY = remember { Animatable(offTopY) }
+// ... animEX/animEY, animSX/animSY, animWX/animWY
+```
+
+3) Single-card play helper (suspending)
+
+```kotlin
+suspend fun playCard(seat: Int) {
+    when (seat) {
+        0 -> { animNX.animateTo(northX); animNY.animateTo(northY) } // north
+        1 -> { animEX.animateTo(eastX);  animEY.animateTo(middleY) } // east
+        2 -> { animSX.animateTo(southX); animSY.animateTo(southY) }  // south
+        3 -> { animWX.animateTo(westX);  animWY.animateTo(middleY) } // west
+    }
+}
+```
+
+4) Sequencer + background sleep + fire-and-forget cleanup
+
+```kotlin
+LaunchedEffect(Unit) {
+    repeat(3) {
+        val start = Random.nextInt(4)
+        val sequence = List(4) { (start + it) % 4 }
+        for (seat in sequence) {
+            playCard(seat)        // suspend until card finishes animating
+            delay(250L)           // background sleep before next card
+        }
+        // cleanup runs concurrently; does not block the next round start
+        launch {
+            // animate all cards off-screen and then snap to reset
+        }
+        delay(cleanupDuration + 200L)
+    }
+}
+```
+
+Notes & guidance for converting POC into engine-driven flow
+- Replace `playCard(seat)` with an engine-driven event (e.g., `PlayCard(playerId, card)`) that the engine validates and persists in `GameState`.
+- Emit animation *requests* (not state mutations) from the engine; the UI subscribes to the request stream, executes animations, and posts `AnimationCompleted` events back to the engine.
+- Use background sleeps only for visual pacing; timeline/phase progression should be driven by engine events (timers or completion callbacks) rather than ad-hoc delays embedded in gameplay logic.
+
+This POC demonstrates the mechanics we want to preserve: per-card motion, serialized sequencing with a short background sleep between animations, and fire-and-forget cleanup that does not block the main engine loop. Keep this note with `card_animation.md` as a reference for implementing the production animation pipeline.
+
 
 ### Animatable approach
 
