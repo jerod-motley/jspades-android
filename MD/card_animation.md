@@ -107,6 +107,22 @@ All positions are relative to the screen center. Each played card lands at an of
 
 Start position is off-screen in the corresponding direction (center ± (cardSize + 200 px buffer)).
 
+## Player Diamond (play target positions)
+
+The UI exposes a `PlayerDiamond` view that represents the four cardinal play targets where players' cards land: `north`, `south`, `east`, and `west`.
+
+- Layout rules:
+    - `north` / `south`: centered horizontally. `north` is positioned at the top of the playable area, respecting safe areas and system insets. `south` is positioned below `north` at a vertical offset equal to two card heights.
+    - `east` / `west`: vertically positioned between `north` and `south` (i.e., under `north` and above `south`).
+        - `east` is offset horizontally by one card width to the left of the `north` center point.
+        - `west` is offset horizontally by one card width to the right of the `north` center point.
+
+- Notes and rationale:
+    - This diamond places `north` and `south` on the vertical centerline, and `east`/`west` slightly inset so collection animations converge visually toward the center while preserving distinct quadrants.
+    - All offsets should be computed from measured card dimensions at runtime so the layout adapts to different screen sizes and card scaling.
+    - Positioning is independent of the canonical `players[]` array order; the `PlayerDiamond` is purely a visual mapping of play targets.
+
+
 ### Animatable approach
 
 Each card animation is a standalone Compose `@Composable` (`animateTrickPlayCard`) that:

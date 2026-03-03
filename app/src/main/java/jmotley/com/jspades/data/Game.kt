@@ -24,19 +24,22 @@ data class Card(
      * Lightweight unique-ish id for diffs. Uses rank value and suit ordinal so it
      * maps cleanly to asset names like `c2_1.png` when using `assetFileName()`.
      */
-    val uid: String = "${'$'}{rank.value}_${'$'}{if (rank == Rank.LITTLEJOKER || rank == Rank.BIGJOKER) Suit.SPADES.ordinal + 1 else suit.ordinal + 1}"
+    val uid: String = run {
+        val si = if (rank == Rank.LITTLEJOKER || rank == Rank.BIGJOKER) Suit.SPADES.ordinal + 1 else suit.ordinal + 1
+        "${rank.value}_$si"
+    }
 ) {
-    /** Return the expected asset filename for this card (eg. `c2_1.png`).
-     * Jokers are treated as spades for asset lookup.
+    /** Return the expected asset filename for this card (e.g. `c2_1.png`).
+     * Jokers are treated as spades (suit index 4) for asset lookup.
+     * Suit index mapping: CLUBS=1, DIAMONDS=2, HEARTS=3, SPADES=4
      */
     fun assetFileName(): String {
-        // asset suits use 1-4 mapping: CLUBS=1, DIAMONDS=2, HEARTS=3, SPADES=4
         val suitIndex = if (rank == Rank.LITTLEJOKER || rank == Rank.BIGJOKER) {
             Suit.SPADES.ordinal + 1
         } else {
             suit.ordinal + 1
         }
-        return "c${'$'}{rank.value}_${'$'}{suitIndex}.png"
+        return "c${rank.value}_$suitIndex.png"
     }
 }
 
