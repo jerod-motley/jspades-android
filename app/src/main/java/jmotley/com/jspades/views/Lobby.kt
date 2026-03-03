@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import jmotley.com.jspades.data.Constants
 import jmotley.com.jspades.data.GameState
+import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.models.GameViewModel
 import kotlin.random.Random
 import kotlinx.coroutines.delay
@@ -60,6 +61,7 @@ fun LobbyView(
     state: GameState,
     viewModel: GameViewModel,
     localPlayerId: String,
+    gameType: GameType = GameType.TEAM_CLASSIC,
     modifier: Modifier = Modifier
 ) {
     // Generate CPU seat names once for this composition.
@@ -100,18 +102,34 @@ fun LobbyView(
     var showEast  by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
+        // Reveal CPU seats according to player count, then kick off the deal.
+        when (gameType.playerCount) {
+            4 -> {
+                delay(REVEAL_DELAY_MS); showWest  = true
+                delay(REVEAL_DELAY_MS); showNorth = true
+                delay(REVEAL_DELAY_MS); showEast  = true
+            }
+            3 -> {
+                delay(REVEAL_DELAY_MS); showNorth = true
+                delay(REVEAL_DELAY_MS); showEast  = true
+            }
+            else -> {
+                // 2-player: only North seat fills
+                delay(REVEAL_DELAY_MS); showNorth = true
+            }
+        }
         delay(REVEAL_DELAY_MS)
-        showWest = true
-        delay(REVEAL_DELAY_MS)
-        showNorth = true
-        delay(REVEAL_DELAY_MS)
-        showEast = true
-        // Lobby full — deal behind the scenes and advance to Deal phase
-        delay(REVEAL_DELAY_MS)
-        viewModel.dealAndStart(
-            ids   = listOf("south", "west", "north", "east"),
-            names = listOf(names.south, names.west, names.north, names.east)
-        )
+
+        // Build ID / name lists for the seats that are actually in use.
+        val (seatIds, seatNames) = when (gameType.playerCount) {
+            4    -> listOf("south", "west",  "north",       "east") to
+                    listOf(names.south, names.west, names.north, names.east)
+            3    -> listOf("south", "north", "east") to
+                    listOf(names.south, names.north, names.east)
+            else -> listOf("south", "north") to
+                    listOf(names.south, names.north)
+        }
+        viewModel.onLobbyComplete(ids = seatIds, names = seatNames, gameType = gameType)
     }
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {

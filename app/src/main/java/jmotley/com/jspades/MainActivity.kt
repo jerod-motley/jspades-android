@@ -40,6 +40,8 @@ import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.ui.theme.JSpadesTheme
 import jmotley.com.jspades.screens.MainMenuScreen
 import jmotley.com.jspades.screens.PlayScreen
+import java.net.URLEncoder
+import java.net.URLDecoder
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -58,15 +60,17 @@ class MainActivity : ComponentActivity() {
                     NavHost(navController = navController, startDestination = "menu") {
                         composable("menu") {
                             MainMenuScreen { gameType ->
-                                navController.navigate("play/$gameType")
+                                val encoded = URLEncoder.encode(gameType, "utf-8")
+                                navController.navigate("play/$encoded")
                             }
                         }
                         composable("play/{gameType}") { backStackEntry ->
-                            val gameType = backStackEntry.arguments
+                            val raw = backStackEntry.arguments
                                 ?.getString("gameType") ?: "Classic"
+                            val decoded = try { URLDecoder.decode(raw, "utf-8") } catch (_: Exception) { raw }
                             PlayScreen(
                                 localPlayerId = "south",
-                                gameType = gameType
+                                gameType = decoded
                             )
                         }
                     }

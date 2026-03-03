@@ -103,8 +103,90 @@ data class Score(
     val bags: Map<String, Int> = emptyMap()
 )
 
+// ── Deal mode ─────────────────────────────────────────────────────────────────
+
+/**
+ * Controls how cards are physically distributed to players.
+ * Used by PhaseManager.handleDeal() to select the correct algorithm.
+ */
+enum class DealMode {
+    /** Shuffle the deck, then deal sequentially (subList per player). */
+    STANDARD,
+    /** Kitty variant: set aside [GameType.kittySize] cards first; guarantee 2♠ in a player's hand. */
+    KITTY_TWO_OF_SPADES,
+    /** Two Man Solo: players alternate keep/skip picks from the top of the face-down deck. */
+    TWO_MAN_ALTERNATE
+}
+
+// ── Game variant ───────────────────────────────────────────────────────────────
+
+/**
+ * All selectable game variants. Each entry fully describes the deck and deal rules
+ * so that PhaseManager and defaultPlayers() need only read these properties.
+ *
+ * Deck construction order:
+ *  1. Start with 52 standard face cards (TWO–ACE × all 4 suits).
+ *  2. If [includeJokers] → append Little Joker + Big Joker (2 cards).
+ *  3. If [removeTwoOfHearts] → remove 2♥.
+ *  4. If [removeTwoOfClubs]  → remove 2♣.
+ *  5. Shuffle; set aside [kittySize] cards for the kitty.
+ *  6. Deal [cardsPerPlayer] to each of [playerCount] players.
+ */
+enum class GameType(
+    /** Display name matching the menu button label. */
+    val label: String,
+    /** Number of players at the table (2–4). */
+    val playerCount: Int,
+    /** Whether players are split into two opposing teams. */
+    val useTeams: Boolean,
+    /** Whether the Little Joker and Big Joker are included. */
+    val includeJokers: Boolean,
+    /** Whether the 2 of Hearts is removed from the deck. */
+    val removeTwoOfHearts: Boolean,
+    /** Whether the 2 of Clubs is removed from the deck. */
+    val removeTwoOfClubs: Boolean,
+    /** Cards reserved for the kitty before player hands are dealt (0 = no kitty). */
+    val kittySize: Int,
+    /** Algorithm used to distribute cards to players. */
+    val dealMode: DealMode
+) {
+    // Team Play
+    /** 4-player team game. Standard 52-card deck (jokers − 2♥ − 2♣). No kitty. */
+    HOUSE_RULES ("House Rules",    4, true,  true,  true,  true,  0, DealMode.STANDARD),
+    /** 4-player team game. All 54 cards; 6-card kitty; 2♠ must go to a player. */
+    TEAM_KITTY  ("Kitty",          4, true,  true,  false, false, 6, DealMode.KITTY_TWO_OF_SPADES),
+    /** 4-player team game. Pure 52 face cards (no jokers, no removals). No kitty. */
+    TEAM_CLASSIC("Classic",        4, true,  false, false, false, 0, DealMode.STANDARD),
+
+    // Solo Play
+    /** 4-player solo (no teams). Standard 52-card deck. No kitty. */
+    SOLO_FOUR_MAN ("Four Man Solo",  4, false, true,  true,  true,  0, DealMode.STANDARD),
+    /** 3-player solo (no teams). All 54 cards; 18 per player. No kitty. */
+    SOLO_THREE_MAN("Three Man Solo", 3, false, true,  false, false, 0, DealMode.STANDARD),
+    /** 2-player solo (no teams). Standard 52-card deck; alternate keep/skip deal. */
+    SOLO_TWO_MAN  ("Two Man Solo",   2, false, true,  true,  true,  0, DealMode.TWO_MAN_ALTERNATE);
+
+    /**
+     * Cards each player receives after the kitty is set aside.
+     * Derived from deck size minus kitty size divided by player count.
+     */
+    val cardsPerPlayer: Int get() {
+        val deckSize = 52 +
+            (if (includeJokers) 2 else 0) -
+            (if (removeTwoOfHearts) 1 else 0) -
+            (if (removeTwoOfClubs) 1 else 0)
+        return (deckSize - kittySize) / playerCount
+    }
+
+    companion object {
+        /** Find the [GameType] whose [label] matches [label], defaulting to [TEAM_CLASSIC]. */
+        fun fromLabel(label: String): GameType =
+            entries.find { it.label == label } ?: TEAM_CLASSIC
+    }
+}
+
 /** High-level phases used by the engine to drive UI and side-effects. */
-enum class GamePhase { Lobby, Deal, Kitty, Bid, Play, TrickResolve, Score, Finished }
+enum class GamePhase { Lobby, Deal, DealHuman, Bid, BidHuman, KittyReveal, Kitty, KittyHuman, Trick, TrickHuman, TrickResolve, Score, EndHand, Finished }
 
 /** Lightweight metadata for snapshots. */
 data class Metadata(val id: String? = null, val timestampMs: Long? = null)
@@ -117,6 +199,8 @@ data class GameState(
     val currentTrick: Trick = Trick(),
     val hands: Map<String, Hand> = emptyMap(), // playerId -> Hand
     val kitty: Hand? = null,
+    /** Active game variant — drives deck construction, deal mode, and player/team setup. */
+    val gameType: GameType = GameType.TEAM_CLASSIC,
     /** Cards that have been played / collected (discard pile). */
     val discard: List<Card> = emptyList(),
     val trump: Suit? = null,
@@ -141,11 +225,23 @@ fun GameState.localHand(localPlayerId: String): List<Card> =
         ?: phaseHands[GamePhase.Deal]?.lastOrNull()?.perPlayer?.get(localPlayerId)?.hand
         ?: emptyList()
 
-/** Helpers to create default player states with teams 0/1 assigned to seats 0..3. */
-fun defaultFourPlayers(ids: List<String>, names: List<String>): List<Player> {
-    require(ids.size == 4 && names.size == 4)
-    return List(4) { i ->
-        val team = if (i % 2 == 0) 0 else 1
-        Player(id = ids[i], name = names[i], team = team, runtimeFlags = RuntimeFlags(seatIndex = i))
+/**
+ * Create players for any [GameType].
+ *
+ * - Team games (4 players): seat index 0 & 2 → team 0; seats 1 & 3 → team 1.
+ * - Solo games: all players are on team 0 (no opposing teams).
+ *
+ * [ids] and [names] must each contain exactly [gameType.playerCount] entries,
+ * ordered by seat (South first, then West, North, East for 4-player games).
+ */
+fun defaultPlayers(ids: List<String>, names: List<String>, gameType: GameType): List<Player> {
+    require(ids.size == gameType.playerCount && names.size == gameType.playerCount)
+    return ids.mapIndexed { i, id ->
+        val team = if (gameType.useTeams && i % 2 == 1) 1 else 0
+        Player(id = id, name = names[i], team = team, runtimeFlags = RuntimeFlags(seatIndex = i))
     }
 }
+
+/** Back-compat alias: 4-player team game with default Classic rules. */
+fun defaultFourPlayers(ids: List<String>, names: List<String>): List<Player> =
+    defaultPlayers(ids, names, GameType.TEAM_CLASSIC)

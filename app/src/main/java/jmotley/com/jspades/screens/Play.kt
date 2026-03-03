@@ -13,6 +13,12 @@ import androidx.compose.ui.res.painterResource
 import androidx.lifecycle.viewmodel.compose.viewModel
 import jmotley.com.jspades.R
 import jmotley.com.jspades.data.GamePhase
+import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
+import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.models.GameViewModel
 import jmotley.com.jspades.views.BidView
 import jmotley.com.jspades.views.DiamondView
@@ -37,9 +43,9 @@ import jmotley.com.jspades.views.LobbyView
  *
  * @param localPlayerId The ID of the player sitting at this device (used to select
  *                      hand data and determine active-turn UI).
- * @param gameType      The game variant chosen from the menu (e.g. "Classic", "Kitty",
- *                      "House Rules", "Four Man Solo"). Drives rule differences and
- *                      which phases are active. TODO: map to a sealed variant class.
+ * @param gameType      The game variant label chosen from the menu (e.g. "Classic", "Kitty",
+ *                      "House Rules", "Four Man Solo"). Resolved to [GameType] via
+ *                      [GameType.fromLabel]; defaults to [GameType.TEAM_CLASSIC].
  * @param viewModel     Injected by default via [viewModel()]; holds the live [GameState].
  */
 @Composable
@@ -49,6 +55,7 @@ fun PlayScreen(
     viewModel: GameViewModel = viewModel()
 ) {
     val state by viewModel.state.collectAsState()
+    val resolvedGameType = GameType.fromLabel(gameType)
 
     Box(modifier = Modifier.fillMaxSize()) {
 
@@ -60,19 +67,38 @@ fun PlayScreen(
             contentScale = ContentScale.Crop
         )
 
+        // ── Top header: display the current game type label and respect status bar safe area ──
+        Text(
+            text = resolvedGameType.label,
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(vertical = 8.dp)
+        )
+
         // ── Phase-based view composition ──────────────────────────────────────────
         when (state.phase) {
 
+            // ── Lobby ─────────────────────────────────────────────────────────
             GamePhase.Lobby -> {
                 LobbyView(
                     state = state,
                     viewModel = viewModel,
                     localPlayerId = localPlayerId,
+                    gameType = resolvedGameType,
                     modifier = Modifier.fillMaxSize()
                 )
             }
 
-            GamePhase.Deal -> {
+            // ── Deal ──────────────────────────────────────────────────────────
+            // Deal: background work in progress — show a neutral table
+            GamePhase.Deal -> { /* placeholder — cards dealing behind the scenes */ }
+
+            // DealHuman: cards dealt — reveal the human's hand
+        
+            GamePhase.DealHuman -> {
                 HandView(
                     state = state,
                     viewModel = viewModel,
@@ -81,77 +107,104 @@ fun PlayScreen(
                 )
             }
 
-            GamePhase.Kitty -> {
-                KittyView(
-                    state = state,
-                    viewModel = viewModel,
-                    localPlayerId = localPlayerId,
-                    modifier = Modifier.align(Alignment.Center)
-                )
-                GameInfoView(
-                    state = state,
-                    viewModel = viewModel,
-                    modifier = Modifier.align(Alignment.TopCenter)
-                )
-                HandView(
-                    state = state,
-                    viewModel = viewModel,
-                    localPlayerId = localPlayerId,
-                    modifier = Modifier.align(Alignment.BottomCenter)
-                )
-            }
-
+            // ── Bid ───────────────────────────────────────────────────────────
+            // CPU players bidding
             GamePhase.Bid -> {
                 DiamondView(
-                    state = state,
-                    viewModel = viewModel,
-                    localPlayerId = localPlayerId,
+                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
                     modifier = Modifier.align(Alignment.Center)
                 )
                 GameInfoView(
-                    state = state,
-                    viewModel = viewModel,
+                    state = state, viewModel = viewModel,
                     modifier = Modifier.align(Alignment.TopCenter)
                 )
-                // BidView is modal — only shown on this player's bid turn
-                if (viewModel.isMyBidTurn(localPlayerId)) {
-                    BidView(
-                        state = state,
-                        viewModel = viewModel,
-                        localPlayerId = localPlayerId,
-                        modifier = Modifier.align(Alignment.Center)
-                    )
-                }
                 HandView(
-                    state = state,
-                    viewModel = viewModel,
-                    localPlayerId = localPlayerId,
+                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
                     modifier = Modifier.align(Alignment.BottomCenter)
                 )
             }
 
-            GamePhase.Play,
+            // Human's turn to bid
+            GamePhase.BidHuman -> {
+                DiamondView(
+                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+                GameInfoView(
+                    state = state, viewModel = viewModel,
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
+                BidView(
+                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+                HandView(
+                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                )
+            }
+
+            // ── Kitty ─────────────────────────────────────────────────────────
+            GamePhase.KittyReveal,
+            GamePhase.Kitty -> {
+                KittyView(
+                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+                GameInfoView(
+                    state = state, viewModel = viewModel,
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
+            }
+
+            GamePhase.KittyHuman -> {
+                KittyView(
+                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+                GameInfoView(
+                    state = state, viewModel = viewModel,
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
+                HandView(
+                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                )
+            }
+
+            // ── Trick / Play ──────────────────────────────────────────────────
+            // CPU playing or trick resolving
+            GamePhase.Trick,
             GamePhase.TrickResolve -> {
                 DiamondView(
-                    state = state,
-                    viewModel = viewModel,
-                    localPlayerId = localPlayerId,
+                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
                     modifier = Modifier.align(Alignment.Center)
                 )
                 GameInfoView(
-                    state = state,
-                    viewModel = viewModel,
+                    state = state, viewModel = viewModel,
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
+            }
+
+            // Human's turn to play a card
+            GamePhase.TrickHuman -> {
+                DiamondView(
+                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
+                    modifier = Modifier.align(Alignment.Center)
+                )
+                GameInfoView(
+                    state = state, viewModel = viewModel,
                     modifier = Modifier.align(Alignment.TopCenter)
                 )
                 HandView(
-                    state = state,
-                    viewModel = viewModel,
-                    localPlayerId = localPlayerId,
+                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
                     modifier = Modifier.align(Alignment.BottomCenter)
                 )
             }
 
+            // ── End states ────────────────────────────────────────────────────
             GamePhase.Score,
+            GamePhase.EndHand,
             GamePhase.Finished -> {
                 // TODO: score / end-game overlay
             }
