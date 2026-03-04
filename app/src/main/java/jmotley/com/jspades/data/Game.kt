@@ -232,7 +232,13 @@ data class GameState(
      * Optional rule: every 10 accumulated sandbags costs −100 points.
      * Defaults on per standard Spades rules; toggled from the settings screen.
      */
-    val enableSandbagPenalty: Boolean = true
+    val enableSandbagPenalty: Boolean = true,
+    /**
+     * Signed point/bag deltas from the most recently scored hand.
+     * Populated by [GameViewModel.applyScore]; used by EndHandView to show
+     * per-hand results. Cleared on the next [GameViewModel.applyScore] call.
+     */
+    val lastHandScore: Score = Score()
 )
 
 /** Helpers */

@@ -461,57 +461,42 @@ class PhaseManager(
      * Regular bid: made → +bid×10; set → −bid×10. Blind or bid≥10 (optional) → ×20.
      * Bags:        each over-trick = 1 bag; every 10 bags (optional) = −100 penalty.
      */
+    /**
+     * Score: compute and apply this hand's points and bags, check the win condition,
+     * then advance to [GamePhase.Finished] (game over) or [GamePhase.EndHand] (continue).
+     *
+     * Win conditions (target = 500, losing floor = −200):
+     *   - Any team/player reaches ≥ 500 AND leads all others → winner.
+     *   - Any team/player drops to ≤ −200 AND trails all others → eliminated, others win.
+     * Tie at exactly 500 → continue until the tie is broken.
+     */
     private suspend fun handleScore() {
         val s    = viewModel.state.value
         val hand = s.phaseHands[GamePhase.Deal]?.lastOrNull()
         if (hand != null) {
             viewModel.applyScore(scoreHand(s, hand))
         }
-        viewModel.advancePhase(GamePhase.EndHand)
-        execute()
-    }
 
-    /**
-     * EndHand: check win condition; if game continues, reset per-hand state and re-deal.
-     *
-     * Win conditions (target = 500, losing floor = −200):
-     *   - Any team/player reaches ≥ 500 AND leads all others → winner.
-     *   - Any team/player drops to ≤ −200 AND trails all others → eliminated, others win.
-     * Tie at exactly 500 → continue until the tie is broken.
-     *
-     * Displayed score = score.points[key] + score.bags[key].
-     */
-    private suspend fun handleEndHand() {
-        val s = viewModel.state.value
-
-        // Build displayed totals (points + bags) per team or player
-        val totals: Map<String, Int> = if (s.gameType.useTeams) {
+        // Win check on updated totals
+        val u = viewModel.state.value
+        val totals: Map<String, Int> = if (u.gameType.useTeams) {
             mapOf(
-                "0" to ((s.score.points["0"] ?: 0) + (s.score.bags["0"] ?: 0)),
-                "1" to ((s.score.points["1"] ?: 0) + (s.score.bags["1"] ?: 0))
+                "0" to ((u.score.points["0"] ?: 0) + (u.score.bags["0"] ?: 0)),
+                "1" to ((u.score.points["1"] ?: 0) + (u.score.bags["1"] ?: 0))
             )
         } else {
-            s.players.associate { p ->
-                p.id to ((s.score.points[p.id] ?: 0) + (s.score.bags[p.id] ?: 0))
+            u.players.associate { p ->
+                p.id to ((u.score.points[p.id] ?: 0) + (u.score.bags[p.id] ?: 0))
             }
         }
-
-        val highScore = totals.values.maxOrNull() ?: 0
-        val lowScore  = totals.values.minOrNull() ?: 0
-
-        val gameOver = highScore >= TARGET_SCORE || lowScore <= LOSING_SCORE
-
-        if (gameOver) {
-            viewModel.advancePhase(GamePhase.Finished)
-            execute()
-            return
-        }
-
-        // Continue: rotate dealer, wipe per-hand state, re-deal
-        viewModel.resetForNextHand()
-        viewModel.advancePhase(GamePhase.Deal)
+        val high = totals.values.maxOrNull() ?: 0
+        val low  = totals.values.minOrNull() ?: 0
+        viewModel.advancePhase(if (high >= TARGET_SCORE || low <= LOSING_SCORE) GamePhase.Finished else GamePhase.EndHand)
         execute()
     }
+
+    /** EndHand: no-op — UI shows EndHandView and waits for [GameViewModel.onNextHand]. */
+    private suspend fun handleEndHand() { /* UI owns this phase */ }
 
     // ── Scoring helpers ───────────────────────────────────────────────────────
 

@@ -235,7 +235,10 @@ class GameViewModel : ViewModel() {
 		val newBags   = current.score.bags.toMutableMap()
 		delta.points.forEach { (k, v) -> newPoints[k] = (newPoints[k] ?: 0) + v }
 		delta.bags.forEach   { (k, v) -> newBags[k]   = (newBags[k]   ?: 0) + v }
-		_state.value = current.copy(score = Score(points = newPoints, bags = newBags))
+		_state.value = current.copy(
+			score         = Score(points = newPoints, bags = newBags),
+			lastHandScore = delta
+		)
 	}
 
 	/**
@@ -394,5 +397,32 @@ class GameViewModel : ViewModel() {
 			if (!player.runtimeFlags.didBid) return player.id == localPlayerId
 		}
 		return false
+	}
+
+	// ── End-of-hand / end-of-game actions ─────────────────────────────────────
+
+	/** Called by the "Next Hand" button on EndHandView. Resets per-hand state and deals. */
+	fun onNextHand() {
+		resetForNextHand()
+		advancePhase(GamePhase.Deal)
+		phaseManager.execute()
+	}
+
+	/**
+	 * Called by the "Play Again" button on EndGameView.
+	 * Resets the full game (scores included) and starts a new deal with the same
+	 * game type and players.
+	 */
+	fun playAgain() {
+		val current = _state.value
+		_state.value = GameState(
+			players     = current.players.map { p ->
+				p.copy(runtimeFlags = RuntimeFlags(seatIndex = p.runtimeFlags.seatIndex))
+			},
+			gameType    = current.gameType,
+			phase       = GamePhase.Deal,
+			leaderIndex = 1
+		)
+		phaseManager.execute()
 	}
 }

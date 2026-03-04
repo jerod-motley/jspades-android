@@ -33,6 +33,8 @@ import jmotley.com.jspades.data.DealMode
 import jmotley.com.jspades.views.BidView
 import jmotley.com.jspades.views.DealPickView
 import jmotley.com.jspades.views.DiamondView
+import jmotley.com.jspades.views.EndGameView
+import jmotley.com.jspades.views.EndHandView
 import jmotley.com.jspades.views.GameInfoView
 import jmotley.com.jspades.views.HandView
 import jmotley.com.jspades.views.KittyView
@@ -305,10 +307,26 @@ fun PlayScreen(
             }
 
             // ── End states ────────────────────────────────────────────────────
-            GamePhase.Score,
-            GamePhase.EndHand,
+            GamePhase.Score -> { /* scoring runs in the engine; no UI needed */ }
+
+            GamePhase.EndHand -> {
+                EndHandView(
+                    state          = state,
+                    viewModel      = viewModel,
+                    localPlayerId  = localPlayerId,
+                    onNavigateBack = onNavigateBack,
+                    modifier       = Modifier.fillMaxSize()
+                )
+            }
+
             GamePhase.Finished -> {
-                // TODO: score / end-game overlay
+                EndGameView(
+                    state          = state,
+                    viewModel      = viewModel,
+                    localPlayerId  = localPlayerId,
+                    onNavigateBack = onNavigateBack,
+                    modifier       = Modifier.fillMaxSize()
+                )
             }
         }
     }
