@@ -132,7 +132,7 @@ private fun MenuButton(text: String, font: FontFamily, onClick: () -> Unit) {
         Text(
             text = text,
             fontFamily = font,
-            fontSize = 22.sp,
+            fontSize = 36.sp,
             color = Color.White,
             modifier = Modifier.align(Alignment.Center),
             textAlign = TextAlign.Center

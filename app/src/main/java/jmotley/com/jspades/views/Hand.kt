@@ -12,14 +12,27 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.remember
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.layout.offset
 import jmotley.com.jspades.data.Card
 import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.localHand
@@ -73,14 +86,16 @@ fun HandView(
         val cardW = (maxWidth - totalGapWidth) / 7
         val cardH = cardW / CARD_ASPECT
 
+        val animateIn = state.phase == jmotley.com.jspades.data.GamePhase.DealHuman
+
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(ROW_GAP)
         ) {
-            CardRow(cards = topRow, cardW = cardW, cardH = cardH,
-                    onTap = { viewModel.playCard(localPlayerId, it) })
-            CardRow(cards = bottomRow, cardW = cardW, cardH = cardH,
-                    onTap = { viewModel.playCard(localPlayerId, it) })
+            CardRow(cards = topRow, cardW = cardW, cardH = cardH, startIndex = 0, animateIn = animateIn,
+                onTap = { viewModel.playCard(localPlayerId, it) })
+            CardRow(cards = bottomRow, cardW = cardW, cardH = cardH, startIndex = topRow.size, animateIn = animateIn,
+                onTap = { viewModel.playCard(localPlayerId, it) })
         }
     }
 }
@@ -90,12 +105,18 @@ private fun CardRow(
     cards: List<Card>,
     cardW: androidx.compose.ui.unit.Dp,
     cardH: androidx.compose.ui.unit.Dp,
+    startIndex: Int = 0,
+    animateIn: Boolean = false,
     onTap: (Card) -> Unit
 ) {
     Row(horizontalArrangement = Arrangement.spacedBy(CARD_GAP)) {
-        cards.forEach { card ->
+        cards.forEachIndexed { index, card ->
+            val globalIndex = startIndex + index
             CardTile(
                 card = card,
+                index = globalIndex,
+                animateIn = animateIn,
+                cardW = cardW,
                 modifier = Modifier
                     .size(width = cardW, height = cardH)
                     .clickable { onTap(card) }
@@ -105,20 +126,42 @@ private fun CardRow(
 }
 
 @Composable
-private fun CardTile(card: Card, modifier: Modifier = Modifier) {
+private fun CardTile(
+    card: Card,
+    index: Int = 0,
+    animateIn: Boolean = false,
+    cardW: androidx.compose.ui.unit.Dp = 60.dp,
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
     val assetName = card.assetFileName().removeSuffix(".png")
     val resId = context.resources.getIdentifier(assetName, "drawable", context.packageName)
+
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    val screenWidthPx = with(density) { configuration.screenWidthDp.dp.toPx() }
+    val offsetX = remember { Animatable(-screenWidthPx) }
+
+    LaunchedEffect(key1 = animateIn) {
+        if (animateIn) {
+            delay((index * 50).toLong())
+            offsetX.animateTo(0f, animationSpec = tween(durationMillis = 320, easing = LinearEasing))
+        } else {
+            offsetX.snapTo(0f)
+        }
+    }
+
+    val contentModifier = modifier.offset { IntOffset(offsetX.value.roundToInt(), 0) }
 
     if (resId != 0) {
         Image(
             painter = androidx.compose.ui.res.painterResource(id = resId),
             contentDescription = "${card.rank.name} of ${card.suit.name}",
-            modifier = modifier,
+            modifier = contentModifier,
             contentScale = ContentScale.FillBounds
         )
     } else {
-        Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Box(modifier = contentModifier, contentAlignment = Alignment.Center) {
             Text(
                 text = "${card.rank.value}\n${card.suit.name.first()}",
                 fontSize = 10.sp,

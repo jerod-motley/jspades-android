@@ -203,7 +203,6 @@ data class GameState(
     val gameType: GameType = GameType.TEAM_CLASSIC,
     /** Cards that have been played / collected (discard pile). */
     val discard: List<Card> = emptyList(),
-    val trump: Suit? = null,
     val score: Score = Score(),
     val phase: GamePhase = GamePhase.Lobby,
     /** Map of phase -> hands (array of Hand objects tied to phases) */

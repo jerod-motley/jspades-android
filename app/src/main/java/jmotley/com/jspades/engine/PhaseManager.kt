@@ -200,7 +200,8 @@ class PhaseManager(
      * TODO: wait for an explicit "I'm ready" tap from the human player.
      */
     private suspend fun handleDealHuman() {
-        delay(600)
+        // 13 cards × 50ms stagger + 320ms animation = ~970ms; 1200ms gives a visible pause after.
+        delay(1200)
         viewModel.advancePhase(GamePhase.Bid)
         execute()
     }

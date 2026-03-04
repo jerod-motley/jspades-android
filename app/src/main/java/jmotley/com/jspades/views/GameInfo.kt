@@ -14,7 +14,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import jmotley.com.jspades.data.GameState
-import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.models.GameViewModel
 
 /**
@@ -22,7 +21,6 @@ import jmotley.com.jspades.models.GameViewModel
  *
  * Displays:
  *   - Current phase label (left)
- *   - Trump suit indicator (center)
  *   - Score summary per team (right)
  *
  * TODO:
@@ -50,29 +48,6 @@ fun GameInfoView(
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium
         )
-
-        // Trump suit
-        val trumpText = state.trump?.let { suit ->
-            val symbol = when (suit) {
-                Suit.SPADES   -> "♠"
-                Suit.HEARTS   -> "♥"
-                Suit.DIAMONDS -> "♦"
-                Suit.CLUBS    -> "♣"
-            }
-            val color = when (suit) {
-                Suit.HEARTS, Suit.DIAMONDS -> Color(0xFFEF5350)
-                else                       -> Color.White
-            }
-            Pair("Trump $symbol", color)
-        }
-        if (trumpText != null) {
-            Text(
-                text = trumpText.first,
-                color = trumpText.second,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
 
         // Team scores — two teams (0 and 1)
         val team0Points = state.score.points.filterKeys { playerId ->
