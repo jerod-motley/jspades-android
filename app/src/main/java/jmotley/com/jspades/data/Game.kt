@@ -148,23 +148,25 @@ enum class GameType(
     /** Cards reserved for the kitty before player hands are dealt (0 = no kitty). */
     val kittySize: Int,
     /** Algorithm used to distribute cards to players. */
-    val dealMode: DealMode
+    val dealMode: DealMode,
+    /** Lowest legal bid value for this variant. */
+    val minimumBid: Int
 ) {
     // Team Play
     /** 4-player team game. Standard 52-card deck (jokers − 2♥ − 2♣). No kitty. */
-    HOUSE_RULES ("House Rules",    4, true,  true,  true,  true,  0, DealMode.STANDARD),
+    HOUSE_RULES ("House Rules",    4, true,  true,  true,  true,  0, DealMode.STANDARD,            4),
     /** 4-player team game. All 54 cards; 6-card kitty; 2♠ must go to a player. */
-    TEAM_KITTY  ("Kitty",          4, true,  true,  false, false, 6, DealMode.KITTY_TWO_OF_SPADES),
+    TEAM_KITTY  ("Kitty",          4, true,  true,  false, false, 6, DealMode.KITTY_TWO_OF_SPADES, 5),
     /** 4-player team game. Pure 52 face cards (no jokers, no removals). No kitty. */
-    TEAM_CLASSIC("Classic",        4, true,  false, false, false, 0, DealMode.STANDARD),
+    TEAM_CLASSIC("Classic",        4, true,  false, false, false, 0, DealMode.STANDARD,            0),
 
     // Solo Play
     /** 4-player solo (no teams). Standard 52-card deck. No kitty. */
-    SOLO_FOUR_MAN ("Four Man Solo",  4, false, true,  true,  true,  0, DealMode.STANDARD),
+    SOLO_FOUR_MAN ("Four Man Solo",  4, false, true,  true,  true,  0, DealMode.STANDARD,            0),
     /** 3-player solo (no teams). All 54 cards; 18 per player. No kitty. */
-    SOLO_THREE_MAN("Three Man Solo", 3, false, true,  false, false, 0, DealMode.STANDARD),
+    SOLO_THREE_MAN("Three Man Solo", 3, false, true,  false, false, 0, DealMode.STANDARD,            0),
     /** 2-player solo (no teams). Standard 52-card deck; alternate keep/skip deal. */
-    SOLO_TWO_MAN  ("Two Man Solo",   2, false, true,  true,  true,  0, DealMode.TWO_MAN_ALTERNATE);
+    SOLO_TWO_MAN  ("Two Man Solo",   2, false, true,  true,  true,  0, DealMode.TWO_MAN_ALTERNATE,   0);
 
     /**
      * Cards each player receives after the kitty is set aside.
@@ -203,6 +205,10 @@ data class GameState(
     val gameType: GameType = GameType.TEAM_CLASSIC,
     /** Cards that have been played / collected (discard pile). */
     val discard: List<Card> = emptyList(),
+    /** Remaining deal deck; only populated during [GamePhase.DealHuman] for [DealMode.TWO_MAN_ALTERNATE]. */
+    val deck: List<Card> = emptyList(),
+    /** Player who holds the 2♠ after dealing; only set for [DealMode.KITTY_TWO_OF_SPADES]. */
+    val kittyWinnerId: String? = null,
     val score: Score = Score(),
     val phase: GamePhase = GamePhase.Lobby,
     /** Map of phase -> hands (array of Hand objects tied to phases) */

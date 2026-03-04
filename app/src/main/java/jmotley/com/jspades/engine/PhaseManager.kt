@@ -3,6 +3,7 @@ package jmotley.com.jspades.engine
 import jmotley.com.jspades.data.Card
 import jmotley.com.jspades.data.DealMode
 import jmotley.com.jspades.data.GamePhase
+import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.data.Hand
 import jmotley.com.jspades.data.PlayerHandState
@@ -148,44 +149,43 @@ class PhaseManager(
 
         viewModel.applyDeal(Hand(playerOrder = ids, perPlayer = perPlayer))
         viewModel.applyKitty(Hand(perPlayer = mapOf("kitty" to PlayerHandState(hand = kittySlice))))
+
+        // Record which player holds the 2♠ (kitty winner)
+        val kittyWinnerId = dealt.entries.firstOrNull { (_, cards) ->
+            cards.any { it.suit == Suit.SPADES && it.rank == Rank.TWO }
+        }?.key
+        if (kittyWinnerId != null) viewModel.setKittyWinner(kittyWinnerId)
     }
 
     /**
-     * Two Man Solo alternate deal:
-     * Players take turns picking from the top of the face-down deck.
-     * The dealer (ids[0]) picks second; the non-dealer (ids[1]) picks first.
+     * Two Man Solo alternate deal (interactive version):
+     * ids[0] = dealer (south / human, picks second).
+     * ids[1] = non-dealer (north / CPU, picks first).
      *
-     * Each player's turn:
-     *  - Peek at the top card.
-     *  - Keep it → take the top card, discard the next card unseen.
-     *  - Skip it → discard the top card, must take the next card.
-     * One turn consumes exactly 2 cards and grants the player exactly 1 card.
-     * After [GameType.cardsPerPlayer] rounds, both players hold 13 cards.
-     *
-     * TODO: for a human dealer or non-dealer, surface a UI chooser in DealHuman.
-     *       Currently the decision is simulated 50/50 for both players.
+     * CPU takes its first pick automatically so the human sees the correct
+     * top card when DealHuman begins. Subsequent picks are handled by
+     * [GameViewModel.applyDealPick] as the human taps Keep / Skip in the UI.
      */
     private fun dealTwoManAlternate(shuffled: MutableList<Card>, ids: List<String>, gt: GameType) {
-        // ids[0] = dealer (picks second), ids[1] = non-dealer (picks first)
-        val hands = ids.associateWith { mutableListOf<Card>() }
-        val deck  = shuffled.toMutableList()
+        val deck    = shuffled.toMutableList()
+        val cpuHand = mutableListOf<Card>()
 
-        repeat(gt.cardsPerPlayer) {
-            // Non-dealer turn
-            pickOneCard(deck, hands.getValue(ids[1]))
-            // Dealer turn
-            pickOneCard(deck, hands.getValue(ids[0]))
-        }
+        // CPU (non-dealer) takes round-1 pick automatically
+        pickOneCard(deck, cpuHand)
 
-        val perPlayer = hands.mapValues { (_, cards) ->
-            PlayerHandState(hand = cards.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal })))
-        }
+        val perPlayer = mapOf(
+            ids[0] to PlayerHandState(),   // human — empty until pick UI runs
+            ids[1] to PlayerHandState(
+                hand = cpuHand.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
+            )
+        )
         viewModel.applyDeal(Hand(playerOrder = ids, perPlayer = perPlayer))
+        viewModel.storeDeck(deck)
     }
 
     /**
      * Pick exactly one card for [hand] from the top of [deck], consuming two cards.
-     * Decision is currently random (50/50 keep-top vs keep-second).
+     * Decision is random (50/50 keep-top vs keep-second).
      */
     private fun pickOneCard(deck: MutableList<Card>, hand: MutableList<Card>) {
         if (deck.size < 2) return
@@ -195,42 +195,140 @@ class PhaseManager(
     }
 
     /**
-     * DealHuman: the player sees their hand.
-     * For now auto-advances to Bid after a short pause.
-     * TODO: wait for an explicit "I'm ready" tap from the human player.
+     * DealHuman:
+     * - [DealMode.TWO_MAN_ALTERNATE]: UI-driven — [GameViewModel.applyDealPick] advances
+     *   to Bid once the human's hand is full; no action needed here.
+     * - All other modes: auto-advance after animations complete.
      */
     private suspend fun handleDealHuman() {
-        // 13 cards × 50ms stagger + 320ms animation = ~970ms; 1200ms gives a visible pause after.
+        if (viewModel.state.value.gameType.dealMode == DealMode.TWO_MAN_ALTERNATE) return
+        // cards × 50ms stagger + 320ms animation ≈ 970ms; 1200ms gives a pause after last card
         delay(1200)
         viewModel.advancePhase(GamePhase.Bid)
         execute()
     }
 
     /**
-     * Bid: CPU players bid in clockwise order starting from the leader.
-     * When the next bidder is the human, switches to BidHuman.
-     * TODO: wire real CPU bidding AI.
+     * Bid: dispatch to the correct bid flow based on game type.
+     *
+     * House Rules uses a team-based flow (non-dealer team first, dealer's team second).
+     * All other game types use a per-player clockwise flow starting from leaderIndex.
      */
     private suspend fun handleBid() {
+        if (viewModel.state.value.gameType == GameType.HOUSE_RULES) {
+            handleBidHouseRules()
+        } else {
+            handleBidIndividual()
+        }
+    }
+
+    /**
+     * Individual bid flow (Classic, Kitty, Solo variants).
+     *
+     * Walks players clockwise from leaderIndex. CPU players bid immediately;
+     * when the human is reached, switches to BidHuman and returns.
+     * After all players have bid, team bids are finalized and the phase advances.
+     */
+    private suspend fun handleBidIndividual() {
         val s = viewModel.state.value
         val n = s.players.size
         for (offset in 0 until n) {
             val player = s.players[(s.leaderIndex + offset) % n]
             if (!player.runtimeFlags.didBid) {
                 if (player.id == "south") {
-                    // Human's turn — hand off to UI
                     viewModel.advancePhase(GamePhase.BidHuman)
                     execute()
                     return
                 }
-                // TODO: CPU bid logic (strategy / AI)
-                delay(800) // simulate CPU thinking
-                viewModel.submitBid(playerId = player.id, bid = 3 /* placeholder */)
-                // Loop continues to next bidder
+                delay(800)
+                val hand   = getPlayerHand(s, player.id)
+                val result = BidEngine.computeCpuBid(
+                    hand           = hand,
+                    player         = player,
+                    state          = s,
+                    isKittyWinner  = s.kittyWinnerId == player.id
+                )
+                viewModel.submitBid(player.id, result.bid, result.isBlind)
             }
         }
-        // All bids submitted — move on
+        // All players have bid — compute team totals for team games
+        if (s.gameType.useTeams) finalizeTeamBids()
         advanceAfterBidding()
+    }
+
+    /**
+     * House Rules team bid flow.
+     *
+     * Non-dealer team bids first; dealer's team bids second.
+     * CPU-only teams: sum individual bids, apply minimumBid floor, store as team bid.
+     * When the human's team is up: CPU partner bids first, then BidHuman waits for the
+     * human to enter the team total via [GameViewModel.submitHumanTeamBid].
+     *
+     * This function is re-entered after the human submits (via execute()); the fresh
+     * state snapshot will show all players as didBid = true, so it falls through to
+     * [advanceAfterBidding].
+     */
+    private suspend fun handleBidHouseRules() {
+        val s          = viewModel.state.value
+        val n          = s.players.size
+        // leaderIndex is the first-to-act (left of dealer); dealer is one seat clockwise.
+        val dealerIdx  = (s.leaderIndex - 1 + n) % n
+        val dealerTeam = s.players[dealerIdx].team
+        val teamOrder  = listOf(1 - dealerTeam, dealerTeam) // non-dealer first
+
+        for (teamId in teamOrder) {
+            val teamPlayers = s.players.filter { it.team == teamId }
+            if (teamPlayers.all { it.runtimeFlags.didBid }) continue // already done
+
+            // CPU players on this team bid first
+            for (player in teamPlayers) {
+                if (!player.runtimeFlags.didBid && player.id != "south") {
+                    delay(600)
+                    val hand   = getPlayerHand(s, player.id)
+                    val result = BidEngine.computeCpuBid(hand, player, s)
+                    viewModel.submitBid(player.id, result.bid, result.isBlind)
+                }
+            }
+
+            val humanOnTeam    = teamPlayers.any { it.id == "south" }
+            val humanAlreadyBid = s.players.find { it.id == "south" }?.runtimeFlags?.didBid ?: false
+
+            if (humanOnTeam && !humanAlreadyBid) {
+                // Hand off to BidView — human sees CPU partner's bid and enters team total
+                viewModel.advancePhase(GamePhase.BidHuman)
+                execute()
+                return
+            }
+
+            if (!humanOnTeam) {
+                // All CPU team — sum individual bids and store team total
+                val fresh    = viewModel.state.value
+                val teamBid  = teamPlayers.sumOf { player ->
+                    fresh.phaseHands[GamePhase.Deal]?.lastOrNull()
+                        ?.perPlayer?.get(player.id)?.bid ?: 0
+                }.coerceAtLeast(s.gameType.minimumBid)
+                viewModel.setTeamBid(teamId, teamBid)
+            }
+        }
+
+        advanceAfterBidding()
+    }
+
+    /**
+     * Compute and store team bids from individual player bids (Classic / Kitty).
+     * For Kitty, caps the team total at 12 and floors at minimumBid (5).
+     */
+    private fun finalizeTeamBids() {
+        val s    = viewModel.state.value
+        val hand = s.phaseHands[GamePhase.Deal]?.lastOrNull() ?: return
+        val isKitty = s.gameType == GameType.TEAM_KITTY
+
+        for (teamId in listOf(0, 1)) {
+            val teamPlayerIds = s.players.filter { it.team == teamId }.map { it.id }
+            var teamTotal = teamPlayerIds.sumOf { id -> hand.perPlayer[id]?.bid ?: 0 }
+            if (isKitty) teamTotal = teamTotal.coerceIn(s.gameType.minimumBid, 12)
+            viewModel.setTeamBid(teamId, teamTotal)
+        }
     }
 
     /** Advance from bidding to Kitty or straight to Trick depending on game type. */
@@ -240,6 +338,13 @@ class PhaseManager(
         viewModel.advancePhase(next)
         execute()
     }
+
+    // ── Bid utility ───────────────────────────────────────────────────────────
+
+    /** Returns the dealt cards for [playerId] from the current Deal-phase hand. */
+    private fun getPlayerHand(s: GameState, playerId: String): List<Card> =
+        s.phaseHands[GamePhase.Deal]?.lastOrNull()?.perPlayer?.get(playerId)?.hand
+            ?: emptyList()
 
     /**
      * KittyReveal: show the kitty cards briefly, then hand to the winning bidder.

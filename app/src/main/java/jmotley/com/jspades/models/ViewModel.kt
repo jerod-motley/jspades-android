@@ -35,7 +35,8 @@ class GameViewModel : ViewModel() {
 	fun onLobbyComplete(ids: List<String>, names: List<String>, gameType: GameType) {
 		require(ids.size == gameType.playerCount && names.size == gameType.playerCount)
 		val players = defaultPlayers(ids, names, gameType)
-		_state.value = _state.value.copy(players = players, phase = GamePhase.Deal, gameType = gameType)
+		// leaderIndex = 1: west (left of south) bids/leads first; south is initial dealer.
+		_state.value = _state.value.copy(players = players, phase = GamePhase.Deal, gameType = gameType, leaderIndex = 1)
 		phaseManager.execute()
 	}
 
@@ -64,14 +65,15 @@ class GameViewModel : ViewModel() {
 	/**
 	 * Record a bid for [playerId] and mark their didBid flag.
 	 * Called by PhaseManager during Bid phase (CPU) or by BidView (human).
+	 * [isBlind] is true only for a blind-nil (Four Man Classic CPU logic).
 	 */
-	fun submitBid(playerId: String, bid: Int) {
+	fun submitBid(playerId: String, bid: Int, isBlind: Boolean = false) {
 		val current = _state.value
 		val phaseHands = current.phaseHands.toMutableMap()
 		val dealHands  = phaseHands[GamePhase.Deal]?.toMutableList() ?: return
 		val hand       = dealHands.lastOrNull() ?: return
 		val perPlayer  = hand.perPlayer.toMutableMap()
-		perPlayer[playerId] = (perPlayer[playerId] ?: PlayerHandState()).copy(bid = bid)
+		perPlayer[playerId] = (perPlayer[playerId] ?: PlayerHandState()).copy(bid = bid, isBlind = isBlind)
 		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
 		phaseHands[GamePhase.Deal] = dealHands
 
@@ -80,6 +82,41 @@ class GameViewModel : ViewModel() {
 			if (p.id == playerId) p.copy(runtimeFlags = p.runtimeFlags.copy(didBid = true)) else p
 		}
 		_state.value = current.copy(players = players, phaseHands = phaseHands)
+	}
+
+	/**
+	 * Store a team-level bid in [Hand.teamBids].
+	 * Called by PhaseManager for CPU-only teams and by [submitHumanTeamBid] for House Rules.
+	 */
+	fun setTeamBid(teamId: Int, bid: Int) {
+		val current = _state.value
+		val phaseHands = current.phaseHands.toMutableMap()
+		val dealHands  = phaseHands[GamePhase.Deal]?.toMutableList() ?: return
+		val hand       = dealHands.lastOrNull() ?: return
+		val teamBids   = hand.teamBids.toMutableList()
+		if (teamId in teamBids.indices) teamBids[teamId] = bid
+		dealHands[dealHands.lastIndex] = hand.copy(teamBids = teamBids)
+		phaseHands[GamePhase.Deal] = dealHands
+		_state.value = current.copy(phaseHands = phaseHands)
+	}
+
+	/**
+	 * House Rules human bid: the human enters the team total after seeing their
+	 * CPU partner's individual bid. Stores the team bid and hands control to the engine.
+	 */
+	fun submitHumanTeamBid(teamId: Int, bid: Int, localPlayerId: String) {
+		setTeamBid(teamId, bid)
+		val players = _state.value.players.map { p ->
+			if (p.id == localPlayerId) p.copy(runtimeFlags = p.runtimeFlags.copy(didBid = true)) else p
+		}
+		_state.value = _state.value.copy(players = players)
+		advancePhase(GamePhase.Bid)
+		phaseManager.execute()
+	}
+
+	/** Record the player who holds the 2♠ after a Kitty deal. */
+	fun setKittyWinner(playerId: String) {
+		_state.value = _state.value.copy(kittyWinnerId = playerId)
 	}
 
 	/** Play a card into the current trick slot. */
@@ -101,6 +138,77 @@ class GameViewModel : ViewModel() {
 			currentTrick = Trick(),
 			discard      = current.discard + playedCards
 		)
+	}
+
+	// ── Two Man Solo deal ─────────────────────────────────────────────────────
+
+	/** Store the remaining deal deck for [DealMode.TWO_MAN_ALTERNATE] pick UI. */
+	fun storeDeck(deck: List<Card>) {
+		_state.value = _state.value.copy(deck = deck)
+	}
+
+	/**
+	 * Apply one human keep/skip pick for Two Man Solo.
+	 * [keep] = true → take top card; false → take second card (skip top).
+	 * After the human picks, auto-picks for the CPU for the next round.
+	 * When the human's hand is full, advances to [GamePhase.Bid].
+	 */
+	fun applyDealPick(keep: Boolean, localPlayerId: String) {
+		val current = _state.value
+		val deck    = current.deck.toMutableList()
+		if (deck.size < 2) return
+
+		// Human picks from top two cards
+		val top      = deck.removeAt(0)
+		val next     = deck.removeAt(0)
+		val humanCard = if (keep) top else next
+
+		val phaseHands = current.phaseHands.toMutableMap()
+		val dealHands  = phaseHands[GamePhase.Deal]?.toMutableList() ?: return
+		val hand       = dealHands.lastOrNull() ?: return
+		val perPlayer  = hand.perPlayer.toMutableMap()
+
+		val humanState   = perPlayer[localPlayerId] ?: PlayerHandState()
+		val newHumanHand = (humanState.hand + humanCard)
+			.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
+		perPlayer[localPlayerId] = humanState.copy(hand = newHumanHand)
+
+		val humanDone = newHumanHand.size >= current.gameType.cardsPerPlayer
+
+		// If more rounds remain, CPU auto-picks for the next round
+		if (!humanDone && deck.size >= 2) {
+			val cpuId   = current.players.first { it.id != localPlayerId }.id
+			val cpuTop  = deck.removeAt(0)
+			val cpuNext = deck.removeAt(0)
+			val cpuCard = if (kotlin.random.Random.nextBoolean()) cpuTop else cpuNext
+			val cpuState = perPlayer[cpuId] ?: PlayerHandState()
+			perPlayer[cpuId] = cpuState.copy(
+				hand = (cpuState.hand + cpuCard)
+					.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
+			)
+		}
+
+		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
+		phaseHands[GamePhase.Deal] = dealHands
+		_state.value = current.copy(deck = deck, phaseHands = phaseHands)
+
+		if (humanDone) {
+			advancePhase(GamePhase.Bid)
+			phaseManager.execute()
+		}
+	}
+
+	// ── Human bid ─────────────────────────────────────────────────────────────
+
+	/**
+	 * Commit the human player's bid and return control to the engine.
+	 * Advances to [GamePhase.Bid] so [PhaseManager] can process any remaining
+	 * CPU bidders or move directly to the next phase.
+	 */
+	fun submitHumanBid(bid: Int, localPlayerId: String) {
+		submitBid(playerId = localPlayerId, bid = bid)
+		advancePhase(GamePhase.Bid)
+		phaseManager.execute()
 	}
 
 	// ── UI helpers ────────────────────────────────────────────────────────────

@@ -76,14 +76,15 @@ fun HandView(
         return
     }
 
-    // Split into two rows: first 7, then remaining 6
-    val topRow    = cards.take(7)
-    val bottomRow = cards.drop(7)
+    // Split into two rows: ceil(n/2) on top, floor(n/2) on bottom
+    val topCount  = (cards.size + 1) / 2
+    val topRow    = cards.take(topCount)
+    val bottomRow = cards.drop(topCount)
 
     BoxWithConstraints(modifier = modifier.fillMaxWidth().padding(horizontal = HAND_H_PADDING)) {
-        // Card width: fit 7 cards + 6 gaps across the available width
-        val totalGapWidth = CARD_GAP * 6
-        val cardW = (maxWidth - totalGapWidth) / 7
+        // Card width: fit topRow cards + gaps across the available width
+        val totalGapWidth = CARD_GAP * (topRow.size - 1)
+        val cardW = (maxWidth - totalGapWidth) / topRow.size
         val cardH = cardW / CARD_ASPECT
 
         val animateIn = state.phase == jmotley.com.jspades.data.GamePhase.DealHuman

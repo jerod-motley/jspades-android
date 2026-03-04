@@ -110,8 +110,8 @@ fun LobbyView(
                 delay(REVEAL_DELAY_MS); showEast  = true
             }
             3 -> {
-                delay(REVEAL_DELAY_MS); showNorth = true
-                delay(REVEAL_DELAY_MS); showEast  = true
+                delay(REVEAL_DELAY_MS); showWest = true
+                delay(REVEAL_DELAY_MS); showEast = true
             }
             else -> {
                 // 2-player: only North seat fills
@@ -124,8 +124,8 @@ fun LobbyView(
         val (seatIds, seatNames) = when (gameType.playerCount) {
             4    -> listOf("south", "west",  "north",       "east") to
                     listOf(names.south, names.west, names.north, names.east)
-            3    -> listOf("south", "north", "east") to
-                    listOf(names.south, names.north, names.east)
+            3    -> listOf("south", "west",  "east") to
+                    listOf(names.south, names.west,  names.east)
             else -> listOf("south", "north") to
                     listOf(names.south, names.north)
         }

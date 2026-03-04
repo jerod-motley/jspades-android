@@ -20,7 +20,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.dp
 import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.models.GameViewModel
+import jmotley.com.jspades.data.DealMode
 import jmotley.com.jspades.views.BidView
+import jmotley.com.jspades.views.DealPickView
 import jmotley.com.jspades.views.DiamondView
 import jmotley.com.jspades.views.GameInfoView
 import jmotley.com.jspades.views.HandView
@@ -96,15 +98,23 @@ fun PlayScreen(
             // Deal: background work in progress — show a neutral table
             GamePhase.Deal -> { /* placeholder — cards dealing behind the scenes */ }
 
-            // DealHuman: cards dealt — reveal the human's hand
-        
+            // DealHuman: cards dealt — pick UI for Two Man Solo, hand view for all others
             GamePhase.DealHuman -> {
-                HandView(
-                    state = state,
-                    viewModel = viewModel,
-                    localPlayerId = localPlayerId,
-                    modifier = Modifier.align(Alignment.BottomCenter)
-                )
+                if (state.gameType.dealMode == DealMode.TWO_MAN_ALTERNATE) {
+                    DealPickView(
+                        state = state,
+                        viewModel = viewModel,
+                        localPlayerId = localPlayerId,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    HandView(
+                        state = state,
+                        viewModel = viewModel,
+                        localPlayerId = localPlayerId,
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
+                }
             }
 
             // ── Bid ───────────────────────────────────────────────────────────

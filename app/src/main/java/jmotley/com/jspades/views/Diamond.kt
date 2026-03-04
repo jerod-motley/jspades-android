@@ -4,8 +4,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -18,7 +16,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import jmotley.com.jspades.data.Card
@@ -31,16 +28,15 @@ private val SLOT_W = 64.dp
 private val SLOT_H = 96.dp
 
 /**
- * Diamond view: displays the four player positions (North / East / South / West)
- * with each player's name and the card they have played into the current trick.
+ * Diamond view: displays the active player positions with their played cards.
  *
- * Seat assignment relative to [localPlayerId]:
- *   - South  → local player  (index = local seat)
- *   - West   → seat + 1 (mod 4)
- *   - North  → seat + 2 (mod 4) — opponent across the table
- *   - East   → seat + 3 (mod 4)
+ * Seats are looked up by canonical id ("south", "north", "east", "west") so
+ * the layout adapts naturally to all player counts:
+ *   - 4 players: all four slots shown
+ *   - 3 players (south / west / east): north slot is absent
+ *   - 2 players (south / north): east and west slots are absent
  *
- * TODO: animate cards flying from off-screen to their slot positions as in the POC.
+ * TODO: animate cards flying from off-screen to their slot positions.
  */
 @Composable
 fun DiamondView(
@@ -49,14 +45,10 @@ fun DiamondView(
     localPlayerId: String,
     modifier: Modifier = Modifier
 ) {
-    val localSeat = state.players.indexOfFirst { it.id == localPlayerId }.coerceAtLeast(0)
-
-    // Build the N/E/S/W player list rotated so local player is always South
-    val rotated = List(4) { i -> state.players.getOrNull((localSeat + i) % 4) }
-    val south = rotated[0]  // local
-    val west  = rotated[1]
-    val north = rotated[2]
-    val east  = rotated[3]
+    val south = state.players.find { it.id == "south" }
+    val north = state.players.find { it.id == "north" }
+    val east  = state.players.find { it.id == "east"  }
+    val west  = state.players.find { it.id == "west"  }
 
     // Map playerId → card played this trick
     val playedCards: Map<String, Card> = state.currentTrick.plays
@@ -64,38 +56,47 @@ fun DiamondView(
         .associate { it.playerId to it.card }
 
     BoxWithConstraints(modifier = modifier.size(280.dp, 320.dp)) {
-        val cx = maxWidth  / 2
-        val cy = maxHeight / 2
 
-        // North
-        PlayerSlot(
-            player = north,
-            card = north?.id?.let { playedCards[it] },
-            label = north?.displayName ?: "—",
-            modifier = Modifier.align(Alignment.TopCenter)
-        )
-        // South (local)
-        PlayerSlot(
-            player = south,
-            card = south?.id?.let { playedCards[it] },
-            label = south?.displayName ?: "—",
-            isLocal = true,
-            modifier = Modifier.align(Alignment.BottomCenter)
-        )
-        // West
-        PlayerSlot(
-            player = west,
-            card = west?.id?.let { playedCards[it] },
-            label = west?.displayName ?: "—",
-            modifier = Modifier.align(Alignment.CenterStart)
-        )
-        // East
-        PlayerSlot(
-            player = east,
-            card = east?.id?.let { playedCards[it] },
-            label = east?.displayName ?: "—",
-            modifier = Modifier.align(Alignment.CenterEnd)
-        )
+        // North — 4-player only
+        north?.let { player ->
+            PlayerSlot(
+                player = player,
+                card = playedCards[player.id],
+                label = player.displayName,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
+        }
+
+        // South — always present (local player)
+        south?.let { player ->
+            PlayerSlot(
+                player = player,
+                card = playedCards[player.id],
+                label = player.displayName,
+                isLocal = player.id == localPlayerId,
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
+        }
+
+        // West — 3- and 4-player
+        west?.let { player ->
+            PlayerSlot(
+                player = player,
+                card = playedCards[player.id],
+                label = player.displayName,
+                modifier = Modifier.align(Alignment.CenterStart)
+            )
+        }
+
+        // East — 3- and 4-player
+        east?.let { player ->
+            PlayerSlot(
+                player = player,
+                card = playedCards[player.id],
+                label = player.displayName,
+                modifier = Modifier.align(Alignment.CenterEnd)
+            )
+        }
     }
 }
 
