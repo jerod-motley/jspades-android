@@ -473,6 +473,7 @@ class PhaseManager(
     private suspend fun handleScore() {
         val s    = viewModel.state.value
         val hand = s.phaseHands[GamePhase.Deal]?.lastOrNull()
+        viewModel.finalizeHandReplay()
         if (hand != null) {
             viewModel.applyScore(scoreHand(s, hand))
         }

@@ -21,6 +21,8 @@ import jmotley.com.jspades.data.Score
 import jmotley.com.jspades.data.defaultPlayers
 import jmotley.com.jspades.data.defaultFourPlayers
 import jmotley.com.jspades.data.localHand
+import jmotley.com.jspades.data.HandReplay
+import jmotley.com.jspades.data.ReplayEvent
 import jmotley.com.jspades.engine.PhaseManager
 
 class GameViewModel : ViewModel() {
@@ -73,6 +75,9 @@ class GameViewModel : ViewModel() {
 		val phaseHands = _state.value.phaseHands.toMutableMap()
 		phaseHands[GamePhase.Deal] = listOf(hand)
 		_state.value = _state.value.copy(phaseHands = phaseHands)
+		recordReplayEvent(ReplayEvent.Deal(
+			hand.perPlayer.mapValues { (_, phs) -> phs.hand.map { c -> c.uid } }
+		))
 	}
 
 	/** Store the kitty hand. Called by PhaseManager for [GameType.TEAM_KITTY]. */
@@ -100,6 +105,7 @@ class GameViewModel : ViewModel() {
 			if (p.id == playerId) p.copy(runtimeFlags = p.runtimeFlags.copy(didBid = true)) else p
 		}
 		_state.value = current.copy(players = players, phaseHands = phaseHands)
+		recordReplayEvent(ReplayEvent.Bid(playerId, bid, isBlind))
 	}
 
 	/**
@@ -145,6 +151,7 @@ class GameViewModel : ViewModel() {
 		if (idx >= 0) {
 			plays[idx] = Play(playerId = playerId, card = card)
 			_state.value = current.copy(currentTrick = Trick(plays = plays))
+			recordReplayEvent(ReplayEvent.CardPlay(playerId, card.uid))
 		}
 	}
 
@@ -206,6 +213,7 @@ class GameViewModel : ViewModel() {
 		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
 		phaseHands[GamePhase.Deal] = dealHands
 		_state.value = current.copy(phaseHands = phaseHands)
+		recordReplayEvent(ReplayEvent.TrickWon(winnerId))
 	}
 
 	/**
@@ -262,7 +270,8 @@ class GameViewModel : ViewModel() {
 			discard       = emptyList(),
 			spadesBroken  = false,
 			kittyWinnerId = null,
-			phaseHands    = emptyMap()
+			phaseHands    = emptyMap(),
+			replayEvents  = emptyList()
 		)
 	}
 
@@ -397,6 +406,29 @@ class GameViewModel : ViewModel() {
 			if (!player.runtimeFlags.didBid) return player.id == localPlayerId
 		}
 		return false
+	}
+
+	// ── Replay recording ──────────────────────────────────────────────────────
+
+	/** Append one event to the in-progress replay log. */
+	fun recordReplayEvent(event: ReplayEvent) {
+		_state.value = _state.value.copy(replayEvents = _state.value.replayEvents + event)
+	}
+
+	/**
+	 * Snapshot the current [replayEvents] into [lastHandReplay] and clear the log.
+	 * Called by [PhaseManager] at the start of [GamePhase.Score], before scoring.
+	 */
+	fun finalizeHandReplay() {
+		val current = _state.value
+		_state.value = current.copy(
+			lastHandReplay = HandReplay(
+				players   = current.players,
+				gameType  = current.gameType,
+				events    = current.replayEvents
+			),
+			replayEvents = emptyList()
+		)
 	}
 
 	// ── End-of-hand / end-of-game actions ─────────────────────────────────────

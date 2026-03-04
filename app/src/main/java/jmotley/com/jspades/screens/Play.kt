@@ -35,6 +35,7 @@ import jmotley.com.jspades.views.DealPickView
 import jmotley.com.jspades.views.DiamondView
 import jmotley.com.jspades.views.EndGameView
 import jmotley.com.jspades.views.EndHandView
+import jmotley.com.jspades.views.ReplayHandView
 import jmotley.com.jspades.views.GameInfoView
 import jmotley.com.jspades.views.HandView
 import jmotley.com.jspades.views.KittyView
@@ -75,6 +76,7 @@ fun PlayScreen(
     // Drives the gold winner flash in DiamondView — set from TrickWon events below.
     var trickWinner by remember { mutableStateOf<String?>(null) }
     var showQuitDialog by remember { mutableStateOf(false) }
+    var showReplay by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize()) {
 
@@ -315,6 +317,7 @@ fun PlayScreen(
                     viewModel      = viewModel,
                     localPlayerId  = localPlayerId,
                     onNavigateBack = onNavigateBack,
+                    onReplayHand   = if (state.lastHandReplay != null) {{ showReplay = true }} else null,
                     modifier       = Modifier.fillMaxSize()
                 )
             }
@@ -328,6 +331,15 @@ fun PlayScreen(
                     modifier       = Modifier.fillMaxSize()
                 )
             }
+        }
+
+        // ── Replay overlay (shown over EndHand) ───────────────────────────────
+        val replay = state.lastHandReplay
+        if (showReplay && replay != null) {
+            ReplayHandView(
+                replay    = replay,
+                onDismiss = { showReplay = false }
+            )
         }
     }
 }

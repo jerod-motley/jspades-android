@@ -238,7 +238,18 @@ data class GameState(
      * Populated by [GameViewModel.applyScore]; used by EndHandView to show
      * per-hand results. Cleared on the next [GameViewModel.applyScore] call.
      */
-    val lastHandScore: Score = Score()
+    val lastHandScore: Score = Score(),
+    /**
+     * Replay events accumulated during the current hand.
+     * Cleared by [GameViewModel.resetForNextHand] and [GameViewModel.finalizeHandReplay].
+     */
+    val replayEvents: List<ReplayEvent> = emptyList(),
+    /**
+     * Finalized replay for the most recently completed hand.
+     * Set by [GameViewModel.finalizeHandReplay] in [GamePhase.Score].
+     * Passed to ReplayHandView from EndHandView.
+     */
+    val lastHandReplay: HandReplay? = null
 )
 
 /** Helpers */

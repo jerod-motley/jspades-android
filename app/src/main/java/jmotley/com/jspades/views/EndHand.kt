@@ -48,6 +48,7 @@ fun EndHandView(
     viewModel: GameViewModel,
     localPlayerId: String,
     onNavigateBack: () -> Unit,
+    onReplayHand: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val dealHand = state.phaseHands[GamePhase.Deal]?.lastOrNull()
@@ -87,21 +88,34 @@ fun EndHandView(
             Spacer(Modifier.height(8.dp))
 
             // ── Buttons ───────────────────────────────────────────────────────
-            Row(
-                modifier              = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            Column(
+                modifier            = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(
-                    onClick  = { showHomeDialog = true },
-                    modifier = Modifier.weight(1f)
+                Row(
+                    modifier              = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text("Home", color = Color.White)
+                    OutlinedButton(
+                        onClick  = { showHomeDialog = true },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Home", color = Color.White)
+                    }
+                    Button(
+                        onClick  = { viewModel.onNextHand() },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Next Hand")
+                    }
                 }
-                Button(
-                    onClick  = { viewModel.onNextHand() },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("Next Hand")
+                if (onReplayHand != null) {
+                    OutlinedButton(
+                        onClick  = { onReplayHand() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("▶ Replay Hand", color = Color.White)
+                    }
                 }
             }
         }
