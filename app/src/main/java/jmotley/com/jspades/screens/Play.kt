@@ -2,22 +2,31 @@ package jmotley.com.jspades.screens
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.lifecycle.viewmodel.compose.viewModel
 import jmotley.com.jspades.R
+import jmotley.com.jspades.data.AnimationEvent
 import jmotley.com.jspades.data.GamePhase
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.models.GameViewModel
 import jmotley.com.jspades.data.DealMode
@@ -28,6 +37,7 @@ import jmotley.com.jspades.views.GameInfoView
 import jmotley.com.jspades.views.HandView
 import jmotley.com.jspades.views.KittyView
 import jmotley.com.jspades.views.LobbyView
+import kotlinx.coroutines.delay
 
 /**
  * Primary game screen. Composites phase-appropriate views over the table background.
@@ -54,10 +64,15 @@ import jmotley.com.jspades.views.LobbyView
 fun PlayScreen(
     localPlayerId: String,
     gameType: String = "Classic",
+    onNavigateBack: () -> Unit = {},
     viewModel: GameViewModel = viewModel()
 ) {
     val state by viewModel.state.collectAsState()
     val resolvedGameType = GameType.fromLabel(gameType)
+
+    // Drives the gold winner flash in DiamondView — set from TrickWon events below.
+    var trickWinner by remember { mutableStateOf<String?>(null) }
+    var showQuitDialog by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize()) {
 
@@ -69,6 +84,32 @@ fun PlayScreen(
             contentScale = ContentScale.Crop
         )
 
+        // ── Animation event collector ─────────────────────────────────────────────
+        // Collects one-shot events from PhaseManager (fire-and-forget pattern).
+        // Each event drives an animation; execute() is called on completion so the
+        // engine can advance to the next step.
+        LaunchedEffect(Unit) {
+            viewModel.animationEvents.collect { event ->
+                when (event) {
+                    is AnimationEvent.BidPlaced -> {
+                        // Bid badge fades in via DiamondView state change — wait for it
+                        delay(600)
+                    }
+                    is AnimationEvent.CardPlayed -> {
+                        // Card slides in from player's seat via DiamondView state change
+                        delay(550)
+                    }
+                    is AnimationEvent.TrickWon -> {
+                        // Flash the winner's slot gold, then clear before re-entering engine
+                        trickWinner = event.winnerId
+                        delay(900)
+                        trickWinner = null
+                    }
+                }
+                viewModel.phaseManager.execute()
+            }
+        }
+
         // ── Top header: display the current game type label and respect status bar safe area ──
         Text(
             text = resolvedGameType.label,
@@ -79,6 +120,39 @@ fun PlayScreen(
                 .statusBarsPadding()
                 .padding(vertical = 8.dp)
         )
+
+        // ── Close / quit button ───────────────────────────────────────────────────
+        TextButton(
+            onClick = {
+                if (state.phase == GamePhase.Finished) onNavigateBack()
+                else showQuitDialog = true
+            },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(end = 4.dp)
+        ) {
+            Text("✕", fontSize = 20.sp)
+        }
+
+        // ── Quit confirmation dialog ──────────────────────────────────────────────
+        if (showQuitDialog) {
+            AlertDialog(
+                onDismissRequest = { showQuitDialog = false },
+                title = { Text("Quit game?") },
+                text = { Text("Your progress will be lost.") },
+                confirmButton = {
+                    TextButton(onClick = { showQuitDialog = false; onNavigateBack() }) {
+                        Text("Quit")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showQuitDialog = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
 
         // ── Phase-based view composition ──────────────────────────────────────────
         when (state.phase) {
@@ -108,12 +182,16 @@ fun PlayScreen(
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
-                    HandView(
-                        state = state,
-                        viewModel = viewModel,
-                        localPlayerId = localPlayerId,
-                        modifier = Modifier.align(Alignment.BottomCenter)
-                    )
+                    Column(modifier = Modifier.align(Alignment.BottomCenter)) {
+                        GameInfoView(
+                            state = state, viewModel = viewModel,
+                            localPlayerId = localPlayerId
+                        )
+                        HandView(
+                            state = state, viewModel = viewModel,
+                            localPlayerId = localPlayerId
+                        )
+                    }
                 }
             }
 
@@ -122,36 +200,42 @@ fun PlayScreen(
             GamePhase.Bid -> {
                 DiamondView(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
+                    trickWinner = trickWinner,
                     modifier = Modifier.align(Alignment.Center)
                 )
-                GameInfoView(
-                    state = state, viewModel = viewModel,
-                    modifier = Modifier.align(Alignment.TopCenter)
-                )
-                HandView(
-                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
-                    modifier = Modifier.align(Alignment.BottomCenter)
-                )
+                Column(modifier = Modifier.align(Alignment.BottomCenter)) {
+                    GameInfoView(
+                        state = state, viewModel = viewModel,
+                        localPlayerId = localPlayerId
+                    )
+                    HandView(
+                        state = state, viewModel = viewModel,
+                        localPlayerId = localPlayerId
+                    )
+                }
             }
 
             // Human's turn to bid
             GamePhase.BidHuman -> {
                 DiamondView(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
+                    trickWinner = trickWinner,
                     modifier = Modifier.align(Alignment.Center)
-                )
-                GameInfoView(
-                    state = state, viewModel = viewModel,
-                    modifier = Modifier.align(Alignment.TopCenter)
                 )
                 BidView(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
                     modifier = Modifier.align(Alignment.Center)
                 )
-                HandView(
-                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
-                    modifier = Modifier.align(Alignment.BottomCenter)
-                )
+                Column(modifier = Modifier.align(Alignment.BottomCenter)) {
+                    GameInfoView(
+                        state = state, viewModel = viewModel,
+                        localPlayerId = localPlayerId
+                    )
+                    HandView(
+                        state = state, viewModel = viewModel,
+                        localPlayerId = localPlayerId
+                    )
+                }
             }
 
             // ── Kitty ─────────────────────────────────────────────────────────
@@ -163,7 +247,8 @@ fun PlayScreen(
                 )
                 GameInfoView(
                     state = state, viewModel = viewModel,
-                    modifier = Modifier.align(Alignment.TopCenter)
+                    localPlayerId = localPlayerId,
+                    modifier = Modifier.align(Alignment.BottomCenter)
                 )
             }
 
@@ -172,27 +257,31 @@ fun PlayScreen(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
                     modifier = Modifier.align(Alignment.Center)
                 )
-                GameInfoView(
-                    state = state, viewModel = viewModel,
-                    modifier = Modifier.align(Alignment.TopCenter)
-                )
-                HandView(
-                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
-                    modifier = Modifier.align(Alignment.BottomCenter)
-                )
+                Column(modifier = Modifier.align(Alignment.BottomCenter)) {
+                    GameInfoView(
+                        state = state, viewModel = viewModel,
+                        localPlayerId = localPlayerId
+                    )
+                    HandView(
+                        state = state, viewModel = viewModel,
+                        localPlayerId = localPlayerId
+                    )
+                }
             }
 
             // ── Trick / Play ──────────────────────────────────────────────────
-            // CPU playing or trick resolving
+            // CPU playing or trick resolving — no hand visible
             GamePhase.Trick,
             GamePhase.TrickResolve -> {
                 DiamondView(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
+                    trickWinner = trickWinner,
                     modifier = Modifier.align(Alignment.Center)
                 )
                 GameInfoView(
                     state = state, viewModel = viewModel,
-                    modifier = Modifier.align(Alignment.TopCenter)
+                    localPlayerId = localPlayerId,
+                    modifier = Modifier.align(Alignment.BottomCenter)
                 )
             }
 
@@ -200,16 +289,19 @@ fun PlayScreen(
             GamePhase.TrickHuman -> {
                 DiamondView(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
+                    trickWinner = trickWinner,
                     modifier = Modifier.align(Alignment.Center)
                 )
-                GameInfoView(
-                    state = state, viewModel = viewModel,
-                    modifier = Modifier.align(Alignment.TopCenter)
-                )
-                HandView(
-                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
-                    modifier = Modifier.align(Alignment.BottomCenter)
-                )
+                Column(modifier = Modifier.align(Alignment.BottomCenter)) {
+                    GameInfoView(
+                        state = state, viewModel = viewModel,
+                        localPlayerId = localPlayerId
+                    )
+                    HandView(
+                        state = state, viewModel = viewModel,
+                        localPlayerId = localPlayerId
+                    )
+                }
             }
 
             // ── End states ────────────────────────────────────────────────────

@@ -6,9 +6,12 @@ import jmotley.com.jspades.data.GamePhase
 import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.data.Hand
+import jmotley.com.jspades.data.Play
 import jmotley.com.jspades.data.PlayerHandState
 import jmotley.com.jspades.data.Rank
 import jmotley.com.jspades.data.Suit
+import jmotley.com.jspades.data.AnimationEvent
+import jmotley.com.jspades.data.Score
 import jmotley.com.jspades.models.GameViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -225,9 +228,10 @@ class PhaseManager(
     /**
      * Individual bid flow (Classic, Kitty, Solo variants).
      *
-     * Walks players clockwise from leaderIndex. CPU players bid immediately;
-     * when the human is reached, switches to BidHuman and returns.
-     * After all players have bid, team bids are finalized and the phase advances.
+     * Fire-and-forget: one player bids per execute() call.
+     * CPU → compute bid → emit BidPlaced → return.
+     * Human → advance to BidHuman → execute() → return.
+     * All done → finalize teams → advanceAfterBidding.
      */
     private suspend fun handleBidIndividual() {
         val s = viewModel.state.value
@@ -240,15 +244,17 @@ class PhaseManager(
                     execute()
                     return
                 }
-                delay(800)
                 val hand   = getPlayerHand(s, player.id)
                 val result = BidEngine.computeCpuBid(
-                    hand           = hand,
-                    player         = player,
-                    state          = s,
-                    isKittyWinner  = s.kittyWinnerId == player.id
+                    hand          = hand,
+                    player        = player,
+                    state         = s,
+                    isKittyWinner = s.kittyWinnerId == player.id
                 )
                 viewModel.submitBid(player.id, result.bid, result.isBlind)
+                // Fire-and-forget: emit event, return; animation completion calls execute()
+                viewModel.emitAnimation(AnimationEvent.BidPlaced(player.id, result.bid))
+                return
             }
         }
         // All players have bid — compute team totals for team games
@@ -260,55 +266,49 @@ class PhaseManager(
      * House Rules team bid flow.
      *
      * Non-dealer team bids first; dealer's team bids second.
-     * CPU-only teams: sum individual bids, apply minimumBid floor, store as team bid.
-     * When the human's team is up: CPU partner bids first, then BidHuman waits for the
-     * human to enter the team total via [GameViewModel.submitHumanTeamBid].
-     *
-     * This function is re-entered after the human submits (via execute()); the fresh
-     * state snapshot will show all players as didBid = true, so it falls through to
-     * [advanceAfterBidding].
+     * Fire-and-forget: one CPU bid per execute() call.
+     * CPU-only teams: sum individual bids after all have bid (idempotent on re-entry).
+     * Human's team: hand off to BidHuman when all CPU partners have bid.
      */
     private suspend fun handleBidHouseRules() {
         val s          = viewModel.state.value
         val n          = s.players.size
-        // leaderIndex is the first-to-act (left of dealer); dealer is one seat clockwise.
         val dealerIdx  = (s.leaderIndex - 1 + n) % n
         val dealerTeam = s.players[dealerIdx].team
         val teamOrder  = listOf(1 - dealerTeam, dealerTeam) // non-dealer first
 
         for (teamId in teamOrder) {
-            val teamPlayers = s.players.filter { it.team == teamId }
-            if (teamPlayers.all { it.runtimeFlags.didBid }) continue // already done
-
-            // CPU players on this team bid first
-            for (player in teamPlayers) {
-                if (!player.runtimeFlags.didBid && player.id != "south") {
-                    delay(600)
-                    val hand   = getPlayerHand(s, player.id)
-                    val result = BidEngine.computeCpuBid(hand, player, s)
-                    viewModel.submitBid(player.id, result.bid, result.isBlind)
-                }
-            }
-
+            val teamPlayers    = s.players.filter { it.team == teamId }
             val humanOnTeam    = teamPlayers.any { it.id == "south" }
             val humanAlreadyBid = s.players.find { it.id == "south" }?.runtimeFlags?.didBid ?: false
 
+            // Find the next unbidd CPU player on this team
+            val nextCpu = teamPlayers.firstOrNull { !it.runtimeFlags.didBid && it.id != "south" }
+            if (nextCpu != null) {
+                val hand   = getPlayerHand(s, nextCpu.id)
+                val result = BidEngine.computeCpuBid(hand, nextCpu, s)
+                viewModel.submitBid(nextCpu.id, result.bid, result.isBlind)
+                // Fire-and-forget: one CPU bid per execute() call
+                viewModel.emitAnimation(AnimationEvent.BidPlaced(nextCpu.id, result.bid))
+                return
+            }
+
+            // All CPUs on this team have bid
             if (humanOnTeam && !humanAlreadyBid) {
-                // Hand off to BidView — human sees CPU partner's bid and enters team total
                 viewModel.advancePhase(GamePhase.BidHuman)
                 execute()
                 return
             }
 
             if (!humanOnTeam) {
-                // All CPU team — sum individual bids and store team total
-                val fresh    = viewModel.state.value
-                val teamBid  = teamPlayers.sumOf { player ->
-                    fresh.phaseHands[GamePhase.Deal]?.lastOrNull()
+                // CPU-only team — sum individual bids and store team total (idempotent)
+                val teamBid = teamPlayers.sumOf { player ->
+                    s.phaseHands[GamePhase.Deal]?.lastOrNull()
                         ?.perPlayer?.get(player.id)?.bid ?: 0
                 }.coerceAtLeast(s.gameType.minimumBid)
                 viewModel.setTeamBid(teamId, teamBid)
             }
+            // fall through to next team
         }
 
         advanceAfterBidding()
@@ -367,12 +367,17 @@ class PhaseManager(
     }
 
     /**
-     * Trick: CPU plays a card into the current trick.
-     * When it is the human's turn, switches to TrickHuman.
-     * TODO: implement CPU card-selection logic.
+     * Trick: advance the trick one play at a time.
+     *
+     * Fire-and-forget: one CPU card play per execute() call.
+     * Human → switch to TrickHuman → execute() → return (UI takes over).
+     * CPU  → select card → play → emit CardPlayed → return.
+     * Trick complete → advance to TrickResolve before emitting so the
+     * animation callback re-enters handleTrickResolve.
      */
     private suspend fun handleTrick() {
-        val s = viewModel.state.value
+        val s          = viewModel.state.value
+        val n          = s.players.size
         val nextPlayer = nextPlayerInTrick(s.currentTrick.plays, s.players.map { it.id }, s.leaderIndex)
 
         if (nextPlayer == "south") {
@@ -381,59 +386,220 @@ class PhaseManager(
             return
         }
 
-        delay(900) // simulate CPU thinking
-        // TODO: select card via CPU AI; placeholder plays first card in hand
-        val hand = s.phaseHands[GamePhase.Deal]?.lastOrNull()
-            ?.perPlayer?.get(nextPlayer)?.hand
-        val card = hand?.firstOrNull()
-        if (card != null) {
-            viewModel.playCard(nextPlayer, card)
-        }
+        val card = PlayEngine.selectCard(nextPlayer, s)
+        viewModel.playCard(nextPlayer, card)
+        viewModel.removeCardFromHand(nextPlayer, card)
 
-        if (viewModel.state.value.currentTrick.isComplete) {
+        val trickComplete = viewModel.state.value.currentTrick.plays.count { it != null } == n
+        if (trickComplete) {
             viewModel.advancePhase(GamePhase.TrickResolve)
         }
-        execute()
+        // Fire-and-forget: emit card play event; animation completion calls execute()
+        viewModel.emitAnimation(AnimationEvent.CardPlayed(nextPlayer, card))
     }
 
     /**
-     * TrickResolve: determine trick winner, update tricksWon, clear trick,
-     * then loop back to Trick or move to Score if the hand is over.
-     * TODO: implement full trick-resolution logic (spades trump, lead suit, etc.).
+     * TrickResolve: compute the winner, update void/cutting flags, award trick,
+     * collect cards, advance to the next phase, then fire TrickWon (fire-and-forget).
+     *
+     * Phase is advanced BEFORE emitting so the animation callback re-enters
+     * handleTrick or handleScore directly.
+     * [plays] snapshot is captured before collectTrick clears the trick.
      */
     private suspend fun handleTrickResolve() {
-        delay(1000) // pause so the UI can show completed trick
-        // TODO: calculate winner from currentTrick
-        viewModel.collectTrick(winnerId = "south" /* placeholder */)
+        val s     = viewModel.state.value
+        val plays = s.currentTrick.plays.filterNotNull()
+        if (plays.isEmpty()) { execute(); return }
 
-        val totalTricksPlayed = viewModel.state.value.discard.size / 4
-        if (totalTricksPlayed >= 13) {
-            viewModel.advancePhase(GamePhase.Score)
-        } else {
-            viewModel.advancePhase(GamePhase.Trick)
+        val leadPlay   = plays.first()
+        val leadCard   = leadPlay.card
+        val leaderId   = leadPlay.playerId
+        val winnerPlay = PlayEngine.computeTrickWinner(s.currentTrick.plays)
+        val winnerId   = winnerPlay.playerId
+
+        // Break spades if trump was played on a non-trump lead (Classic gate)
+        if (!isTrump(leadCard) && !s.spadesBroken) {
+            val anyTrumpCut = plays.any { it.playerId != leaderId && isTrump(it.card) }
+            if (anyTrumpCut) viewModel.breakSpades()
         }
-        execute()
+
+        // Update void-tracking and first-throwoff signal for non-leader plays
+        for (play in plays) {
+            if (play.playerId == leaderId) continue
+            val followedSuit = if (isTrump(leadCard)) isTrump(play.card)
+                               else play.card.suit == leadCard.suit && !isTrump(play.card)
+            if (!followedSuit) {
+                if (!isTrump(leadCard)) viewModel.markCutting(play.playerId, leadCard.suit)
+                if (!isTrump(play.card)) viewModel.markSuitFirstThrowOff(play.playerId, play.card.suit)
+            }
+        }
+
+        viewModel.awardTrick(winnerId)
+
+        val winnerIndex = s.players.indexOfFirst { it.id == winnerId }.takeIf { it >= 0 } ?: s.leaderIndex
+        viewModel.collectTrick(winnerIndex)
+
+        // Determine next phase and advance before emitting (so callback re-enters cleanly)
+        val fresh      = viewModel.state.value
+        val handsEmpty = fresh.phaseHands[GamePhase.Deal]?.lastOrNull()
+            ?.perPlayer?.values?.all { phs -> phs.hand.isEmpty() } == true
+        viewModel.advancePhase(if (handsEmpty) GamePhase.Score else GamePhase.Trick)
+
+        // Fire-and-forget: emit winner event with play snapshot; animation completion calls execute()
+        viewModel.emitAnimation(AnimationEvent.TrickWon(winnerId, plays))
     }
 
+    private fun isTrump(card: Card): Boolean =
+        card.suit == Suit.SPADES || card.rank == Rank.LITTLEJOKER || card.rank == Rank.BIGJOKER
+
     /**
-     * Score: tally points/bags for each team, then advance to EndHand or Finished.
-     * TODO: implement full scoring (made/set/bags/blind/nil).
+     * Score: compute and apply this hand's points and bags, then advance to EndHand.
+     *
+     * Team games:  scored per team (keys "0"/"1" in [Score]).
+     * Solo games:  scored per player (keys = player ids).
+     * Nil bid (0): +100 if no tricks taken, −100 otherwise (blind doubles to ±200).
+     * Regular bid: made → +bid×10; set → −bid×10. Blind or bid≥10 (optional) → ×20.
+     * Bags:        each over-trick = 1 bag; every 10 bags (optional) = −100 penalty.
      */
     private suspend fun handleScore() {
-        delay(500)
+        val s    = viewModel.state.value
+        val hand = s.phaseHands[GamePhase.Deal]?.lastOrNull()
+        if (hand != null) {
+            viewModel.applyScore(scoreHand(s, hand))
+        }
         viewModel.advancePhase(GamePhase.EndHand)
         execute()
     }
 
     /**
-     * EndHand: reset per-hand state for the next round.
-     * TODO: check win condition; rotate leader; deal next hand.
+     * EndHand: check win condition; if game continues, reset per-hand state and re-deal.
+     *
+     * Win conditions (target = 500, losing floor = −200):
+     *   - Any team/player reaches ≥ 500 AND leads all others → winner.
+     *   - Any team/player drops to ≤ −200 AND trails all others → eliminated, others win.
+     * Tie at exactly 500 → continue until the tie is broken.
+     *
+     * Displayed score = score.points[key] + score.bags[key].
      */
     private suspend fun handleEndHand() {
-        delay(300)
-        // TODO: check if any team reached 500 (or target score)
-        viewModel.advancePhase(GamePhase.Finished)
+        val s = viewModel.state.value
+
+        // Build displayed totals (points + bags) per team or player
+        val totals: Map<String, Int> = if (s.gameType.useTeams) {
+            mapOf(
+                "0" to ((s.score.points["0"] ?: 0) + (s.score.bags["0"] ?: 0)),
+                "1" to ((s.score.points["1"] ?: 0) + (s.score.bags["1"] ?: 0))
+            )
+        } else {
+            s.players.associate { p ->
+                p.id to ((s.score.points[p.id] ?: 0) + (s.score.bags[p.id] ?: 0))
+            }
+        }
+
+        val highScore = totals.values.maxOrNull() ?: 0
+        val lowScore  = totals.values.minOrNull() ?: 0
+
+        val gameOver = highScore >= TARGET_SCORE || lowScore <= LOSING_SCORE
+
+        if (gameOver) {
+            viewModel.advancePhase(GamePhase.Finished)
+            execute()
+            return
+        }
+
+        // Continue: rotate dealer, wipe per-hand state, re-deal
+        viewModel.resetForNextHand()
+        viewModel.advancePhase(GamePhase.Deal)
         execute()
+    }
+
+    // ── Scoring helpers ───────────────────────────────────────────────────────
+
+    /** First team/player to reach this score wins (if leading all others). */
+    private val TARGET_SCORE = 500
+
+    /** A team/player that falls to this score (while behind) is eliminated. */
+    private val LOSING_SCORE = -200
+
+    /**
+     * Compute the point and bag deltas for a completed hand.
+     * Returns a [Score] whose values are signed deltas to be added to the running total.
+     */
+    private fun scoreHand(s: GameState, hand: Hand): Score {
+        val pointsDelta = mutableMapOf<String, Int>()
+        val bagsDelta   = mutableMapOf<String, Int>()
+
+        if (s.gameType.useTeams) {
+            for (teamId in listOf(0, 1)) {
+                val key        = teamId.toString()
+                val bid        = hand.teamBids.getOrNull(teamId) ?: 0
+                val isBlind    = hand.teamBlind.getOrNull(teamId) == true
+                val tricksWon  = s.players
+                    .filter { it.team == teamId }
+                    .sumOf { p -> hand.perPlayer[p.id]?.tricksWon ?: 0 }
+                val currentBags = s.score.bags[key] ?: 0
+                val (pts, bags) = scoreEntry(bid, tricksWon, isBlind, currentBags, s)
+                pointsDelta[key] = pts
+                bagsDelta[key]   = bags
+            }
+        } else {
+            for (player in s.players) {
+                val phs         = hand.perPlayer[player.id] ?: continue
+                val currentBags = s.score.bags[player.id] ?: 0
+                val (pts, bags) = scoreEntry(phs.bid, phs.tricksWon, phs.isBlind, currentBags, s)
+                pointsDelta[player.id] = pts
+                bagsDelta[player.id]   = bags
+            }
+        }
+
+        return Score(points = pointsDelta, bags = bagsDelta)
+    }
+
+    /**
+     * Score a single bid entry.
+     *
+     * @param bid         The bid placed (0 = nil).
+     * @param tricksWon   Tricks actually taken.
+     * @param isBlind     True for a blind nil or blind 7.
+     * @param currentBags Running bag total for this key before this hand.
+     * @param s           Current game state (for optional rule flags).
+     * @return Pair(pointsDelta, bagsDelta) to add to the running totals.
+     */
+    private fun scoreEntry(
+        bid: Int,
+        tricksWon: Int,
+        isBlind: Boolean,
+        currentBags: Int,
+        s: GameState
+    ): Pair<Int, Int> {
+
+        // Nil bid — scored separately from regular bids
+        if (bid == 0) {
+            val base = if (isBlind) 200 else 100
+            return Pair(if (tricksWon == 0) +base else -base, 0)
+        }
+
+        // Regular / blind bid
+        val multiplier = when {
+            isBlind                                    -> 20  // blind always doubles
+            s.enableDoubleBidBonus && bid >= 10        -> 20  // optional: ≥10 doubles
+            else                                       -> 10
+        }
+
+        return if (tricksWon >= bid) {
+            // Made bid
+            val overTricks = tricksWon - bid
+            var bagDelta   = overTricks
+            var penalty    = 0
+            if (s.enableSandbagPenalty && overTricks > 0 && currentBags + overTricks >= 10) {
+                penalty  = 100
+                bagDelta -= 10   // reset 10 accumulated bags
+            }
+            Pair(bid * multiplier - penalty, bagDelta)
+        } else {
+            // Set (missed bid)
+            Pair(-(bid * multiplier), 0)
+        }
     }
 
     /** Finished: game is over — UI shows result overlay. */

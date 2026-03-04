@@ -47,7 +47,14 @@ data class Card(
 data class RuntimeFlags(
     val didBid: Boolean = false,
     val currentCard: Card? = null,
-    val seatIndex: Int = 0
+    val seatIndex: Int = 0,
+    // Void-tracking: true once the player has failed to follow a suit (cutting = void)
+    val cuttingSpades: Boolean = false,
+    val cuttingHearts: Boolean = false,
+    val cuttingClubs: Boolean = false,
+    val cuttingDiamonds: Boolean = false,
+    /** Suit of the first card this player discarded (throwoff signal to partner). */
+    val suitFirstThrowOff: Suit? = null
 )
 
 /** Player includes team assignment and runtime flags. */
@@ -211,9 +218,21 @@ data class GameState(
     val kittyWinnerId: String? = null,
     val score: Score = Score(),
     val phase: GamePhase = GamePhase.Lobby,
+    /** True once a spade has been played on a non-spade lead (Classic only gate). */
+    val spadesBroken: Boolean = false,
     /** Map of phase -> hands (array of Hand objects tied to phases) */
     val phaseHands: Map<GamePhase, List<Hand>> = emptyMap(),
-    val metadata: Metadata? = null
+    val metadata: Metadata? = null,
+    /**
+     * Optional rule: a bid of 10 or more earns double points (bid × 20).
+     * Defaults off; toggled from the settings screen before the game ships.
+     */
+    val enableDoubleBidBonus: Boolean = false,
+    /**
+     * Optional rule: every 10 accumulated sandbags costs −100 points.
+     * Defaults on per standard Spades rules; toggled from the settings screen.
+     */
+    val enableSandbagPenalty: Boolean = true
 )
 
 /** Helpers */

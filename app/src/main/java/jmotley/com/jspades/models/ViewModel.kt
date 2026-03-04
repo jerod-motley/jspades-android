@@ -2,8 +2,11 @@ package jmotley.com.jspades.models
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import jmotley.com.jspades.data.AnimationEvent
 import jmotley.com.jspades.data.Card
 import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.GamePhase
@@ -14,13 +17,28 @@ import jmotley.com.jspades.data.PlayerHandState
 import jmotley.com.jspades.data.Play
 import jmotley.com.jspades.data.Trick
 import jmotley.com.jspades.data.RuntimeFlags
+import jmotley.com.jspades.data.Score
 import jmotley.com.jspades.data.defaultPlayers
 import jmotley.com.jspades.data.defaultFourPlayers
+import jmotley.com.jspades.data.localHand
 import jmotley.com.jspades.engine.PhaseManager
 
 class GameViewModel : ViewModel() {
 	private val _state = MutableStateFlow(GameState())
 	val state: StateFlow<GameState> = _state
+
+	/**
+	 * One-shot animation events emitted by [PhaseManager] after each CPU action.
+	 * UI collects these, plays the animation, then calls [phaseManager].execute().
+	 * Buffer of 8 ensures no events are dropped between coroutine scheduling gaps.
+	 */
+	private val _animationEvents = MutableSharedFlow<AnimationEvent>(extraBufferCapacity = 8)
+	val animationEvents: SharedFlow<AnimationEvent> = _animationEvents
+
+	/** Emit an animation event from the engine. Called only by [PhaseManager]. */
+	suspend fun emitAnimation(event: AnimationEvent) {
+		_animationEvents.emit(event)
+	}
 
 	/** Single engine entry point. All phase transitions funnel through here. */
 	val phaseManager = PhaseManager(this, viewModelScope)
@@ -130,13 +148,118 @@ class GameViewModel : ViewModel() {
 		}
 	}
 
-	/** Clear the current trick and move played cards to the discard pile. */
-	fun collectTrick(winnerId: String) {
+	/** Remove a card from a player's live hand after it has been played. */
+	fun removeCardFromHand(playerId: String, card: Card) {
+		val current    = _state.value
+		val phaseHands = current.phaseHands.toMutableMap()
+		val dealHands  = phaseHands[GamePhase.Deal]?.toMutableList() ?: return
+		val hand       = dealHands.lastOrNull() ?: return
+		val perPlayer  = hand.perPlayer.toMutableMap()
+		val phs        = perPlayer[playerId] ?: return
+		perPlayer[playerId] = phs.copy(hand = phs.hand.filter { it.uid != card.uid })
+		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
+		phaseHands[GamePhase.Deal] = dealHands
+		_state.value = current.copy(phaseHands = phaseHands)
+	}
+
+	/** Mark [playerId] as void in [suit] (they failed to follow that suit). */
+	fun markCutting(playerId: String, suit: jmotley.com.jspades.data.Suit) {
+		val current = _state.value
+		val players = current.players.map { p ->
+			if (p.id != playerId) p else {
+				val f = p.runtimeFlags
+				p.copy(runtimeFlags = when (suit) {
+					jmotley.com.jspades.data.Suit.SPADES   -> f.copy(cuttingSpades   = true)
+					jmotley.com.jspades.data.Suit.HEARTS   -> f.copy(cuttingHearts   = true)
+					jmotley.com.jspades.data.Suit.CLUBS    -> f.copy(cuttingClubs    = true)
+					jmotley.com.jspades.data.Suit.DIAMONDS -> f.copy(cuttingDiamonds = true)
+				})
+			}
+		}
+		_state.value = current.copy(players = players)
+	}
+
+	/** Record the first non-lead, non-trump discard suit for [playerId] (partner signal). */
+	fun markSuitFirstThrowOff(playerId: String, suit: jmotley.com.jspades.data.Suit) {
+		val current = _state.value
+		val players = current.players.map { p ->
+			if (p.id != playerId || p.runtimeFlags.suitFirstThrowOff != null) p
+			else p.copy(runtimeFlags = p.runtimeFlags.copy(suitFirstThrowOff = suit))
+		}
+		_state.value = current.copy(players = players)
+	}
+
+	/** Spades are now broken — allow leading trump in Classic. */
+	fun breakSpades() {
+		_state.value = _state.value.copy(spadesBroken = true)
+	}
+
+	/** Increment tricksWon for [winnerId] in the current deal hand. */
+	fun awardTrick(winnerId: String) {
+		val current    = _state.value
+		val phaseHands = current.phaseHands.toMutableMap()
+		val dealHands  = phaseHands[GamePhase.Deal]?.toMutableList() ?: return
+		val hand       = dealHands.lastOrNull() ?: return
+		val perPlayer  = hand.perPlayer.toMutableMap()
+		val phs        = perPlayer[winnerId] ?: PlayerHandState()
+		perPlayer[winnerId] = phs.copy(tricksWon = phs.tricksWon + 1)
+		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
+		phaseHands[GamePhase.Deal] = dealHands
+		_state.value = current.copy(phaseHands = phaseHands)
+	}
+
+	/**
+	 * Clear the current trick, move played cards to the discard pile,
+	 * and set [winnerIndex] as the next leader.
+	 */
+	fun collectTrick(winnerIndex: Int) {
 		val current     = _state.value
 		val playedCards = current.currentTrick.plays.filterNotNull().map { it.card }
 		_state.value   = current.copy(
-			currentTrick = Trick(),
-			discard      = current.discard + playedCards
+			currentTrick = Trick(plays = List(current.players.size) { null }),
+			discard      = current.discard + playedCards,
+			leaderIndex  = winnerIndex
+		)
+	}
+
+	// ── Scoring ───────────────────────────────────────────────────────────────
+
+	/**
+	 * Add a scored hand's point and bag deltas to the running totals.
+	 * Keys match how [PhaseManager.scoreHand] produces them:
+	 * team games → "0" / "1"; solo games → player id.
+	 */
+	fun applyScore(delta: Score) {
+		val current   = _state.value
+		val newPoints = current.score.points.toMutableMap()
+		val newBags   = current.score.bags.toMutableMap()
+		delta.points.forEach { (k, v) -> newPoints[k] = (newPoints[k] ?: 0) + v }
+		delta.bags.forEach   { (k, v) -> newBags[k]   = (newBags[k]   ?: 0) + v }
+		_state.value = current.copy(score = Score(points = newPoints, bags = newBags))
+	}
+
+	/**
+	 * Reset all per-hand transient state and rotate the dealer for the next hand.
+	 *
+	 * - RuntimeFlags are wiped (cutting, throwoff, didBid) but seatIndex is preserved.
+	 * - `leaderIndex` advances by one seat clockwise.
+	 * - `spadesBroken`, `discard`, `kittyWinnerId`, and `currentTrick` are cleared.
+	 * - `phaseHands` is cleared so the next deal starts fresh.
+	 */
+	fun resetForNextHand() {
+		val current = _state.value
+		val n = current.players.size
+		val players = current.players.map { p ->
+			p.copy(runtimeFlags = RuntimeFlags(seatIndex = p.runtimeFlags.seatIndex))
+		}
+		_state.value = current.copy(
+			players       = players,
+			leaderIndex   = (current.leaderIndex + 1) % n,
+			currentTrick  = Trick(plays = List(n) { null }),
+			discard       = emptyList(),
+			spadesBroken  = false,
+			kittyWinnerId = null,
+			phaseHands    = emptyMap()
 		)
 	}
 
@@ -209,6 +332,51 @@ class GameViewModel : ViewModel() {
 		submitBid(playerId = localPlayerId, bid = bid)
 		advancePhase(GamePhase.Bid)
 		phaseManager.execute()
+	}
+
+	// ── Human trick play ──────────────────────────────────────────────────────
+
+	/**
+	 * Commit the human player's card play and return control to the engine.
+	 * Removes the card from hand, advances to [GamePhase.Trick].
+	 */
+	fun submitHumanPlay(card: Card, localPlayerId: String) {
+		playCard(localPlayerId, card)
+		removeCardFromHand(localPlayerId, card)
+		advancePhase(GamePhase.Trick)
+		phaseManager.execute()
+	}
+
+	/**
+	 * Returns true if [card] is a legal play for [localPlayerId] right now.
+	 * Enforces suit-following and the Classic spades-broken gate on leading.
+	 */
+	fun canPlayCard(card: Card, localPlayerId: String): Boolean {
+		val s = _state.value
+		val hand = s.localHand(localPlayerId)
+		val isTrump = { c: Card -> c.suit == jmotley.com.jspades.data.Suit.SPADES
+				|| c.rank == jmotley.com.jspades.data.Rank.LITTLEJOKER
+				|| c.rank == jmotley.com.jspades.data.Rank.BIGJOKER }
+		val leadPlay = s.currentTrick.plays.firstOrNull { it != null }
+
+		// Leading: Classic gate — can't lead trump unless that's all you have
+		if (leadPlay == null) {
+			if (s.gameType == GameType.TEAM_CLASSIC && !s.spadesBroken && isTrump(card)) {
+				return hand.all { isTrump(it) }
+			}
+			return true
+		}
+
+		val leadCard = leadPlay.card
+		val hasLeadSuit = if (isTrump(leadCard)) {
+			hand.any { isTrump(it) }
+		} else {
+			hand.any { it.suit == leadCard.suit && !isTrump(it) }
+		}
+		if (!hasLeadSuit) return true  // void — anything goes
+
+		return if (isTrump(leadCard)) isTrump(card)
+		else card.suit == leadCard.suit && !isTrump(card)
 	}
 
 	// ── UI helpers ────────────────────────────────────────────────────────────

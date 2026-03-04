@@ -70,7 +70,8 @@ class MainActivity : ComponentActivity() {
                             val decoded = try { URLDecoder.decode(raw, "utf-8") } catch (_: Exception) { raw }
                             PlayScreen(
                                 localPlayerId = "south",
-                                gameType = decoded
+                                gameType = decoded,
+                                onNavigateBack = { navController.popBackStack() }
                             )
                         }
                     }

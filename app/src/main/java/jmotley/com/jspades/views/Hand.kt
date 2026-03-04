@@ -33,7 +33,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.draw.alpha
 import jmotley.com.jspades.data.Card
+import jmotley.com.jspades.data.GamePhase
 import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.localHand
 import jmotley.com.jspades.models.GameViewModel
@@ -51,14 +53,14 @@ private val CARD_GAP = 4.dp
 private const val CARD_ASPECT = 0.69f
 
 /**
- * Hand view: renders the local player's 13 cards in two rows — 7 on top, 6 on bottom.
+ * Hand view: renders the local player's cards in two rows.
  *
- * Card width is computed dynamically so 7 cards fill the available width exactly.
- * Cards are sorted by the ViewModel before reaching here (low suit → high suit,
- * low rank → high rank).
+ * Card width is computed dynamically so the top row fills the available width.
+ * Cards are sorted by suit then rank before reaching here.
  *
- * Cards are tappable; tapping fires [viewModel.playCard].
- * TODO: gate on play-turn ownership.
+ * Taps are only active during [GamePhase.TrickHuman]. Invalid cards (suit-following
+ * violations, Classic spades-broken gate) are dimmed and non-tappable.
+ * Tapping calls [GameViewModel.submitHumanPlay].
  */
 @Composable
 fun HandView(
@@ -67,7 +69,13 @@ fun HandView(
     localPlayerId: String,
     modifier: Modifier = Modifier
 ) {
-    val cards = state.localHand(localPlayerId)
+    val cards        = state.localHand(localPlayerId)
+    val isTrickHuman = state.phase == GamePhase.TrickHuman
+
+    // Compute which card UIDs are valid to play right now
+    val validUids: Set<String> = if (isTrickHuman) {
+        validPlayableUids(cards, state, viewModel, localPlayerId)
+    } else emptySet()
 
     if (cards.isEmpty()) {
         Box(modifier = modifier, contentAlignment = Alignment.Center) {
@@ -82,24 +90,37 @@ fun HandView(
     val bottomRow = cards.drop(topCount)
 
     BoxWithConstraints(modifier = modifier.fillMaxWidth().padding(horizontal = HAND_H_PADDING)) {
-        // Card width: fit topRow cards + gaps across the available width
         val totalGapWidth = CARD_GAP * (topRow.size - 1)
         val cardW = (maxWidth - totalGapWidth) / topRow.size
         val cardH = cardW / CARD_ASPECT
 
-        val animateIn = state.phase == jmotley.com.jspades.data.GamePhase.DealHuman
+        val animateIn = state.phase == GamePhase.DealHuman
 
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(ROW_GAP)
         ) {
-            CardRow(cards = topRow, cardW = cardW, cardH = cardH, startIndex = 0, animateIn = animateIn,
-                onTap = { viewModel.playCard(localPlayerId, it) })
-            CardRow(cards = bottomRow, cardW = cardW, cardH = cardH, startIndex = topRow.size, animateIn = animateIn,
-                onTap = { viewModel.playCard(localPlayerId, it) })
+            CardRow(
+                cards = topRow, cardW = cardW, cardH = cardH, startIndex = 0,
+                animateIn = animateIn, isTrickHuman = isTrickHuman, validUids = validUids,
+                onTap = { card -> if (isTrickHuman && card.uid in validUids) viewModel.submitHumanPlay(card, localPlayerId) }
+            )
+            CardRow(
+                cards = bottomRow, cardW = cardW, cardH = cardH, startIndex = topRow.size,
+                animateIn = animateIn, isTrickHuman = isTrickHuman, validUids = validUids,
+                onTap = { card -> if (isTrickHuman && card.uid in validUids) viewModel.submitHumanPlay(card, localPlayerId) }
+            )
         }
     }
 }
+
+/** Returns the UIDs of cards the human is legally allowed to play right now. */
+private fun validPlayableUids(
+    hand: List<Card>,
+    state: GameState,
+    viewModel: GameViewModel,
+    localPlayerId: String
+): Set<String> = hand.filter { viewModel.canPlayCard(it, localPlayerId) }.map { it.uid }.toSet()
 
 @Composable
 private fun CardRow(
@@ -108,16 +129,20 @@ private fun CardRow(
     cardH: androidx.compose.ui.unit.Dp,
     startIndex: Int = 0,
     animateIn: Boolean = false,
+    isTrickHuman: Boolean = false,
+    validUids: Set<String> = emptySet(),
     onTap: (Card) -> Unit
 ) {
     Row(horizontalArrangement = Arrangement.spacedBy(CARD_GAP)) {
         cards.forEachIndexed { index, card ->
             val globalIndex = startIndex + index
+            val enabled = !isTrickHuman || card.uid in validUids
             CardTile(
                 card = card,
                 index = globalIndex,
                 animateIn = animateIn,
                 cardW = cardW,
+                enabled = enabled,
                 modifier = Modifier
                     .size(width = cardW, height = cardH)
                     .clickable { onTap(card) }
@@ -132,6 +157,7 @@ private fun CardTile(
     index: Int = 0,
     animateIn: Boolean = false,
     cardW: androidx.compose.ui.unit.Dp = 60.dp,
+    enabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -152,7 +178,8 @@ private fun CardTile(
         }
     }
 
-    val contentModifier = modifier.offset { IntOffset(offsetX.value.roundToInt(), 0) }
+    val alpha = if (enabled) 1f else 0.35f
+    val contentModifier = modifier.offset { IntOffset(offsetX.value.roundToInt(), 0) }.alpha(alpha)
 
     if (resId != 0) {
         Image(
