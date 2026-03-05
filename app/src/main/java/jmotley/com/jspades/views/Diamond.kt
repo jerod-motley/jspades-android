@@ -27,16 +27,18 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import jmotley.com.jspades.data.Card
-import jmotley.com.jspades.data.GamePhase
 import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.Player
 import jmotley.com.jspades.models.GameViewModel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
+import androidx.compose.ui.draw.scale
 
 /** Card slot size in the diamond. */
 private val SLOT_W = 64.dp
@@ -57,6 +59,7 @@ fun DiamondView(
     viewModel: GameViewModel,
     localPlayerId: String,
     trickWinner: String? = null,
+    frozenPlays: List<jmotley.com.jspades.data.Play> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     val south = state.players.find { it.id == "south" }
@@ -64,20 +67,25 @@ fun DiamondView(
     val east  = state.players.find { it.id == "east"  }
     val west  = state.players.find { it.id == "west"  }
 
-    // Map playerId → card played this trick
-    val playedCards: Map<String, Card> = state.currentTrick.plays
-        .filterNotNull()
-        .associate { it.playerId to it.card }
+    // Map playerId → card played this trick.
+    // During TrickResolve animation, currentTrick is already cleared so we
+    // fall back to frozenPlays (the snapshot captured before collectTrick ran).
+    val playedCards: Map<String, Card> = if (frozenPlays.isNotEmpty()) {
+        frozenPlays.associate { it.playerId to it.card }
+    } else {
+        state.currentTrick.plays
+            .filterNotNull()
+            .associate { it.playerId to it.card }
+    }
 
     // Map playerId → bid (0 = not yet bid)
-    val dealHand = state.phaseHands[GamePhase.Deal]?.lastOrNull()
-    fun bidFor(id: String): Int = dealHand?.perPlayer?.get(id)?.bid ?: 0
-
     val density = LocalDensity.current
     val slotW   = with(density) { (SLOT_W + 16.dp).toPx() }
     val slotH   = with(density) { (SLOT_H + 24.dp).toPx() }
 
     BoxWithConstraints(modifier = modifier.size(280.dp, 320.dp)) {
+
+        val hasTrickWinner = trickWinner != null
 
         // North — 4-player only
         north?.let { player ->
@@ -85,8 +93,8 @@ fun DiamondView(
                 player             = player,
                 card               = playedCards[player.id],
                 label              = player.displayName,
-                bidValue           = bidFor(player.id),
                 isWinner           = trickWinner == player.id,
+                hasTrickWinner     = hasTrickWinner,
                 initialCardOffset  = Offset(0f, -slotH * 1.5f),  // slides in from above
                 modifier           = Modifier.align(Alignment.TopCenter)
             )
@@ -98,9 +106,9 @@ fun DiamondView(
                 player             = player,
                 card               = playedCards[player.id],
                 label              = player.displayName,
-                bidValue           = bidFor(player.id),
                 isWinner           = trickWinner == player.id,
                 isLocal            = player.id == localPlayerId,
+                hasTrickWinner     = hasTrickWinner,
                 initialCardOffset  = Offset(0f, slotH * 1.5f),   // slides in from below
                 modifier           = Modifier.align(Alignment.BottomCenter)
             )
@@ -112,8 +120,8 @@ fun DiamondView(
                 player             = player,
                 card               = playedCards[player.id],
                 label              = player.displayName,
-                bidValue           = bidFor(player.id),
                 isWinner           = trickWinner == player.id,
+                hasTrickWinner     = hasTrickWinner,
                 initialCardOffset  = Offset(-slotW * 1.5f, 0f),  // slides in from left
                 modifier           = Modifier.align(Alignment.CenterStart)
             )
@@ -125,8 +133,8 @@ fun DiamondView(
                 player             = player,
                 card               = playedCards[player.id],
                 label              = player.displayName,
-                bidValue           = bidFor(player.id),
                 isWinner           = trickWinner == player.id,
+                hasTrickWinner     = hasTrickWinner,
                 initialCardOffset  = Offset(slotW * 1.5f, 0f),   // slides in from right
                 modifier           = Modifier.align(Alignment.CenterEnd)
             )
@@ -139,9 +147,9 @@ private fun PlayerSlot(
     player: Player?,
     card: Card?,
     label: String,
-    bidValue: Int = 0,
     isWinner: Boolean = false,
     isLocal: Boolean = false,
+    hasTrickWinner: Boolean = false,
     /**
      * Pixel offset the card starts from before animating into position.
      * (0,0) = no animation; otherwise the card slides from this offset to rest.
@@ -168,29 +176,39 @@ private fun PlayerSlot(
         }
     }
 
-    // ── Bid badge fade-in ────────────────────────────────────────────────────
-    val bidAlpha by animateFloatAsState(
-        targetValue    = if (bidValue > 0) 1f else 0f,
-        animationSpec  = tween(300),
-        label          = "bid-alpha"
-    )
-
-    // ── Winner flash ─────────────────────────────────────────────────────────
-    val winnerAlpha = remember { Animatable(0f) }
-    LaunchedEffect(isWinner) {
-        if (isWinner) {
-            winnerAlpha.animateTo(0.55f, tween(180))
-        } else {
-            winnerAlpha.animateTo(0f, tween(350))
-        }
-    }
-
     // ── Winner border (shows whenever alpha > 0 during transition) ───────────
     val winnerBorderAlpha by animateFloatAsState(
         targetValue   = if (isWinner) 1f else 0f,
         animationSpec = tween(180),
         label         = "winner-border"
     )
+
+    // ── Trick-resolve: winner scale-up, loser dim + timed disappear ──────────
+    val cardScale = remember { Animatable(1f) }
+    val cardAlpha = remember { Animatable(1f) }
+
+    // Winner card grows 20% while it's the winning slot
+    LaunchedEffect(isWinner) {
+        cardScale.animateTo(if (isWinner) 1.2f else 1.0f, tween(200))
+    }
+
+    // Losers dim to 75% opacity then fade out after 1000ms; winner stays full then fades after 1500ms
+    LaunchedEffect(hasTrickWinner) {
+        if (hasTrickWinner) {
+            if (!isWinner && card != null) {
+                // Losers: dim immediately, disappear after 1000ms
+                cardAlpha.animateTo(0.75f, tween(150))
+                delay(850L)
+                cardAlpha.animateTo(0f, tween(200))
+            } else if (isWinner) {
+                // Winner: stay full, disappear after 1500ms
+                delay(1300L)
+                cardAlpha.animateTo(0f, tween(200))
+            }
+        } else {
+            cardAlpha.snapTo(1f)
+        }
+    }
 
     Box(
         modifier = modifier
@@ -210,9 +228,12 @@ private fun PlayerSlot(
         val cardModifier = Modifier
             .size(SLOT_W, SLOT_H)
             .offset { IntOffset(cardOffX.value.roundToInt(), cardOffY.value.roundToInt()) }
+            .scale(cardScale.value)
+            .alpha(cardAlpha.value)
 
-        if (card != null) {
-            val assetName = card.assetFileName().removeSuffix(".png")
+        val displayCard = card
+        if (displayCard != null) {
+            val assetName = displayCard.assetFileName().removeSuffix(".png")
             val resId     = context.resources.getIdentifier(assetName, "drawable", context.packageName)
             if (resId != 0) {
                 Image(
@@ -231,50 +252,15 @@ private fun PlayerSlot(
             )
         }
 
-        // ── Winner gold overlay ───────────────────────────────────────────────
-        if (winnerAlpha.value > 0f) {
-            Box(
-                modifier = Modifier
-                    .size(SLOT_W, SLOT_H)
-                    .background(
-                        color  = Color(0xFFFFD700).copy(alpha = winnerAlpha.value),
-                        shape  = RoundedCornerShape(8.dp)
-                    )
-            )
-        }
-
-        // ── Bid badge ─────────────────────────────────────────────────────────
-        if (bidValue > 0) {
-            val bidLabel = when (bidValue) {
-                0    -> "NIL"
-                else -> "$bidValue"
-            }
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .alpha(bidAlpha)
-                    .background(
-                        color  = Color(0xCC1A3A5C),
-                        shape  = RoundedCornerShape(6.dp)
-                    )
-                    .padding(horizontal = 5.dp, vertical = 2.dp)
-            ) {
-                Text(
-                    text       = bidLabel,
-                    color      = Color(0xFFFFD700),
-                    fontSize   = 10.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-
         // ── Player name label ────────────────────────────────────────────────
         Text(
             text       = label,
             color      = if (isLocal) Color(0xFFFFD700) else Color.White,
-            fontSize   = 11.sp,
+            fontSize   = 22.sp,
             fontWeight = if (isLocal) FontWeight.Bold else FontWeight.Normal,
             textAlign  = TextAlign.Center,
+            softWrap   = false,
+            overflow   = TextOverflow.Visible,
             modifier   = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(top = 4.dp)

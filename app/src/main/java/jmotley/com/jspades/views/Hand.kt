@@ -1,6 +1,8 @@
 package jmotley.com.jspades.views
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,11 +12,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.Job
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.LinearEasing
@@ -67,31 +74,82 @@ fun HandView(
     state: GameState,
     viewModel: GameViewModel,
     localPlayerId: String,
+    onTapMessageChanged: ((Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val cards        = state.localHand(localPlayerId)
+    val liveCards    = state.localHand(localPlayerId)
     val isTrickHuman = state.phase == GamePhase.TrickHuman
 
-    // Compute which card UIDs are valid to play right now
-    val validUids: Set<String> = if (isTrickHuman) {
-        validPlayableUids(cards, state, viewModel, localPlayerId)
-    } else emptySet()
+    // Layout template: the original dealt hand (fixed slots, never shrinks).
+    // Falls back to liveCards before the first deal snapshot is available.
+    val template = state.originalDealHands[localPlayerId]?.takeIf { it.isNotEmpty() } ?: liveCards
 
-    if (cards.isEmpty()) {
-        Box(modifier = modifier, contentAlignment = Alignment.Center) {
-            Text("No cards", color = Color.White.copy(alpha = 0.6f), fontSize = 14.sp)
+    if (template.isEmpty()) {
+        // Preserve the hand area height before the deal snapshot is available.
+        // Estimate card dimensions from a typical top-row of 7 cards.
+        val estimatedTopCount = (state.gameType.cardsPerPlayer + 1) / 2
+        BoxWithConstraints(modifier = modifier.fillMaxWidth().padding(horizontal = HAND_H_PADDING)) {
+            val cardW = (maxWidth - CARD_GAP * (estimatedTopCount - 1)) / estimatedTopCount.coerceAtLeast(1)
+            val cardH = cardW / CARD_ASPECT
+            androidx.compose.foundation.layout.Spacer(
+                modifier = Modifier.size(width = maxWidth, height = cardH * 2 + ROW_GAP)
+            )
         }
         return
     }
 
-    // Split into two rows: ceil(n/2) on top, floor(n/2) on bottom
-    val topCount  = (cards.size + 1) / 2
-    val topRow    = cards.take(topCount)
-    val bottomRow = cards.drop(topCount)
+    // UIDs still in hand — determines which slots render a card vs a placeholder
+    val liveUids = liveCards.map { it.uid }.toSet()
+
+    // Valid-to-play UIDs (only relevant during TrickHuman)
+    val validUids: Set<String> = if (isTrickHuman) {
+        validPlayableUids(liveCards, state, viewModel, localPlayerId)
+    } else emptySet()
+
+    // Row split is based on template size — stays constant throughout the hand
+    val topCount      = (template.size + 1) / 2
+    val topTemplate   = template.take(topCount)
+    val bottomTemplate = template.drop(topCount)
+
+    // ── Double-tap to play ────────────────────────────────────────────────────
+    var pendingCardUid by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    var pendingJob by remember { mutableStateOf<Job?>(null) }
+
+    // Clear pending state when it's no longer the human's turn
+    LaunchedEffect(isTrickHuman) {
+        if (!isTrickHuman) {
+            pendingJob?.cancel()
+            pendingCardUid = null
+            onTapMessageChanged?.invoke(false)
+        }
+    }
+
+    val handleTap = { card: Card ->
+        if (isTrickHuman && card.uid in validUids) {
+            if (pendingCardUid == card.uid) {
+                // Second tap on same card — play it
+                pendingJob?.cancel()
+                pendingCardUid = null
+                onTapMessageChanged?.invoke(false)
+                viewModel.submitHumanPlay(card, localPlayerId)
+            } else {
+                // First tap (or tap on a different card) — arm the pending state
+                pendingJob?.cancel()
+                pendingCardUid = card.uid
+                onTapMessageChanged?.invoke(true)
+                pendingJob = scope.launch {
+                    delay(1500L)
+                    pendingCardUid = null
+                    onTapMessageChanged?.invoke(false)
+                }
+            }
+        }
+    }
 
     BoxWithConstraints(modifier = modifier.fillMaxWidth().padding(horizontal = HAND_H_PADDING)) {
-        val totalGapWidth = CARD_GAP * (topRow.size - 1)
-        val cardW = (maxWidth - totalGapWidth) / topRow.size
+        val totalGapWidth = CARD_GAP * (topTemplate.size - 1)
+        val cardW = (maxWidth - totalGapWidth) / topTemplate.size
         val cardH = cardW / CARD_ASPECT
 
         val animateIn = state.phase == GamePhase.DealHuman
@@ -101,14 +159,18 @@ fun HandView(
             verticalArrangement = Arrangement.spacedBy(ROW_GAP)
         ) {
             CardRow(
-                cards = topRow, cardW = cardW, cardH = cardH, startIndex = 0,
+                templateCards = topTemplate, liveUids = liveUids,
+                cardW = cardW, cardH = cardH, startIndex = 0,
                 animateIn = animateIn, isTrickHuman = isTrickHuman, validUids = validUids,
-                onTap = { card -> if (isTrickHuman && card.uid in validUids) viewModel.submitHumanPlay(card, localPlayerId) }
+                pendingCardUid = pendingCardUid,
+                onTap = handleTap
             )
             CardRow(
-                cards = bottomRow, cardW = cardW, cardH = cardH, startIndex = topRow.size,
+                templateCards = bottomTemplate, liveUids = liveUids,
+                cardW = cardW, cardH = cardH, startIndex = topTemplate.size,
                 animateIn = animateIn, isTrickHuman = isTrickHuman, validUids = validUids,
-                onTap = { card -> if (isTrickHuman && card.uid in validUids) viewModel.submitHumanPlay(card, localPlayerId) }
+                pendingCardUid = pendingCardUid,
+                onTap = handleTap
             )
         }
     }
@@ -124,29 +186,36 @@ private fun validPlayableUids(
 
 @Composable
 private fun CardRow(
-    cards: List<Card>,
+    templateCards: List<Card>,
+    liveUids: Set<String>,
     cardW: androidx.compose.ui.unit.Dp,
     cardH: androidx.compose.ui.unit.Dp,
     startIndex: Int = 0,
     animateIn: Boolean = false,
     isTrickHuman: Boolean = false,
     validUids: Set<String> = emptySet(),
+    pendingCardUid: String? = null,
     onTap: (Card) -> Unit
 ) {
     Row(horizontalArrangement = Arrangement.spacedBy(CARD_GAP)) {
-        cards.forEachIndexed { index, card ->
+        templateCards.forEachIndexed { index, card ->
             val globalIndex = startIndex + index
-            val enabled = !isTrickHuman || card.uid in validUids
-            CardTile(
-                card = card,
-                index = globalIndex,
-                animateIn = animateIn,
-                cardW = cardW,
-                enabled = enabled,
-                modifier = Modifier
-                    .size(width = cardW, height = cardH)
-                    .clickable { onTap(card) }
-            )
+            val slotModifier = Modifier.size(width = cardW, height = cardH)
+            if (card.uid in liveUids) {
+                val enabled = !isTrickHuman || card.uid in validUids
+                CardTile(
+                    card = card,
+                    index = globalIndex,
+                    animateIn = animateIn,
+                    cardW = cardW,
+                    enabled = enabled,
+                    isPending = card.uid == pendingCardUid,
+                    modifier = slotModifier.clickable { onTap(card) }
+                )
+            } else {
+                // Card has been played — keep the slot as an invisible placeholder
+                Box(modifier = slotModifier)
+            }
         }
     }
 }
@@ -158,6 +227,7 @@ private fun CardTile(
     animateIn: Boolean = false,
     cardW: androidx.compose.ui.unit.Dp = 60.dp,
     enabled: Boolean = true,
+    isPending: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -178,8 +248,14 @@ private fun CardTile(
         }
     }
 
-    val alpha = if (enabled) 1f else 0.35f
-    val contentModifier = modifier.offset { IntOffset(offsetX.value.roundToInt(), 0) }.alpha(alpha)
+    val alpha = 1f  // cards are always fully visible (renege jokes later)
+    val contentModifier = modifier
+        .offset { IntOffset(offsetX.value.roundToInt(), 0) }
+        .alpha(alpha)
+        .then(
+            if (isPending) Modifier.border(2.dp, Color(0xFFFFD700), RoundedCornerShape(4.dp))
+            else Modifier
+        )
 
     if (resId != 0) {
         Image(

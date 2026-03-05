@@ -137,23 +137,24 @@ private fun TeamPanel(
             Text(
                 text       = label,
                 color      = if (isHuman) LABEL_COLOR else SCORE_COLOR,
-                fontSize   = 12.sp,
+                fontSize   = 18.sp,
                 fontWeight = FontWeight.Bold
             )
             Text(
                 text       = "$score",
                 color      = SCORE_COLOR,
-                fontSize   = 13.sp,
+                fontSize   = 20.sp,
                 fontWeight = FontWeight.Bold
             )
         }
-        // Bid · won · bags
+        // Books · bid · bags
+        val booksText = "Books $tricksWon"
         val bidText  = bid?.let { "Bid $it" } ?: "Bid —"
         val bagsText = if (bags > 0) "  Bags $bags" else ""
         Text(
-            text     = "$bidText  ↑$tricksWon$bagsText",
+            text     = "$booksText  $bidText$bagsText",
             color    = DETAIL_COLOR,
-            fontSize = 11.sp
+            fontSize = 16.sp
         )
     }
 }
@@ -176,20 +177,20 @@ private fun SoloPanel(
         Text(
             text       = label,
             color      = if (isHuman) LABEL_COLOR else SCORE_COLOR,
-            fontSize   = 10.sp,
+            fontSize   = 15.sp,
             fontWeight = if (isHuman) FontWeight.Bold else FontWeight.Normal
         )
         Text(
             text       = "$score",
             color      = SCORE_COLOR,
-            fontSize   = 12.sp,
+            fontSize   = 18.sp,
             fontWeight = FontWeight.Bold
         )
         val bidText = bid?.let { "$it" } ?: "—"
         Text(
-            text  = "B:$bidText ↑$tricksWon",
+            text  = "Books $tricksWon  B:$bidText",
             color = DETAIL_COLOR,
-            fontSize = 10.sp
+            fontSize = 15.sp
         )
     }
 }

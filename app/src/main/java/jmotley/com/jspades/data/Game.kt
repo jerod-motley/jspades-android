@@ -240,6 +240,12 @@ data class GameState(
      */
     val lastHandScore: Score = Score(),
     /**
+     * Snapshot of each player's hand at deal time. Never modified after dealing.
+     * Used by HandView as a fixed layout template so the hand position stays stable
+     * even as cards are removed during play.
+     */
+    val originalDealHands: Map<String, List<Card>> = emptyMap(),
+    /**
      * Replay events accumulated during the current hand.
      * Cleared by [GameViewModel.resetForNextHand] and [GameViewModel.finalizeHandReplay].
      */

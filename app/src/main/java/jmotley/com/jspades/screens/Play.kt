@@ -1,6 +1,7 @@
 package jmotley.com.jspades.screens
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,6 +14,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -23,6 +25,11 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.dp
@@ -75,8 +82,11 @@ fun PlayScreen(
 
     // Drives the gold winner flash in DiamondView — set from TrickWon events below.
     var trickWinner by remember { mutableStateOf<String?>(null) }
+    // Snapshot of trick plays frozen for the resolve animation (cards stay visible after collectTrick clears currentTrick)
+    var frozenPlays by remember { mutableStateOf<List<jmotley.com.jspades.data.Play>>(emptyList()) }
     var showQuitDialog by remember { mutableStateOf(false) }
     var showReplay by remember { mutableStateOf(false) }
+    var showTapMessage by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize()) {
 
@@ -104,10 +114,13 @@ fun PlayScreen(
                         delay(550)
                     }
                     is AnimationEvent.TrickWon -> {
-                        // Flash the winner's slot gold, then clear before re-entering engine
+                        // Freeze played cards so DiamondView can show them during animation
+                        // (collectTrick already cleared currentTrick before this event)
+                        frozenPlays = event.plays
                         trickWinner = event.winnerId
-                        delay(900)
+                        delay(1750)
                         trickWinner = null
+                        frozenPlays = emptyList()
                     }
                 }
                 viewModel.phaseManager.execute()
@@ -186,7 +199,8 @@ fun PlayScreen(
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
-                    Column(modifier = Modifier.align(Alignment.BottomCenter)) {
+                    Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
+                        Spacer(Modifier.height(20.dp))
                         GameInfoView(
                             state = state, viewModel = viewModel,
                             localPlayerId = localPlayerId
@@ -195,6 +209,7 @@ fun PlayScreen(
                             state = state, viewModel = viewModel,
                             localPlayerId = localPlayerId
                         )
+                        Spacer(Modifier.height(62.dp))
                     }
                 }
             }
@@ -205,9 +220,10 @@ fun PlayScreen(
                 DiamondView(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
                     trickWinner = trickWinner,
-                    modifier = Modifier.align(Alignment.Center)
+                    modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp)
                 )
-                Column(modifier = Modifier.align(Alignment.BottomCenter)) {
+                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
+                    Spacer(Modifier.height(20.dp))
                     GameInfoView(
                         state = state, viewModel = viewModel,
                         localPlayerId = localPlayerId
@@ -216,6 +232,7 @@ fun PlayScreen(
                         state = state, viewModel = viewModel,
                         localPlayerId = localPlayerId
                     )
+                    Spacer(Modifier.height(62.dp))
                 }
             }
 
@@ -224,13 +241,14 @@ fun PlayScreen(
                 DiamondView(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
                     trickWinner = trickWinner,
-                    modifier = Modifier.align(Alignment.Center)
+                    modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp)
                 )
                 BidView(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
-                    modifier = Modifier.align(Alignment.Center)
+                    modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 52.dp)
                 )
-                Column(modifier = Modifier.align(Alignment.BottomCenter)) {
+                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
+                    Spacer(Modifier.height(20.dp))
                     GameInfoView(
                         state = state, viewModel = viewModel,
                         localPlayerId = localPlayerId
@@ -239,6 +257,7 @@ fun PlayScreen(
                         state = state, viewModel = viewModel,
                         localPlayerId = localPlayerId
                     )
+                    Spacer(Modifier.height(62.dp))
                 }
             }
 
@@ -252,7 +271,7 @@ fun PlayScreen(
                 GameInfoView(
                     state = state, viewModel = viewModel,
                     localPlayerId = localPlayerId,
-                    modifier = Modifier.align(Alignment.BottomCenter)
+                    modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 62.dp)
                 )
             }
 
@@ -261,7 +280,8 @@ fun PlayScreen(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
                     modifier = Modifier.align(Alignment.Center)
                 )
-                Column(modifier = Modifier.align(Alignment.BottomCenter)) {
+                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
+                    Spacer(Modifier.height(20.dp))
                     GameInfoView(
                         state = state, viewModel = viewModel,
                         localPlayerId = localPlayerId
@@ -270,41 +290,45 @@ fun PlayScreen(
                         state = state, viewModel = viewModel,
                         localPlayerId = localPlayerId
                     )
+                    Spacer(Modifier.height(62.dp))
                 }
             }
 
             // ── Trick / Play ──────────────────────────────────────────────────
-            // CPU playing or trick resolving — no hand visible
+            // All trick phases use the same layout so GameInfoView and HandView
+            // never move. Cards are non-interactive during Trick and TrickResolve.
             GamePhase.Trick,
-            GamePhase.TrickResolve -> {
-                DiamondView(
-                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
-                    trickWinner = trickWinner,
-                    modifier = Modifier.align(Alignment.Center)
-                )
-                GameInfoView(
-                    state = state, viewModel = viewModel,
-                    localPlayerId = localPlayerId,
-                    modifier = Modifier.align(Alignment.BottomCenter)
-                )
-            }
-
-            // Human's turn to play a card
+            GamePhase.TrickResolve,
             GamePhase.TrickHuman -> {
                 DiamondView(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
                     trickWinner = trickWinner,
-                    modifier = Modifier.align(Alignment.Center)
+                    frozenPlays = frozenPlays,
+                    modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp)
                 )
-                Column(modifier = Modifier.align(Alignment.BottomCenter)) {
+                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
+                    Spacer(Modifier.height(20.dp))
+                    if (showTapMessage) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xCC1A3A5C), RoundedCornerShape(0.dp))
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("Tap again to play", color = Color.White, fontSize = 14.sp)
+                        }
+                    }
                     GameInfoView(
                         state = state, viewModel = viewModel,
                         localPlayerId = localPlayerId
                     )
                     HandView(
                         state = state, viewModel = viewModel,
-                        localPlayerId = localPlayerId
+                        localPlayerId = localPlayerId,
+                        onTapMessageChanged = { showTapMessage = it }
                     )
+                    Spacer(Modifier.height(62.dp))
                 }
             }
 

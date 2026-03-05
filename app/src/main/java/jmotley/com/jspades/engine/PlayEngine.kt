@@ -28,7 +28,7 @@ object PlayEngine {
     /** Select the best card for [playerId] to play this trick. */
     fun selectCard(playerId: String, state: GameState): Card {
         val hand   = getHand(state, playerId)
-        if (hand.isEmpty()) return Card(Suit.SPADES, Rank.TWO) // shouldn't happen
+        require(hand.isNotEmpty()) { "selectCard called for $playerId but hand is empty" }
         val player  = state.players.first { it.id == playerId }
         val leading = state.currentTrick.plays.all { it == null }
         return when (pickMode(player, state)) {

@@ -74,7 +74,8 @@ class GameViewModel : ViewModel() {
 	fun applyDeal(hand: Hand) {
 		val phaseHands = _state.value.phaseHands.toMutableMap()
 		phaseHands[GamePhase.Deal] = listOf(hand)
-		_state.value = _state.value.copy(phaseHands = phaseHands)
+		val originalDealHands = hand.perPlayer.mapValues { (_, phs) -> phs.hand }
+		_state.value = _state.value.copy(phaseHands = phaseHands, originalDealHands = originalDealHands)
 		recordReplayEvent(ReplayEvent.Deal(
 			hand.perPlayer.mapValues { (_, phs) -> phs.hand.map { c -> c.uid } }
 		))
@@ -264,14 +265,15 @@ class GameViewModel : ViewModel() {
 			p.copy(runtimeFlags = RuntimeFlags(seatIndex = p.runtimeFlags.seatIndex))
 		}
 		_state.value = current.copy(
-			players       = players,
-			leaderIndex   = (current.leaderIndex + 1) % n,
-			currentTrick  = Trick(plays = List(n) { null }),
-			discard       = emptyList(),
-			spadesBroken  = false,
-			kittyWinnerId = null,
-			phaseHands    = emptyMap(),
-			replayEvents  = emptyList()
+			players           = players,
+			leaderIndex       = (current.leaderIndex + 1) % n,
+			currentTrick      = Trick(plays = List(n) { null }),
+			discard           = emptyList(),
+			spadesBroken      = false,
+			kittyWinnerId     = null,
+			phaseHands        = emptyMap(),
+			replayEvents      = emptyList(),
+			originalDealHands = emptyMap()
 		)
 	}
 

@@ -378,6 +378,15 @@ class PhaseManager(
     private suspend fun handleTrick() {
         val s          = viewModel.state.value
         val n          = s.players.size
+
+        // Guard: if the trick is already complete (e.g. human played last),
+        // go straight to TrickResolve instead of selecting another card.
+        if (s.currentTrick.plays.count { it != null } == n) {
+            viewModel.advancePhase(GamePhase.TrickResolve)
+            execute()
+            return
+        }
+
         val nextPlayer = nextPlayerInTrick(s.currentTrick.plays, s.players.map { it.id }, s.leaderIndex)
 
         if (nextPlayer == "south") {
