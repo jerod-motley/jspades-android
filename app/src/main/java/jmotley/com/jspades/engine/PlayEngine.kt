@@ -272,10 +272,15 @@ object PlayEngine {
 
         if (!hasLead) {
             // Void in lead suit
+            val rightOpp = rightOpponent(player, state)
             return when {
+                // Partner winning with King → throw off (King is already the top play)
                 isTeammateWin && winnerCard?.rank == Rank.KING && !isTrump(winnerCard) -> throwOff(hand, state)
+                // Partner winning with highest remaining in suit AND right opponent can't cut → throw off
+                // (ObjC: 3rd-player only — skip if right opp is still cutting that suit)
                 isTeammateWin && winnerCard != null && !isTrump(winnerCard)
-                        && winnerCard.rank == highestRemainingNonTrump(winnerCard.suit, state) -> throwOff(hand, state)
+                        && winnerCard.rank == highestRemainingNonTrump(winnerCard.suit, state)
+                        && (rightOpp == null || !isCutting(rightOpp, winnerCard.suit)) -> throwOff(hand, state)
                 else -> cut(player, hand, state)
             }
         }
@@ -294,14 +299,27 @@ object PlayEngine {
 
         // Non-trump lead, has cards in suit
         if (isLast && isTeammateWin) return throwOff(hand, state)
+        val suitCards  = hand.filter { followsSuit(it, lead) }
+        val winnerRank = winnerCard?.rank?.ordinal ?: -1
+        val beating    = suitCards.filter { it.rank.ordinal > winnerRank }
         if (isLast) {
-            return hand.filter { followsSuit(it, lead) && it.rank.ordinal > (winnerCard?.rank?.ordinal ?: -1) }
-                .minByOrNull { it.rank.ordinal }
-                ?: hand.filter { followsSuit(it, lead) }.minBy { it.rank.ordinal }
+            return beating.minByOrNull { it.rank.ordinal } ?: suitCards.minBy { it.rank.ordinal }
         }
-        return hand.filter { followsSuit(it, lead) && it.rank.ordinal > (winnerCard?.rank?.ordinal ?: -1) }
-            .minByOrNull { it.rank.ordinal }
-            ?: hand.filter { followsSuit(it, lead) }.minBy { it.rank.ordinal }
+        // ObjC TrickPlayerWinner.followLead cascade (non-last, non-trump lead):
+        // 1. Play the definite suit winner (highest remaining) if it beats current winner
+        highestRemainingNonTrump(lead.suit, state)?.let { top ->
+            beating.firstOrNull { it.rank == top }?.let { return it }
+        }
+        // 2. Beat with rank < QUEEN — conserve Queen
+        beating.firstOrNull { it.rank.ordinal < Rank.QUEEN.ordinal }?.let { return it }
+        // 3. Beat with rank < KING — conserve King
+        beating.firstOrNull { it.rank.ordinal < Rank.KING.ordinal }?.let { return it }
+        // 4. "Can't let a low card walk" — if winning card is below JACK, beat with anything
+        if (winnerCard != null && winnerCard.rank.ordinal < Rank.JACK.ordinal) {
+            beating.minByOrNull { it.rank.ordinal }?.let { return it }
+        }
+        // 5. Follow suit with lowest
+        return suitCards.minBy { it.rank.ordinal }
     }
 
     private fun winnerFollowSolo(player: Player, hand: List<Card>, state: GameState): Card {
@@ -332,11 +350,22 @@ object PlayEngine {
                 ?: hand.filter { isTrump(it) }.minBy { it.rank.ordinal }
         }
 
-        // Non-trump lead, non-trump winner: lowest card that beats it
+        // Non-trump lead, non-trump winner: ObjC TrickPlayerWinnerSolo.followLead cascade
         if (winnerCard != null && !isTrump(winnerCard)) {
-            return hand.filter { followsSuit(it, lead) && it.rank.ordinal > winnerCard.rank.ordinal }
-                .minByOrNull { it.rank.ordinal }
-                ?: hand.filter { followsSuit(it, lead) }.minBy { it.rank.ordinal }
+            val suitCards  = hand.filter { followsSuit(it, lead) }
+            val winnerRank = winnerCard.rank.ordinal
+            val beating    = suitCards.filter { it.rank.ordinal > winnerRank }
+            // 1. Definite suit winner (highest remaining) that beats current winner
+            highestRemainingNonTrump(lead.suit, state)?.let { top ->
+                beating.firstOrNull { it.rank == top }?.let { return it }
+            }
+            // 2. Beat with rank < QUEEN
+            beating.firstOrNull { it.rank.ordinal < Rank.QUEEN.ordinal }?.let { return it }
+            // 3. Beat with rank < KING
+            beating.firstOrNull { it.rank.ordinal < Rank.KING.ordinal }?.let { return it }
+            // 4. "Can't let a low card walk" (note: solo ObjC has this commented out, so omit)
+            // 5. Follow suit with lowest
+            return suitCards.minBy { it.rank.ordinal }
         }
 
         return hand.filter { followsSuit(it, lead) }.minBy { it.rank.ordinal }
@@ -368,6 +397,55 @@ object PlayEngine {
         return hand.filter { followsSuit(it, lead) && it.rank.ordinal < (winnerCard?.rank?.ordinal ?: Int.MAX_VALUE) }
             .maxByOrNull { it.rank.ordinal }
             ?: hand.filter { followsSuit(it, lead) }.minBy { it.rank.ordinal }
+    }
+
+    // ── Kitty discard ──────────────────────────────────────────────────────
+
+    /**
+     * CPU kitty exchange: select [discardCount] cards to throw away from
+     * the combined [hand] (12 dealt) + [kittyCards] (6 picked up) = 18 cards.
+     *
+     * Strategy (mirrors ObjC GameFourKitty CPU logic):
+     * 1. Void the shortest non-spade suit that has no Ace+King/Ace+Queen pair.
+     * 2. Fill remaining discards with the lowest-rated cards (never 2♠).
+     */
+    fun computeKittyDiscard(hand: List<Card>, kittyCards: List<Card>, discardCount: Int): List<Card> {
+        val fullHand  = (hand + kittyCards).toMutableList()
+        val toDiscard = mutableListOf<Card>()
+        val twoSpades = fullHand.firstOrNull { it.suit == Suit.SPADES && it.rank == Rank.TWO }
+
+        fun hasPowerPair(cards: List<Card>): Boolean {
+            val hasAce = cards.any { it.rank == Rank.ACE }
+            return hasAce && (cards.any { it.rank == Rank.KING } || cards.any { it.rank == Rank.QUEEN })
+        }
+
+        // 1. Void the smallest non-spade suit with no power pair (entire suit fits in discard budget)
+        fullHand.filter { !isTrump(it) }
+            .groupBy { it.suit }
+            .filterValues { !hasPowerPair(it) }
+            .entries.sortedBy { it.value.size }
+            .forEach { (_, suitCards) ->
+                if (toDiscard.size < discardCount) {
+                    val eligible = suitCards.filter { it != twoSpades }
+                    if (toDiscard.size + eligible.size <= discardCount) {
+                        toDiscard.addAll(eligible)
+                        fullHand.removeAll(eligible.toSet())
+                        return@forEach // void only one suit
+                    }
+                }
+            }
+
+        // 2. Fill remaining discard slots with lowest-rated cards (never 2♠)
+        while (toDiscard.size < discardCount) {
+            val candidate = fullHand
+                .filter { it != twoSpades }
+                .minByOrNull { rateCard(it, fullHand) }
+                ?: break
+            toDiscard.add(candidate)
+            fullHand.remove(candidate)
+        }
+
+        return toDiscard
     }
 
     // ── Common helpers ─────────────────────────────────────────────────────

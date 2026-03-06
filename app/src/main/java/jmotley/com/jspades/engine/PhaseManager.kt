@@ -347,20 +347,31 @@ class PhaseManager(
             ?: emptyList()
 
     /**
-     * KittyReveal: show the kitty cards briefly, then hand to the winning bidder.
-     * TODO: determine winning bidder; for now advances to Trick.
+     * KittyReveal: show the kitty cards briefly, then route to the correct exchange phase.
+     * Human kitty winner → KittyHuman (UI takes over).
+     * CPU kitty winner  → Kitty (engine handles the discard automatically).
      */
     private suspend fun handleKittyReveal() {
-        delay(1500) // let the UI show the kitty reveal animation
-        viewModel.advancePhase(GamePhase.KittyHuman)
+        delay(1500)
+        val winnerId = viewModel.state.value.kittyWinnerId
+        val next = if (winnerId == "south") GamePhase.KittyHuman else GamePhase.Kitty
+        viewModel.advancePhase(next)
         execute()
     }
 
     /**
-     * Kitty (CPU kitty exchange): CPU player swaps cards with the kitty.
-     * TODO: implement CPU swap logic.
+     * Kitty (CPU kitty exchange): merge kitty cards into the winner's hand,
+     * compute the optimal discard via PlayEngine, apply it, then advance to Trick.
      */
     private suspend fun handleKitty() {
+        val s        = viewModel.state.value
+        val winnerId = s.kittyWinnerId
+        if (winnerId != null) {
+            val kittyCards = s.kitty?.perPlayer?.values?.flatMap { it.hand }.orEmpty()
+            val playerHand = getPlayerHand(s, winnerId)
+            val discards   = PlayEngine.computeKittyDiscard(playerHand, kittyCards, kittyCards.size)
+            viewModel.applyKittyExchange(winnerId, discards)
+        }
         delay(800)
         viewModel.advancePhase(GamePhase.Trick)
         execute()

@@ -105,9 +105,19 @@ object BidEngine {
         val base = computeBaseBid(hand)
         return when (state.gameType) {
 
-            // House Rules: individual component only — PhaseManager sums into team bid.
-            GameType.HOUSE_RULES ->
-                BidResult(base.coerceIn(0, 13))
+            // House Rules: blind bid (minimumBid=5) when team is 100+ points behind.
+            GameType.HOUSE_RULES -> {
+                val currentHand   = state.phaseHands[GamePhase.Deal]?.lastOrNull()
+                val teammateBlind = currentHand?.perPlayer?.entries?.any { (id, phs) ->
+                    val p = state.players.find { it.id == id }
+                    p?.team == player.team && id != player.id && phs.isBlind
+                } ?: false
+                val deficit = teamScore(state, 1 - player.team) - teamScore(state, player.team)
+                if (!teammateBlind && deficit >= 100)
+                    BidResult(bid = state.gameType.minimumBid, isBlind = true)
+                else
+                    BidResult(base.coerceIn(0, 13))
+            }
 
             // Classic: blind nil when base < 3, teammate hasn't gone blind,
             // and the team is behind by 100–200 points.
@@ -128,17 +138,42 @@ object BidEngine {
             GameType.TEAM_KITTY ->
                 BidResult((base + if (isKittyWinner) 1 else 0).coerceIn(0, 13))
 
-            // Solo (4-man, 2-man): straightforward clamp.
-            GameType.SOLO_FOUR_MAN,
-            GameType.SOLO_TWO_MAN ->
-                BidResult(base.coerceIn(0, 13))
+            // Solo (4-man): blind bid of 5 when player is 100+ points behind any opponent.
+            GameType.SOLO_FOUR_MAN -> {
+                val myScore  = playerScore(state, player.id)
+                val topScore = state.players.filter { it.id != player.id }
+                    .maxOfOrNull { p -> playerScore(state, p.id) } ?: 0
+                if (topScore - myScore >= 100)
+                    BidResult(bid = 5, isBlind = true)
+                else
+                    BidResult(base.coerceIn(0, 13))
+            }
 
-            // Three Man: non-trump queens and jacks are walking cards (fewer opponents = higher chance).
+            // Three Man: non-trump queens and jacks are walking cards; blind bid of 7 when 100+ behind.
+            // Max bid is 18 (cardsPerPlayer in 3-player game).
             GameType.SOLO_THREE_MAN -> {
-                val walking = hand.count {
-                    (it.rank == Rank.QUEEN || it.rank == Rank.JACK) && it.suit != Suit.SPADES
+                val myScore  = playerScore(state, player.id)
+                val topScore = state.players.filter { it.id != player.id }
+                    .maxOfOrNull { p -> playerScore(state, p.id) } ?: 0
+                if (topScore - myScore >= 100) {
+                    BidResult(bid = 7, isBlind = true)
+                } else {
+                    val walking = hand.count {
+                        (it.rank == Rank.QUEEN || it.rank == Rank.JACK) && it.suit != Suit.SPADES
+                    }
+                    BidResult((base + walking / 2).coerceIn(0, 18))
                 }
-                BidResult((base + walking / 2).coerceIn(0, 13))
+            }
+
+            // Two Man: blind bid of 7 when player is 100+ points behind opponent.
+            GameType.SOLO_TWO_MAN -> {
+                val myScore  = playerScore(state, player.id)
+                val topScore = state.players.filter { it.id != player.id }
+                    .maxOfOrNull { p -> playerScore(state, p.id) } ?: 0
+                if (topScore - myScore >= 100)
+                    BidResult(bid = 7, isBlind = true)
+                else
+                    BidResult(base.coerceIn(0, 13))
             }
         }
     }
@@ -149,4 +184,7 @@ object BidEngine {
         state.score.points.entries
             .filter { (id, _) -> state.players.find { it.id == id }?.team == team }
             .sumOf { it.value }
+
+    private fun playerScore(state: GameState, playerId: String): Int =
+        state.score.points[playerId] ?: 0
 }

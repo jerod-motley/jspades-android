@@ -144,6 +144,28 @@ class GameViewModel : ViewModel() {
 		_state.value = _state.value.copy(kittyWinnerId = playerId)
 	}
 
+	/**
+	 * CPU kitty exchange: merge the kitty cards into [winnerId]'s hand, remove [discards],
+	 * sort the resulting hand, and clear the kitty from state.
+	 */
+	fun applyKittyExchange(winnerId: String, discards: List<Card>) {
+		val current    = _state.value
+		val kittyCards = current.kitty?.perPlayer?.values?.flatMap { it.hand } ?: emptyList()
+		val phaseHands = current.phaseHands.toMutableMap()
+		val dealHands  = phaseHands[GamePhase.Deal]?.toMutableList() ?: return
+		val hand       = dealHands.lastOrNull() ?: return
+		val perPlayer  = hand.perPlayer.toMutableMap()
+		val phs        = perPlayer[winnerId] ?: return
+		val discardUids = discards.map { it.uid }.toSet()
+		val newHand = (phs.hand + kittyCards)
+			.filter { it.uid !in discardUids }
+			.sortedBy { it.rank.ordinal }
+		perPlayer[winnerId] = phs.copy(hand = newHand)
+		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
+		phaseHands[GamePhase.Deal] = dealHands
+		_state.value = current.copy(phaseHands = phaseHands, kitty = null)
+	}
+
 	/** Play a card into the current trick slot. */
 	fun playCard(playerId: String, card: Card) {
 		val current = _state.value
