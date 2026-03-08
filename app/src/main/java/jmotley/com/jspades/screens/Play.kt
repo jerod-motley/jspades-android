@@ -2,6 +2,7 @@ package jmotley.com.jspades.screens
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.lifecycle.viewmodel.compose.viewModel
 import jmotley.com.jspades.R
@@ -34,7 +36,9 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import jmotley.com.jspades.data.AchievementsRepo
 import jmotley.com.jspades.data.GameType
+import jmotley.com.jspades.engine.ChallengeResult
 import jmotley.com.jspades.models.GameViewModel
 import jmotley.com.jspades.data.DealMode
 import jmotley.com.jspades.views.BidView
@@ -47,7 +51,10 @@ import jmotley.com.jspades.views.GameInfoView
 import jmotley.com.jspades.views.HandView
 import jmotley.com.jspades.views.KittyView
 import jmotley.com.jspades.views.LobbyView
+import android.net.Uri
+import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Primary game screen. Composites phase-appropriate views over the table background.
@@ -87,6 +94,17 @@ fun PlayScreen(
     var showQuitDialog by remember { mutableStateOf(false) }
     var showReplay by remember { mutableStateOf(false) }
     var showTapMessage by remember { mutableStateOf(false) }
+    var showChallengeResult by remember { mutableStateOf<ChallengeResult?>(null) }
+    val context = LocalContext.current
+    val currentVideoAsset by viewModel.currentVideoAsset.collectAsState()
+
+    // ── Video event collector ─────────────────────────────────────────────────
+    // Merges all three video flows into a single currentVideoAsset state.
+    LaunchedEffect("video") {
+        launch { viewModel.frustratedVideo.collect { asset -> viewModel.setCurrentVideoAsset(asset) } }
+        launch { viewModel.cardheadEvent.collect  { asset -> viewModel.setCurrentVideoAsset(asset) } }
+        viewModel.bostonVideo.collect { asset -> viewModel.setCurrentVideoAsset(asset) }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
 
@@ -97,6 +115,18 @@ fun PlayScreen(
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop
         )
+
+        // ── Challenge result collector ────────────────────────────────────────────
+        // Collects ChallengeResult events emitted by PhaseManager, finalizes in storage,
+        // then shows a pass/fail banner overlay for 3 seconds.
+        LaunchedEffect(Unit) {
+            viewModel.challengeResults.collect { cr ->
+                AchievementsRepo.finalizeChallenge(context, cr.sk, cr.success)
+                showChallengeResult = cr
+                delay(3000)
+                showChallengeResult = null
+            }
+        }
 
         // ── Animation event collector ─────────────────────────────────────────────
         // Collects one-shot events from PhaseManager (fire-and-forget pattern).
@@ -121,6 +151,16 @@ fun PlayScreen(
                         delay(1750)
                         trickWinner = null
                         frozenPlays = emptyList()
+                    }
+                    is AnimationEvent.DealComplete -> {
+                        // Wait for the last card's slide-in: (cardCount-1)×50ms stagger + 320ms.
+                        // Uses the same constants as CardTile so we track the real animation end.
+                        delay(((event.cardCount - 1) * 50 + 320).toLong())
+                        viewModel.advancePhase(GamePhase.Bid)
+                    }
+                    is AnimationEvent.KittyRevealed -> {
+                        // Show kitty cards to the human briefly before CPU takes over
+                        delay(1500)
                     }
                 }
                 viewModel.phaseManager.execute()
@@ -357,6 +397,30 @@ fun PlayScreen(
             }
         }
 
+        // ── Challenge result overlay ──────────────────────────────────────────
+        val cr = showChallengeResult
+        if (cr != null) {
+            val bannerColor = if (cr.success) Color(0xCC1B5E20) else Color(0xCCB71C1C)
+            val bannerText  = if (cr.success) "Challenge Complete!" else "Challenge Failed"
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(bannerColor)
+                    .padding(horizontal = 16.dp, vertical = 20.dp)
+                    .align(Alignment.Center),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(bannerText, color = Color.White, fontSize = 22.sp,
+                        style = MaterialTheme.typography.titleLarge)
+                    if (cr.reason != null) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(cr.reason, color = Color.White, fontSize = 14.sp)
+                    }
+                }
+            }
+        }
+
         // ── Replay overlay (shown over EndHand) ───────────────────────────────
         val replay = state.lastHandReplay
         if (showReplay && replay != null) {
@@ -365,5 +429,45 @@ fun PlayScreen(
                 onDismiss = { showReplay = false }
             )
         }
+
+        // ── Video overlay ─────────────────────────────────────────────────────
+        val videoAsset = currentVideoAsset
+        if (videoAsset != null) {
+            VideoPlayerOverlay(
+                assetName  = videoAsset,
+                modifier   = Modifier.fillMaxSize(),
+                onComplete = { viewModel.setCurrentVideoAsset(null) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun VideoPlayerOverlay(
+    assetName: String,
+    modifier: Modifier = Modifier,
+    onComplete: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            .background(Color.Black)
+            .clickable { onComplete() }
+    ) {
+        AndroidView(
+            factory = { ctx ->
+                android.widget.VideoView(ctx).apply {
+                    val resId = ctx.resources.getIdentifier(assetName, "raw", ctx.packageName)
+                    if (resId != 0) {
+                        setVideoURI(Uri.parse("android.resource://${ctx.packageName}/$resId"))
+                    }
+                    setOnPreparedListener { it.start() }
+                    setOnCompletionListener { onComplete() }
+                    setOnErrorListener { _, _, _ -> onComplete(); true }
+                }
+            },
+            modifier = Modifier
+                .align(Alignment.Center)
+                .fillMaxSize()
+        )
     }
 }

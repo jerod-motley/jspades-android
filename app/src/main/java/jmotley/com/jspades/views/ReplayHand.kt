@@ -352,6 +352,9 @@ private fun computeStateAt(
                 trickPlays = mutableListOf()
                 description = "${event.winnerId} won trick $trickCount"
             }
+            is ReplayEvent.VideoTrigger -> {
+                // video triggers are playback-only metadata; no state change needed during replay reconstruction
+            }
         }
     }
 

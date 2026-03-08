@@ -21,4 +21,17 @@ sealed class AnimationEvent {
      * so the UI can animate cards flying to the winner's seat.
      */
     data class TrickWon(val winnerId: String, val plays: List<Play>) : AnimationEvent()
+
+    /**
+     * Deal animation has started in HandView. UI waits for the last card's
+     * slide-in to finish, then advances to Bid and calls execute().
+     * Duration = (cardCount - 1) × 50ms stagger + 320ms — same constants as CardTile.
+     */
+    data class DealComplete(val cardCount: Int) : AnimationEvent()
+
+    /**
+     * CPU player won the kitty. UI shows the kitty cards briefly, then calls
+     * execute() to continue from GamePhase.Kitty.
+     */
+    data class KittyRevealed(val winnerId: String) : AnimationEvent()
 }

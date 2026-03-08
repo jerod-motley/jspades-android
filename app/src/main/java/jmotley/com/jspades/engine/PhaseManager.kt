@@ -1,5 +1,7 @@
 package jmotley.com.jspades.engine
 
+import android.content.Context
+import jmotley.com.jspades.data.AchievementsRepo
 import jmotley.com.jspades.data.Card
 import jmotley.com.jspades.data.DealMode
 import jmotley.com.jspades.data.GamePhase
@@ -11,11 +13,12 @@ import jmotley.com.jspades.data.PlayerHandState
 import jmotley.com.jspades.data.Rank
 import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.data.AnimationEvent
+import jmotley.com.jspades.data.ReplayEvent
 import jmotley.com.jspades.data.Score
 import jmotley.com.jspades.models.GameViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * PhaseManager — the single entry point for all game-phase transitions.
@@ -32,27 +35,56 @@ import kotlinx.coroutines.delay
  */
 class PhaseManager(
     private val viewModel: GameViewModel,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val context: Context
 ) {
-    /** Dispatch on the current phase. May launch coroutines for background work. */
+    /**
+     * Re-entrancy guard: ensures only one phase-handler coroutine is active at a time.
+     * Concurrent execute() calls are dropped — the running handler chains to the next
+     * phase when it finishes. Set to false in the finally block so the UI's subsequent
+     * execute() call (after an animation delay) always finds it clear.
+     */
+    private val busy = AtomicBoolean(false)
+
+    /**
+     * Public entry point. Acquires the guard and dispatches the current phase.
+     * Dropped if a handler coroutine is already running — only one is ever active.
+     * External callers (ViewModel, UI) always use this.
+     */
     fun execute() {
+        if (!busy.compareAndSet(false, true)) return
         scope.launch {
-            when (viewModel.state.value.phase) {
-                GamePhase.Lobby       -> handleLobby()
-                GamePhase.Deal        -> handleDeal()
-                GamePhase.DealHuman   -> handleDealHuman()
-                GamePhase.Bid         -> handleBid()
-                GamePhase.BidHuman    -> { /* UI owns this phase — waits for submitBid() */ }
-                GamePhase.KittyReveal -> handleKittyReveal()
-                GamePhase.Kitty       -> handleKitty()
-                GamePhase.KittyHuman  -> { /* UI owns this phase — waits for kitty exchange */ }
-                GamePhase.Trick       -> handleTrick()
-                GamePhase.TrickHuman  -> { /* UI owns this phase — waits for playCard() */ }
-                GamePhase.TrickResolve-> handleTrickResolve()
-                GamePhase.Score       -> handleScore()
-                GamePhase.EndHand     -> handleEndHand()
-                GamePhase.Finished    -> handleFinished()
+            try {
+                dispatch()
+            } finally {
+                busy.set(false)
             }
+        }
+    }
+
+    /**
+     * Internal dispatch — calls the handler for the current phase.
+     * Handlers that chain synchronously call this directly instead of [execute]
+     * so they stay within the same coroutine and don't trip the re-entrancy guard.
+     * Handlers that fire-and-forget simply return; the guard clears in [execute]'s
+     * finally block and the UI's subsequent [execute] call resumes the engine.
+     */
+    private suspend fun dispatch() {
+        when (viewModel.state.value.phase) {
+            GamePhase.Lobby       -> handleLobby()
+            GamePhase.Deal        -> handleDeal()
+            GamePhase.DealHuman   -> handleDealHuman()
+            GamePhase.Bid         -> handleBid()
+            GamePhase.BidHuman    -> { /* UI owns this phase — waits for submitBid() */ }
+            GamePhase.KittyReveal -> handleKittyReveal()
+            GamePhase.Kitty       -> handleKitty()
+            GamePhase.KittyHuman  -> { /* UI owns this phase — waits for kitty exchange */ }
+            GamePhase.Trick       -> handleTrick()
+            GamePhase.TrickHuman  -> { /* UI owns this phase — waits for playCard() */ }
+            GamePhase.TrickResolve-> handleTrickResolve()
+            GamePhase.Score       -> handleScore()
+            GamePhase.EndHand     -> handleEndHand()
+            GamePhase.Finished    -> handleFinished()
         }
     }
 
@@ -101,9 +133,8 @@ class PhaseManager(
             DealMode.TWO_MAN_ALTERNATE   -> dealTwoManAlternate(shuffled, ids, gt)
         }
 
-        delay(400)
         viewModel.advancePhase(GamePhase.DealHuman)
-        execute()
+        dispatch()
     }
 
     // ── Deal algorithms ───────────────────────────────────────────────────────
@@ -205,10 +236,13 @@ class PhaseManager(
      */
     private suspend fun handleDealHuman() {
         if (viewModel.state.value.gameType.dealMode == DealMode.TWO_MAN_ALTERNATE) return
-        // cards × 50ms stagger + 320ms animation ≈ 970ms; 1200ms gives a pause after last card
-        delay(1200)
-        viewModel.advancePhase(GamePhase.Bid)
-        execute()
+        // Fire-and-forget: UI waits for the actual card animation to finish, then
+        // advances to Bid and calls execute(). cardCount drives the computed delay
+        // in the animation collector using the same constants as CardTile.
+        val cardCount = viewModel.state.value
+            .phaseHands[GamePhase.Deal]?.lastOrNull()
+            ?.perPlayer?.values?.firstOrNull()?.hand?.size ?: 13
+        viewModel.emitAnimation(AnimationEvent.DealComplete(cardCount))
     }
 
     /**
@@ -241,7 +275,7 @@ class PhaseManager(
             if (!player.runtimeFlags.didBid) {
                 if (player.id == "south") {
                     viewModel.advancePhase(GamePhase.BidHuman)
-                    execute()
+                    dispatch()
                     return
                 }
                 val hand   = getPlayerHand(s, player.id)
@@ -296,7 +330,7 @@ class PhaseManager(
             // All CPUs on this team have bid
             if (humanOnTeam && !humanAlreadyBid) {
                 viewModel.advancePhase(GamePhase.BidHuman)
-                execute()
+                dispatch()
                 return
             }
 
@@ -332,11 +366,11 @@ class PhaseManager(
     }
 
     /** Advance from bidding to Kitty or straight to Trick depending on game type. */
-    private fun advanceAfterBidding() {
+    private suspend fun advanceAfterBidding() {
         val hasKitty = viewModel.state.value.kitty != null
         val next = if (hasKitty) GamePhase.KittyReveal else GamePhase.Trick
         viewModel.advancePhase(next)
-        execute()
+        dispatch()
     }
 
     // ── Bid utility ───────────────────────────────────────────────────────────
@@ -352,11 +386,16 @@ class PhaseManager(
      * CPU kitty winner  → Kitty (engine handles the discard automatically).
      */
     private suspend fun handleKittyReveal() {
-        delay(1500)
         val winnerId = viewModel.state.value.kittyWinnerId
-        val next = if (winnerId == "south") GamePhase.KittyHuman else GamePhase.Kitty
-        viewModel.advancePhase(next)
-        execute()
+        if (winnerId == "south") {
+            // Human winner — advance immediately; player controls pace via the exchange UI
+            viewModel.advancePhase(GamePhase.KittyHuman)
+            dispatch()
+        } else {
+            // CPU winner — fire-and-forget: UI shows kitty cards briefly, then calls execute()
+            viewModel.advancePhase(GamePhase.Kitty)
+            viewModel.emitAnimation(AnimationEvent.KittyRevealed(winnerId!!))
+        }
     }
 
     /**
@@ -372,9 +411,9 @@ class PhaseManager(
             val discards   = PlayEngine.computeKittyDiscard(playerHand, kittyCards, kittyCards.size)
             viewModel.applyKittyExchange(winnerId, discards)
         }
-        delay(800)
+        // Exchange is pure computation — advance directly, no delay needed
         viewModel.advancePhase(GamePhase.Trick)
-        execute()
+        dispatch()
     }
 
     /**
@@ -394,7 +433,7 @@ class PhaseManager(
         // go straight to TrickResolve instead of selecting another card.
         if (s.currentTrick.plays.count { it != null } == n) {
             viewModel.advancePhase(GamePhase.TrickResolve)
-            execute()
+            dispatch()
             return
         }
 
@@ -402,7 +441,7 @@ class PhaseManager(
 
         if (nextPlayer == "south") {
             viewModel.advancePhase(GamePhase.TrickHuman)
-            execute()
+            dispatch()
             return
         }
 
@@ -429,7 +468,7 @@ class PhaseManager(
     private suspend fun handleTrickResolve() {
         val s     = viewModel.state.value
         val plays = s.currentTrick.plays.filterNotNull()
-        if (plays.isEmpty()) { execute(); return }
+        if (plays.isEmpty()) { dispatch(); return }
 
         val leadPlay   = plays.first()
         val leadCard   = leadPlay.card
@@ -455,6 +494,14 @@ class PhaseManager(
         }
 
         viewModel.awardTrick(winnerId)
+
+        // Evaluate per-trick challenge constraints before collecting (currentTrick still intact)
+        for (result in ChallengeEvaluation.evaluatePerTrick(viewModel.state.value, context)) {
+            viewModel.emitChallengeResult(result)
+        }
+
+        // Check video triggers after awarding but before collecting (plays still available)
+        checkVideoTriggers(plays, winnerId)
 
         val winnerIndex = s.players.indexOfFirst { it.id == winnerId }.takeIf { it >= 0 } ?: s.leaderIndex
         viewModel.collectTrick(winnerIndex)
@@ -493,9 +540,17 @@ class PhaseManager(
     private suspend fun handleScore() {
         val s    = viewModel.state.value
         val hand = s.phaseHands[GamePhase.Deal]?.lastOrNull()
+
+        // Evaluate per-hand challenge constraints before finalizing replay
+        // (replayEvents must still be intact for trick history reconstruction)
+        for (result in ChallengeEvaluation.evaluatePerHand(s, context)) {
+            viewModel.emitChallengeResult(result)
+        }
+
         viewModel.finalizeHandReplay()
         if (hand != null) {
             viewModel.applyScore(scoreHand(s, hand))
+            AchievementsRepo.checkAndAwardPerHand(context, s, hand)
         }
 
         // Win check on updated totals
@@ -513,7 +568,7 @@ class PhaseManager(
         val high = totals.values.maxOrNull() ?: 0
         val low  = totals.values.minOrNull() ?: 0
         viewModel.advancePhase(if (high >= TARGET_SCORE || low <= LOSING_SCORE) GamePhase.Finished else GamePhase.EndHand)
-        execute()
+        dispatch()
     }
 
     /** EndHand: no-op — UI shows EndHandView and waits for [GameViewModel.onNextHand]. */
@@ -608,9 +663,135 @@ class PhaseManager(
         }
     }
 
-    /** Finished: game is over — UI shows result overlay. */
+    /** Finished: game is over — award win/loss achievements, then UI takes over. */
     private suspend fun handleFinished() {
-        // no-op — UI takes over
+        AchievementsRepo.checkAndAwardGameOver(context, viewModel.state.value)
+    }
+
+    // ── Video trigger detection ───────────────────────────────────────────────
+
+    /**
+     * Entry point called after [awardTrick] but before [collectTrick].
+     * [preState] is the snapshot captured at the top of [handleTrickResolve] (pre-mutation).
+     * [plays] are the non-null plays of the completed trick.
+     * [winnerId] is the player who won.
+     */
+    private suspend fun checkVideoTriggers(plays: List<Play>, winnerId: String) {
+        val s    = viewModel.state.value  // post-award state
+        val hand = s.phaseHands[GamePhase.Deal]?.lastOrNull() ?: return
+        val totalTricksWon = hand.perPlayer.values.sumOf { it.tricksWon }
+        val isFinalTrick   = totalTricksWon == s.gameType.cardsPerPlayer
+        val trickIndex     = totalTricksWon - 1
+
+        checkFrustrated(s, plays, winnerId, trickIndex)
+        if (isFinalTrick) {
+            checkCardhead(s, plays, winnerId, trickIndex)
+            checkBoston(s, hand, trickIndex)
+        }
+    }
+
+    /** Fires the frustrated video when south accidentally cuts north. */
+    private suspend fun checkFrustrated(
+        s: GameState, plays: List<Play>, winnerId: String, trickIndex: Int
+    ) {
+        if (viewModel.frustratedVideoFiredThisHand) return
+        if (!s.gameType.useTeams) return
+        if (plays.size != 4) return
+        if (winnerId != "south") return
+        if (plays.first().playerId != "west") return
+        if (plays.last().playerId != "south") return
+
+        val playsBeforeSouth = plays.dropLast(1)
+        if (evaluateTrickWinnerAmong(playsBeforeSouth) != "north") return
+
+        // Reconstruct south's hand before they played this trick
+        val southCurrentHand = s.phaseHands[GamePhase.Deal]?.lastOrNull()
+            ?.perPlayer?.get("south")?.hand ?: emptyList()
+        val southPlayedCard  = plays.last().card
+        val southHandBefore  = southCurrentHand + southPlayedCard
+
+        // Legal alternatives south could have played instead
+        val ledCard    = plays.first().card
+        val legalAlts  = legalCards(southHandBefore, ledCard).filter { it.uid != southPlayedCard.uid }
+        val foundSave  = legalAlts.any { alt ->
+            evaluateTrickWinnerAmong(playsBeforeSouth + Play("south", alt)) == "north"
+        }
+        if (!foundSave) return
+
+        viewModel.frustratedVideoFiredThisHand = true
+        val asset = listOf("frustratedgirl", "frustrateddad", "frustratedmom").random()
+        viewModel.emitFrustratedVideo(asset)
+        viewModel.recordReplayEvent(ReplayEvent.VideoTrigger("frustrated", asset, trickIndex, plays.size - 1))
+    }
+
+    /** Fires when south drops the Big Joker to beat an opponent's Little Joker on the final trick. */
+    private suspend fun checkCardhead(
+        s: GameState, plays: List<Play>, winnerId: String, trickIndex: Int
+    ) {
+        if (plays.last().playerId != "south") return
+        if (plays.last().card.rank != Rank.BIGJOKER) return
+        if (winnerId != "south") return
+        if (plays.none { it.card.rank == Rank.LITTLEJOKER }) return
+        if (plays.none { it.card.rank == Rank.LITTLEJOKER && it.playerId != "south" && it.playerId != "north" }) return
+
+        val asset = listOf("cardheadlady", "cardheaddad", "cardheadboy", "cardheadgirl", "cardheadmom").random()
+        viewModel.emitCardheadEvent(asset)
+        viewModel.recordReplayEvent(ReplayEvent.VideoTrigger("cardhead", asset, trickIndex, plays.size - 1))
+    }
+
+    /** Fires when south's team (or south alone in solo) won every trick in the hand. */
+    private suspend fun checkBoston(s: GameState, hand: Hand, trickIndex: Int) {
+        val southTricks = hand.perPlayer["south"]?.tricksWon ?: 0
+        val northTricks = hand.perPlayer["north"]?.tricksWon ?: 0
+        val isBoston = if (s.gameType.useTeams) {
+            (southTricks + northTricks) == s.gameType.cardsPerPlayer
+        } else {
+            southTricks == s.gameType.cardsPerPlayer
+        }
+        if (!isBoston) return
+
+        val asset = listOf("bostonboy", "bostongirl").random()
+        viewModel.emitBostonVideo(asset)
+        viewModel.recordReplayEvent(ReplayEvent.VideoTrigger("boston", asset, -1, -1))
+    }
+
+    /**
+     * Returns the subset of [hand] that is legal to play when [ledCard] was led.
+     * If the player is void in the led suit (or trump if trump was led), anything goes.
+     */
+    private fun legalCards(hand: List<Card>, ledCard: Card): List<Card> {
+        return if (isTrump(ledCard)) {
+            val hasTrump = hand.any { isTrump(it) }
+            if (hasTrump) hand.filter { isTrump(it) } else hand
+        } else {
+            val hasLedSuit = hand.any { it.suit == ledCard.suit && !isTrump(it) }
+            if (hasLedSuit) hand.filter { it.suit == ledCard.suit && !isTrump(it) } else hand
+        }
+    }
+
+    /**
+     * Returns the player id of the winner among [plays] using standard Spades ranking:
+     * Big Joker > Little Joker > Spades (by rank) > led suit (by rank) > off-suit (loses).
+     */
+    private fun evaluateTrickWinnerAmong(plays: List<Play>): String? {
+        if (plays.isEmpty()) return null
+        val ledCard = plays.first().card
+        var best      = plays.first()
+        var bestScore = trickCardScore(best.card, ledCard)
+        for (play in plays.drop(1)) {
+            val score = trickCardScore(play.card, ledCard)
+            if (score > bestScore) { best = play; bestScore = score }
+        }
+        return best.playerId
+    }
+
+    private fun trickCardScore(card: Card, ledCard: Card): Int = when {
+        card.rank == Rank.BIGJOKER    -> 1000
+        card.rank == Rank.LITTLEJOKER -> 999
+        card.suit == Suit.SPADES      -> 100 + card.rank.ordinal
+        isTrump(ledCard)              -> -1   // trump led; non-trump can't win
+        card.suit == ledCard.suit     -> card.rank.ordinal
+        else                          -> -1   // off-suit can't win
     }
 
     // ── Utility ───────────────────────────────────────────────────────────────

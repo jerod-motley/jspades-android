@@ -31,10 +31,14 @@ import androidx.compose.ui.unit.sp
 import jmotley.com.jspades.R
 
 /** Which sub-menu is visible, or None for the root. */
-private enum class SubMenu { None, TeamPlay, Solo, Online }
+private enum class SubMenu { None, TeamPlay, Solo, Challenge, Online }
 
 @Composable
-fun MainMenuScreen(onNavigateToPlay: (gameType: String) -> Unit = {}) {
+fun MainMenuScreen(
+    onNavigateToPlay: (gameType: String) -> Unit = {},
+    onNavigateToProfile: () -> Unit = {},
+    onNavigateToChallenges: (gameType: String) -> Unit = {}
+) {
     var currentMenu by remember { mutableStateOf(SubMenu.None) }
     val jennasue = FontFamily(Font(R.font.jenna_sue))
 
@@ -62,10 +66,12 @@ fun MainMenuScreen(onNavigateToPlay: (gameType: String) -> Unit = {}) {
             when (currentMenu) {
                 SubMenu.None -> MainButtons(jennasue) { tapped ->
                     when (tapped) {
-                        "Team Play" -> currentMenu = SubMenu.TeamPlay
-                        "Solo Play" -> currentMenu = SubMenu.Solo
-                        "Online"   -> currentMenu = SubMenu.Online
-                        else       -> { /* no-op for now */ }
+                        "Team Play"       -> currentMenu = SubMenu.TeamPlay
+                        "Solo Play"       -> currentMenu = SubMenu.Solo
+                        "Challenge Mode"  -> currentMenu = SubMenu.Challenge
+                        "Online"          -> currentMenu = SubMenu.Online
+                        "Profile"         -> onNavigateToProfile()
+                        else              -> { /* no-op for now */ }
                     }
                 }
                 SubMenu.TeamPlay -> SubButtons(
@@ -81,6 +87,13 @@ fun MainMenuScreen(onNavigateToPlay: (gameType: String) -> Unit = {}) {
                 ) { tapped ->
                     if (tapped == "Return") currentMenu = SubMenu.None
                     else onNavigateToPlay(tapped)
+                }
+                SubMenu.Challenge -> SubButtons(
+                    labels = listOf("House Rules", "Kitty", "Classic", "Four Man Solo", "Return"),
+                    font = jennasue
+                ) { tapped ->
+                    if (tapped == "Return") currentMenu = SubMenu.None
+                    else onNavigateToChallenges(tapped)
                 }
                 SubMenu.Online -> SubButtons(
                     labels = listOf("Messages", "Suggestions", "Renege Jokes", "Return"),

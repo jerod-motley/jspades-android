@@ -34,12 +34,15 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import jmotley.com.jspades.data.AchievementsRepo
 import jmotley.com.jspades.data.Card
 import jmotley.com.jspades.data.Rank
 import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.ui.theme.JSpadesTheme
+import jmotley.com.jspades.screens.ChallengesScreen
 import jmotley.com.jspades.screens.MainMenuScreen
 import jmotley.com.jspades.screens.PlayScreen
+import jmotley.com.jspades.screens.ProfileScreen
 import java.net.URLEncoder
 import java.net.URLDecoder
 import androidx.navigation.compose.NavHost
@@ -53,16 +56,26 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        AchievementsRepo.init(this)
         setContent {
             JSpadesTheme {
                 Surface(color = MaterialTheme.colorScheme.background) {
                     val navController = rememberNavController()
                     NavHost(navController = navController, startDestination = "menu") {
                         composable("menu") {
-                            MainMenuScreen { gameType ->
-                                val encoded = URLEncoder.encode(gameType, "utf-8")
-                                navController.navigate("play/$encoded")
-                            }
+                            MainMenuScreen(
+                                onNavigateToPlay = { gameType ->
+                                    val encoded = URLEncoder.encode(gameType, "utf-8")
+                                    navController.navigate("play/$encoded")
+                                },
+                                onNavigateToProfile = {
+                                    navController.navigate("profile")
+                                },
+                                onNavigateToChallenges = { gameType ->
+                                    val encoded = URLEncoder.encode(gameType, "utf-8")
+                                    navController.navigate("challenges/$encoded")
+                                }
+                            )
                         }
                         composable("play/{gameType}") { backStackEntry ->
                             val raw = backStackEntry.arguments
@@ -73,6 +86,22 @@ class MainActivity : ComponentActivity() {
                                 gameType = decoded,
                                 onNavigateBack = { navController.popBackStack() }
                             )
+                        }
+                        composable("challenges/{gameTypeLabel}") { backStackEntry ->
+                            val raw = backStackEntry.arguments
+                                ?.getString("gameTypeLabel") ?: "Classic"
+                            val decoded = try { URLDecoder.decode(raw, "utf-8") } catch (_: Exception) { raw }
+                            ChallengesScreen(
+                                gameTypeLabel = decoded,
+                                onStartChallenge = { _ ->
+                                    val encoded = URLEncoder.encode(decoded, "utf-8")
+                                    navController.navigate("play/$encoded")
+                                },
+                                onNavigateBack = { navController.popBackStack() }
+                            )
+                        }
+                        composable("profile") {
+                            ProfileScreen(onNavigateBack = { navController.popBackStack() })
                         }
                     }
                 }

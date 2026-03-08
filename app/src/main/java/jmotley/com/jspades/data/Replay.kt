@@ -18,6 +18,14 @@ sealed class ReplayEvent {
 
     /** The trick winner after all players have played. */
     data class TrickWon(val winnerId: String) : ReplayEvent()
+
+    /** A video that played during the hand (frustrated, cardhead, or boston). */
+    data class VideoTrigger(
+        val type: String,       // "frustrated" | "cardhead" | "boston"
+        val asset: String,      // e.g. "frustratedgirl"
+        val trickIndex: Int,    // 0-based trick index; -1 for hand-level events (boston)
+        val playIndex: Int      // 0-based play index within the trick; -1 for hand-level events
+    ) : ReplayEvent()
 }
 
 /**

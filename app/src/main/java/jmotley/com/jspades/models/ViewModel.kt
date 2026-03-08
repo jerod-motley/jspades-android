@@ -1,11 +1,16 @@
 package jmotley.com.jspades.models
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import android.content.Context
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import jmotley.com.jspades.data.AchievementIds
+import jmotley.com.jspades.data.AchievementsRepo
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import jmotley.com.jspades.data.AnimationEvent
 import jmotley.com.jspades.data.Card
 import jmotley.com.jspades.data.GameState
@@ -25,7 +30,9 @@ import jmotley.com.jspades.data.HandReplay
 import jmotley.com.jspades.data.ReplayEvent
 import jmotley.com.jspades.engine.PhaseManager
 
-class GameViewModel : ViewModel() {
+class GameViewModel(application: Application) : AndroidViewModel(application) {
+	private val context: Context get() = getApplication<Application>().applicationContext
+
 	private val _state = MutableStateFlow(GameState())
 	val state: StateFlow<GameState> = _state
 
@@ -42,8 +49,42 @@ class GameViewModel : ViewModel() {
 		_animationEvents.emit(event)
 	}
 
+	/**
+	 * One-shot challenge evaluation results emitted by [PhaseManager].
+	 * PlayScreen collects these to show overlays and finalize challenge state.
+	 */
+	private val _challengeResults = MutableSharedFlow<jmotley.com.jspades.engine.ChallengeResult>(extraBufferCapacity = 4)
+	val challengeResults: SharedFlow<jmotley.com.jspades.engine.ChallengeResult> = _challengeResults
+
+	/** Emit a challenge result from the engine. Called only by [PhaseManager]. */
+	suspend fun emitChallengeResult(result: jmotley.com.jspades.engine.ChallengeResult) {
+		_challengeResults.emit(result)
+	}
+
+	// --- Video events ---
+	private val _frustratedVideo = MutableSharedFlow<String>(extraBufferCapacity = 1)
+	val frustratedVideo: SharedFlow<String> = _frustratedVideo
+
+	private val _cardheadEvent = MutableSharedFlow<String>(extraBufferCapacity = 1)
+	val cardheadEvent: SharedFlow<String> = _cardheadEvent
+
+	private val _bostonVideo = MutableSharedFlow<String>(extraBufferCapacity = 1)
+	val bostonVideo: SharedFlow<String> = _bostonVideo
+
+	private val _currentVideoAsset = MutableStateFlow<String?>(null)
+	val currentVideoAsset: StateFlow<String?> = _currentVideoAsset.asStateFlow()
+
+	fun setCurrentVideoAsset(asset: String?) { _currentVideoAsset.value = asset }
+
+	suspend fun emitFrustratedVideo(asset: String) { _frustratedVideo.emit(asset) }
+	suspend fun emitCardheadEvent(asset: String) { _cardheadEvent.emit(asset) }
+	suspend fun emitBostonVideo(asset: String) { _bostonVideo.emit(asset) }
+
+	/** Guards against the same frustrated video firing more than once per hand. */
+	var frustratedVideoFiredThisHand = false
+
 	/** Single engine entry point. All phase transitions funnel through here. */
-	val phaseManager = PhaseManager(this, viewModelScope)
+	val phaseManager = PhaseManager(this, viewModelScope, context)
 
 	// ── Lobby ─────────────────────────────────────────────────────────────────
 
@@ -297,6 +338,7 @@ class GameViewModel : ViewModel() {
 			replayEvents      = emptyList(),
 			originalDealHands = emptyMap()
 		)
+		frustratedVideoFiredThisHand = false
 	}
 
 	// ── Two Man Solo deal ─────────────────────────────────────────────────────
@@ -464,6 +506,15 @@ class GameViewModel : ViewModel() {
 		phaseManager.execute()
 	}
 
+	/** Award the Quits achievement if the player leaves mid-game. */
+	override fun onCleared() {
+		super.onCleared()
+		val phase = _state.value.phase
+		if (phase != GamePhase.Lobby && phase != GamePhase.Finished) {
+			AchievementsRepo.mark(context, AchievementIds.QUITS)
+		}
+	}
+
 	/**
 	 * Called by the "Play Again" button on EndGameView.
 	 * Resets the full game (scores included) and starts a new deal with the same
@@ -479,6 +530,8 @@ class GameViewModel : ViewModel() {
 			phase       = GamePhase.Deal,
 			leaderIndex = 1
 		)
+		frustratedVideoFiredThisHand = false
+		setCurrentVideoAsset(null)
 		phaseManager.execute()
 	}
 }
