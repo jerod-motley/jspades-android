@@ -51,8 +51,10 @@ import jmotley.com.jspades.views.GameInfoView
 import jmotley.com.jspades.views.HandView
 import jmotley.com.jspades.views.KittyView
 import jmotley.com.jspades.views.LobbyView
+import android.app.Activity
 import android.net.Uri
 import androidx.compose.ui.viewinterop.AndroidView
+import jmotley.com.jspades.ads.InterstitialManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -95,6 +97,8 @@ fun PlayScreen(
     var showReplay by remember { mutableStateOf(false) }
     var showTapMessage by remember { mutableStateOf(false) }
     var showChallengeResult by remember { mutableStateOf<ChallengeResult?>(null) }
+    var showEndHandOverlay by remember { mutableStateOf(false) }
+    var showEndGameOverlay by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val currentVideoAsset by viewModel.currentVideoAsset.collectAsState()
 
@@ -116,15 +120,53 @@ fun PlayScreen(
             contentScale = ContentScale.Crop
         )
 
+        // ── Interstitial trigger ──────────────────────────────────────────────────
+        // Shows an interstitial on EndHand (after any in-flight video finishes) and
+        // on Finished. The end-phase overlay is gated so it only renders after the
+        // ad closes (or is skipped immediately when no ad is cached).
+        LaunchedEffect(state.phase) {
+            val activity = context as? Activity ?: return@LaunchedEffect
+            when (state.phase) {
+                GamePhase.EndHand -> {
+                    showEndHandOverlay = false
+                    var waited = 0L
+                    while (viewModel.currentVideoAsset.value != null && waited < 10_000L) {
+                        delay(100); waited += 100
+                    }
+                    InterstitialManager.showIfReady(activity) {
+                        InterstitialManager.preload(activity)
+                        showEndHandOverlay = true
+                    }
+                }
+                GamePhase.Finished -> {
+                    showEndGameOverlay = false
+                    InterstitialManager.showIfReady(activity) {
+                        InterstitialManager.preload(activity)
+                        showEndGameOverlay = true
+                    }
+                }
+                else -> {}
+            }
+        }
+
         // ── Challenge result collector ────────────────────────────────────────────
         // Collects ChallengeResult events emitted by PhaseManager, finalizes in storage,
-        // then shows a pass/fail banner overlay for 3 seconds.
+        // shows a pass/fail banner for 1.5 s, then shows an interstitial.
         LaunchedEffect(Unit) {
             viewModel.challengeResults.collect { cr ->
                 AchievementsRepo.finalizeChallenge(context, cr.sk, cr.success)
                 showChallengeResult = cr
-                delay(3000)
-                showChallengeResult = null
+                delay(1500)
+                val activity = context as? Activity
+                if (activity != null) {
+                    InterstitialManager.showIfReady(activity) {
+                        InterstitialManager.preload(activity)
+                        showChallengeResult = null
+                    }
+                } else {
+                    delay(1500)
+                    showChallengeResult = null
+                }
             }
         }
 
@@ -376,24 +418,28 @@ fun PlayScreen(
             GamePhase.Score -> { /* scoring runs in the engine; no UI needed */ }
 
             GamePhase.EndHand -> {
-                EndHandView(
-                    state          = state,
-                    viewModel      = viewModel,
-                    localPlayerId  = localPlayerId,
-                    onNavigateBack = onNavigateBack,
-                    onReplayHand   = if (state.lastHandReplay != null) {{ showReplay = true }} else null,
-                    modifier       = Modifier.fillMaxSize()
-                )
+                if (showEndHandOverlay) {
+                    EndHandView(
+                        state          = state,
+                        viewModel      = viewModel,
+                        localPlayerId  = localPlayerId,
+                        onNavigateBack = onNavigateBack,
+                        onReplayHand   = if (state.lastHandReplay != null) {{ showReplay = true }} else null,
+                        modifier       = Modifier.fillMaxSize()
+                    )
+                }
             }
 
             GamePhase.Finished -> {
-                EndGameView(
-                    state          = state,
-                    viewModel      = viewModel,
-                    localPlayerId  = localPlayerId,
-                    onNavigateBack = onNavigateBack,
-                    modifier       = Modifier.fillMaxSize()
-                )
+                if (showEndGameOverlay) {
+                    EndGameView(
+                        state          = state,
+                        viewModel      = viewModel,
+                        localPlayerId  = localPlayerId,
+                        onNavigateBack = onNavigateBack,
+                        modifier       = Modifier.fillMaxSize()
+                    )
+                }
             }
         }
 

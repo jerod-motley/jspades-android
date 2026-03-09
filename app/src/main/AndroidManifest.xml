@@ -13,6 +13,23 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.JSpades">
+
+        <!-- AdMob App ID -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-9978563261260279~9307044127" />
+
+        <!-- Facebook App ID (required for Audience Network)-->
+        <meta-data
+            android:name="com.facebook.sdk.ApplicationId"
+            android:value="@string/facebook_app_id"/>
+
+         <!--Audience Network content provider-->
+        <provider
+            android:name="com.facebook.ads.AudienceNetworkContentProvider"
+            android:authorities="${applicationId}.AudienceNetworkContentProvider"
+            android:exported="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

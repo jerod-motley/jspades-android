@@ -12,13 +12,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -33,35 +37,53 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import jmotley.com.jspades.ads.ConsentManager
+import jmotley.com.jspades.ads.InterstitialManager
 import jmotley.com.jspades.data.AchievementsRepo
 import jmotley.com.jspades.data.Card
 import jmotley.com.jspades.data.Rank
 import jmotley.com.jspades.data.Suit
-import jmotley.com.jspades.ui.theme.JSpadesTheme
 import jmotley.com.jspades.screens.ChallengesScreen
 import jmotley.com.jspades.screens.MainMenuScreen
 import jmotley.com.jspades.screens.PlayScreen
 import jmotley.com.jspades.screens.ProfileScreen
-import java.net.URLEncoder
+import jmotley.com.jspades.ui.theme.JSpadesTheme
 import java.net.URLDecoder
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.rememberNavController
-import kotlinx.coroutines.delay
+import java.net.URLEncoder
 import kotlin.random.Random
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+
+    private var adsReady by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ConsentManager.requestConsent(this) {
+            com.google.android.gms.ads.MobileAds.initialize(this) {}
+            InterstitialManager.preload(this)
+            adsReady = true
+        }
         enableEdgeToEdge()
         AchievementsRepo.init(this)
         setContent {
             JSpadesTheme {
-                Surface(color = MaterialTheme.colorScheme.background) {
-                    val navController = rememberNavController()
-                    NavHost(navController = navController, startDestination = "menu") {
+                val navController = rememberNavController()
+                Scaffold(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    bottomBar = { if (adsReady) AdBannerView() }
+                ) { innerPadding ->
+                    NavHost(
+                        navController = navController,
+                        startDestination = "menu",
+                        modifier = Modifier.padding(innerPadding)
+                    ) {
                         composable("menu") {
                             MainMenuScreen(
                                 onNavigateToPlay = { gameType ->
@@ -109,6 +131,48 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+// ── Ad composables ────────────────────────────────────────────────────────────
+
+@Composable
+private fun AdBannerView() {
+    if (BuildConfig.GOOGLE_ADS_ENABLED) {
+        var showFacebook by remember { mutableStateOf(false) }
+        if (!showFacebook) {
+            AndroidView(factory = { ctx ->
+                com.google.android.gms.ads.AdView(ctx).apply {
+                    val dm = ctx.resources.displayMetrics
+                    val widthDp = (dm.widthPixels / dm.density).toInt()
+                    setAdSize(com.google.android.gms.ads.AdSize
+                        .getCurrentOrientationAnchoredAdaptiveBannerAdSize(ctx, widthDp))
+                    adUnitId = "ca-app-pub-3940256099942544/6300978111" // Google test ID
+                    adListener = object : com.google.android.gms.ads.AdListener() {
+                        override fun onAdFailedToLoad(error: com.google.android.gms.ads.LoadAdError) {
+                            showFacebook = true
+                        }
+                    }
+                    loadAd(com.google.android.gms.ads.AdRequest.Builder().build())
+                }
+            })
+        } else if (BuildConfig.FACEBOOK_ADS_ENABLED) {
+            FbBannerView()
+        }
+    } else if (BuildConfig.FACEBOOK_ADS_ENABLED) {
+        FbBannerView()
+    }
+}
+
+@Composable
+private fun FbBannerView() {
+    AndroidView(factory = { ctx ->
+        val placementId = ctx.getString(R.string.fb_banner_placement)
+        com.facebook.ads.AdView(ctx, placementId, com.facebook.ads.AdSize.BANNER_HEIGHT_50).apply {
+            loadAd()
+        }
+    })
+}
+
+// ── POC animation demo (unused in production flow) ────────────────────────────
 
 @Composable
 fun GameScreen() {
