@@ -39,8 +39,7 @@ private val TextSecondary = Color(0xFFAAAAAA)
  */
 @Composable
 fun ChallengesScreen(
-    gameTypeLabel: String,
-    onStartChallenge: (sk: String) -> Unit,
+    onStartChallenge: (sk: String, gameType: String) -> Unit,
     onNavigateBack: () -> Unit
 ) {
     val context  = LocalContext.current
@@ -55,9 +54,7 @@ fun ChallengesScreen(
     val completedList   by AchievementsRepo.completedChallengesFlow.collectAsState()
     val activeChallenge by AchievementsRepo.activeChallengeFlow.collectAsState()
 
-    val challenges = remember(allChallenges, gameTypeLabel) {
-        allChallenges.filter { it.applicableGameTypes.contains(gameTypeLabel) }
-    }
+    val challenges = allChallenges
     val completedSks = remember(completedList) { completedList.filter { it.achieved }.map { it.name }.toSet() }
 
     // State for the MinBooks:X picker dialog
@@ -80,13 +77,6 @@ fun ChallengesScreen(
                     fontFamily = font,
                     fontSize = 40.sp,
                     color = AccentGold,
-                    modifier = Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.Center
-                )
-                Text(
-                    gameTypeLabel,
-                    fontSize = 14.sp,
-                    color = TextSecondary,
                     modifier = Modifier.fillMaxWidth(),
                     textAlign = TextAlign.Center
                 )
@@ -117,7 +107,7 @@ fun ChallengesScreen(
                             } else {
                                 AchievementsRepo.setActiveChallenge(context, ch.sk, ch.winCriteria, ch.allowBid)
                                 AchievementsRepo.markChallengePending(context, ch.sk)
-                                onStartChallenge(ch.sk)
+                                onStartChallenge(ch.sk, ch.applicableGameTypes.firstOrNull() ?: "Classic")
                             }
                         }
                     )
@@ -149,7 +139,7 @@ fun ChallengesScreen(
                 AchievementsRepo.setActiveChallenge(context, ch.sk, bidrule, ch.allowBid)
                 AchievementsRepo.markChallengePending(context, ch.sk)
                 pendingChallenge = null
-                onStartChallenge(ch.sk)
+                onStartChallenge(ch.sk, ch.applicableGameTypes.firstOrNull() ?: "Classic")
             },
             onDismiss = { pendingChallenge = null }
         )

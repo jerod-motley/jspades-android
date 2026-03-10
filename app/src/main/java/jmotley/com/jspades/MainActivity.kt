@@ -2,6 +2,7 @@ package jmotley.com.jspades
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.core.Animatable
@@ -50,8 +51,12 @@ import jmotley.com.jspades.data.Rank
 import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.screens.ChallengesScreen
 import jmotley.com.jspades.screens.MainMenuScreen
+import jmotley.com.jspades.screens.MessagesScreen
 import jmotley.com.jspades.screens.PlayScreen
 import jmotley.com.jspades.screens.ProfileScreen
+import jmotley.com.jspades.screens.RenegeJokesScreen
+import jmotley.com.jspades.screens.StandingsScreen
+import jmotley.com.jspades.screens.SuggestionsScreen
 import jmotley.com.jspades.ui.theme.JSpadesTheme
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -64,6 +69,7 @@ class MainActivity : ComponentActivity() {
     private var adsReady by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         ConsentManager.requestConsent(this) {
             com.google.android.gms.ads.MobileAds.initialize(this) {}
@@ -90,13 +96,14 @@ class MainActivity : ComponentActivity() {
                                     val encoded = URLEncoder.encode(gameType, "utf-8")
                                     navController.navigate("play/$encoded")
                                 },
-                                onNavigateToProfile = {
-                                    navController.navigate("profile")
+                                onNavigateToProfile = { navController.navigate("profile") },
+                                onNavigateToChallenges = {
+                                    navController.navigate("challenges")
                                 },
-                                onNavigateToChallenges = { gameType ->
-                                    val encoded = URLEncoder.encode(gameType, "utf-8")
-                                    navController.navigate("challenges/$encoded")
-                                }
+                                onNavigateToMessages     = { navController.navigate("messages") },
+                                onNavigateToSuggestions  = { navController.navigate("suggestions") },
+                                onNavigateToRenegeJokes  = { navController.navigate("renegejokes") },
+                                onNavigateToStandings    = { navController.navigate("standings") }
                             )
                         }
                         composable("play/{gameType}") { backStackEntry ->
@@ -109,14 +116,10 @@ class MainActivity : ComponentActivity() {
                                 onNavigateBack = { navController.popBackStack() }
                             )
                         }
-                        composable("challenges/{gameTypeLabel}") { backStackEntry ->
-                            val raw = backStackEntry.arguments
-                                ?.getString("gameTypeLabel") ?: "Classic"
-                            val decoded = try { URLDecoder.decode(raw, "utf-8") } catch (_: Exception) { raw }
+                        composable("challenges") {
                             ChallengesScreen(
-                                gameTypeLabel = decoded,
-                                onStartChallenge = { _ ->
-                                    val encoded = URLEncoder.encode(decoded, "utf-8")
+                                onStartChallenge = { _, gameType ->
+                                    val encoded = URLEncoder.encode(gameType, "utf-8")
                                     navController.navigate("play/$encoded")
                                 },
                                 onNavigateBack = { navController.popBackStack() }
@@ -124,6 +127,18 @@ class MainActivity : ComponentActivity() {
                         }
                         composable("profile") {
                             ProfileScreen(onNavigateBack = { navController.popBackStack() })
+                        }
+                        composable("messages") {
+                            MessagesScreen(onNavigateBack = { navController.popBackStack() })
+                        }
+                        composable("suggestions") {
+                            SuggestionsScreen(onNavigateBack = { navController.popBackStack() })
+                        }
+                        composable("renegejokes") {
+                            RenegeJokesScreen(onNavigateBack = { navController.popBackStack() })
+                        }
+                        composable("standings") {
+                            StandingsScreen(onNavigateBack = { navController.popBackStack() })
                         }
                     }
                 }

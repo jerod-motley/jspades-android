@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 // Read baseApiUrl from (in order): project property `baseApiUrl`, gradle.properties, then local.properties
@@ -26,6 +27,11 @@ val facebookAdsEnabledProp: String = (project.findProperty("facebookAdsEnabled")
     ?: readSimpleProp(rootProject.file("local.properties"), "facebookAdsEnabled")
     ?: "true"
 
+val webUrlProp: String = (project.findProperty("webUrl") as? String)
+    ?: readSimpleProp(rootProject.file("gradle.properties"), "webUrl")
+    ?: readSimpleProp(rootProject.file("local.properties"), "webUrl")
+    ?: ""
+
 android {
     namespace = "jmotley.com.jspades"
     compileSdk {
@@ -48,6 +54,7 @@ android {
         buildConfigField("String", "BASE_API_URL", "\"${resolvedBaseApi}\"")
         buildConfigField("Boolean", "GOOGLE_ADS_ENABLED", googleAdsEnabledProp)
         buildConfigField("Boolean", "FACEBOOK_ADS_ENABLED", facebookAdsEnabledProp)
+        buildConfigField("String", "WEB_URL", "\"${webUrlProp}\"")
     }
 
     buildTypes {
@@ -86,6 +93,7 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.play.services.ads)
     implementation(libs.facebook.audience.network)
+    implementation(libs.androidx.core.splashscreen)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

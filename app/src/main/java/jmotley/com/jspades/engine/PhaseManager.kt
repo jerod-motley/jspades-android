@@ -16,8 +16,12 @@ import jmotley.com.jspades.data.AnimationEvent
 import jmotley.com.jspades.data.ReplayEvent
 import jmotley.com.jspades.data.Score
 import jmotley.com.jspades.models.GameViewModel
+import jmotley.com.jspades.networking.PlayLogApi
+import jmotley.com.jspades.networking.PlayLogGame
+import jmotley.com.jspades.networking.PlayLogPayload
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -663,9 +667,29 @@ class PhaseManager(
         }
     }
 
-    /** Finished: game is over — award win/loss achievements, then UI takes over. */
+    /** Finished: game is over — award win/loss achievements, post play log, then UI takes over. */
     private suspend fun handleFinished() {
-        AchievementsRepo.checkAndAwardGameOver(context, viewModel.state.value)
+        val s = viewModel.state.value
+        AchievementsRepo.checkAndAwardGameOver(context, s)
+
+        val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        val email = prefs.getString("player_email", null)
+        val name  = prefs.getString("player_username", "") ?: ""
+        if (!email.isNullOrBlank()) {
+            val payload = PlayLogPayload(
+                sk         = email,
+                name       = name,
+                createDate = Instant.now().toString(),
+                games      = listOf(
+                    PlayLogGame(
+                        gameType    = s.gameType.label,
+                        scores      = s.score.points,
+                        handsPlayed = s.phaseHands[GamePhase.Deal]?.size ?: 0
+                    )
+                )
+            )
+            runCatching { PlayLogApi.post(payload) }
+        }
     }
 
     // ── Video trigger detection ───────────────────────────────────────────────

@@ -1,12 +1,8 @@
 package jmotley.com.jspades.networking
 
-import io.ktor.client.*
-import io.ktor.client.engine.android.*
-import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
-import io.ktor.serialization.kotlinx.json.*
 import jmotley.com.jspades.data.AchievementItem
 import jmotley.com.jspades.data.AppConfig
 import kotlinx.serialization.Serializable
@@ -37,10 +33,7 @@ private data class UpdateProfileRequest(
 
 object ProfileApi {
     private val json = Json { ignoreUnknownKeys = true }
-
-    private val client = HttpClient(Android) {
-        install(ContentNegotiation) { json(json) }
-    }
+    private val client get() = NetworkClient.client
 
     suspend fun register(email: String, userName: String) {
         client.post("${AppConfig.BASE_API_URL}/profile") {

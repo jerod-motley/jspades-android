@@ -2,4 +2,10 @@
 <resources>
 
     <style name="Theme.JSpades" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <style name="Theme.JSpades.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">#319247</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/splash</item>
+        <item name="postSplashScreenTheme">@style/Theme.JSpades</item>
+    </style>
 </resources>

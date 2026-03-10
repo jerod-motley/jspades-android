@@ -1,6 +1,9 @@
 package jmotley.com.jspades.data
 
 import android.content.Context
+import io.ktor.client.request.*
+import io.ktor.client.statement.*
+import jmotley.com.jspades.networking.NetworkClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.Serializable
@@ -45,6 +48,26 @@ object ChallengesRepo {
         _challengesFlow.value = runCatching {
             json.decodeFromString<List<Challenge>>(raw)
         }.getOrDefault(emptyList())
+    }
+
+    /**
+     * Fetches remote challenges from the server and merges them with the local list.
+     * Remote items with the same [Challenge.sk] replace local ones; new items are appended.
+     * The merged list is persisted to disk and pushed into [challengesFlow].
+     * Call from a coroutine scope (e.g. viewModelScope or App.onCreate coroutine).
+     */
+    suspend fun fetchAndMergeRemote(ctx: Context) {
+        runCatching {
+            val response = NetworkClient.client.get("${AppConfig.BASE_API_URL}/challenge") {
+                parameter("type", AppConfig.PARTITION_KEY)
+            }
+            val remote = json.decodeFromString<List<Challenge>>(response.bodyAsText())
+            if (remote.isEmpty()) return
+            val merged = (_challengesFlow.value.associateBy { it.sk } + remote.associateBy { it.sk }).values.toList()
+            _challengesFlow.value = merged
+            ctx.openFileOutput("challenges.json", Context.MODE_PRIVATE)
+                .use { it.write(json.encodeToString(merged).toByteArray()) }
+        }
     }
 
     fun forGameType(gameTypeLabel: String): List<Challenge> =
