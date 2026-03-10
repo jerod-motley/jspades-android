@@ -2,8 +2,11 @@ package jmotley.com.jspades.screens
 
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -28,11 +31,16 @@ fun StandingsScreen(onNavigateBack: () -> Unit) {
     val font = FontFamily(Font(R.font.jenna_sue))
     val url  = AppConfig.LEADERBOARD_URL
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(StdDarkBg)
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Image(
+            painter = painterResource(id = R.drawable.bg),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
         Text(
             "Standings",
             fontFamily = font,
@@ -75,5 +83,6 @@ fun StandingsScreen(onNavigateBack: () -> Unit) {
         ) {
             Text("Back", color = StdTextSecondary, fontSize = 16.sp)
         }
+    }
     }
 }

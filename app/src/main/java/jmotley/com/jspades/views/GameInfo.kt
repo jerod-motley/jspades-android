@@ -15,6 +15,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import jmotley.com.jspades.data.GamePhase
@@ -22,25 +23,18 @@ import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.Hand
 import jmotley.com.jspades.models.GameViewModel
 
-private val LABEL_COLOR  = Color(0xFFFFD700)   // gold  — human team label
-private val SCORE_COLOR  = Color.White
-private val DETAIL_COLOR = Color(0xFFB0BEC5)    // cool grey — bid / tricks / bags
+private val LABEL_COLOR   = Color(0xFFFFD700)   // gold  — human team / local player
+private val SCORE_COLOR   = Color.White
+private val DETAIL_COLOR  = Color(0xFFB0BEC5)    // cool grey — bid / books
 private val DIVIDER_COLOR = Color(0x44FFFFFF)
 
 /**
  * Game info strip positioned just above the player's hand.
  *
- * **Team games** — two panels side-by-side (human's team left, opponents right):
- * ```
- *  US           |      THEM
- *  240          |      180
- *  Bid 4 · ↑3 · Bags 2 | Bid 5 · ↑2 · Bags 0
- * ```
- * **Solo games** — one panel per player in seat order, human first.
+ * Each panel stacks vertically: label → Bid N → Books N → Score N.
  *
- * Scores are the running total (points + bags) accumulated from prior hands.
- * Current-hand bid / tricks / bags reflect the live deal-hand state.
- * If bidding has not yet started this hand, bid shows "—".
+ * **Team games** — two panels side-by-side (US left, THEM right).
+ * **Solo games** — one panel per player in seat order, human first.
  *
  * Not shown on Lobby, EndHand, or Finished screens.
  */
@@ -51,8 +45,8 @@ fun GameInfoView(
     localPlayerId: String,
     modifier: Modifier = Modifier
 ) {
-    val dealHand    = state.phaseHands[GamePhase.Deal]?.lastOrNull()
-    val anyBidMade  = state.players.any { it.runtimeFlags.didBid }
+    val dealHand   = state.phaseHands[GamePhase.Deal]?.lastOrNull()
+    val anyBidMade = state.players.any { it.runtimeFlags.didBid }
 
     Row(
         modifier = modifier
@@ -65,29 +59,26 @@ fun GameInfoView(
             val humanTeam = state.players.find { it.id == localPlayerId }?.team ?: 0
             val oppTeam   = 1 - humanTeam
 
-            TeamPanel(
-                label      = "US",
-                isHuman    = true,
-                score      = totalScore(state, humanTeam.toString()),
-                bid        = if (anyBidMade) (dealHand?.teamBids?.getOrNull(humanTeam) ?: 0) else null,
-                tricksWon  = teamTricks(state, dealHand, humanTeam),
-                bags       = state.score.bags[humanTeam.toString()] ?: 0,
-                modifier   = Modifier.weight(1f)
+            InfoPanel(
+                nameLabel = "US",
+                isHuman   = true,
+                bid       = if (anyBidMade) dealHand?.teamBids?.getOrNull(humanTeam) else null,
+                tricksWon = teamTricks(state, dealHand, humanTeam),
+                score     = totalScore(state, humanTeam.toString()),
+                modifier  = Modifier.weight(1f)
             )
 
-            Spacer(Modifier.width(1.dp).height(36.dp).background(DIVIDER_COLOR))
+            Spacer(Modifier.width(1.dp).height(56.dp).background(DIVIDER_COLOR))
 
-            TeamPanel(
-                label      = "THEM",
-                isHuman    = false,
-                score      = totalScore(state, oppTeam.toString()),
-                bid        = if (anyBidMade) (dealHand?.teamBids?.getOrNull(oppTeam) ?: 0) else null,
-                tricksWon  = teamTricks(state, dealHand, oppTeam),
-                bags       = state.score.bags[oppTeam.toString()] ?: 0,
-                modifier   = Modifier.weight(1f)
+            InfoPanel(
+                nameLabel = "THEM",
+                isHuman   = false,
+                bid       = if (anyBidMade) dealHand?.teamBids?.getOrNull(oppTeam) else null,
+                tricksWon = teamTricks(state, dealHand, oppTeam),
+                score     = totalScore(state, oppTeam.toString()),
+                modifier  = Modifier.weight(1f)
             )
         } else {
-            // Solo: one cell per player; human first, then clockwise
             val ordered = buildList {
                 state.players.find { it.id == localPlayerId }?.let { add(it) }
                 state.players.filter { it.id != localPlayerId }.forEach { add(it) }
@@ -95,113 +86,72 @@ fun GameInfoView(
             ordered.forEachIndexed { idx, player ->
                 val isHuman = player.id == localPlayerId
                 val phs     = dealHand?.perPlayer?.get(player.id)
-                SoloPanel(
-                    label     = if (isHuman) "You" else player.displayName,
+                InfoPanel(
+                    nameLabel = if (isHuman) "You" else player.displayName,
                     isHuman   = isHuman,
-                    score     = totalScore(state, player.id),
-                    bid       = if (anyBidMade) (phs?.bid ?: 0) else null,
+                    bid       = if (anyBidMade) phs?.bid else null,
                     tricksWon = phs?.tricksWon ?: 0,
-                    bags      = state.score.bags[player.id] ?: 0,
+                    score     = totalScore(state, player.id),
                     modifier  = Modifier.weight(1f)
                 )
                 if (idx < ordered.lastIndex) {
-                    Spacer(Modifier.width(1.dp).height(36.dp).background(DIVIDER_COLOR))
+                    Spacer(Modifier.width(1.dp).height(56.dp).background(DIVIDER_COLOR))
                 }
             }
         }
     }
 }
 
-// ── Panels ────────────────────────────────────────────────────────────────────
+// ── Panel ──────────────────────────────────────────────────────────────────────
 
 @Composable
-private fun TeamPanel(
-    label: String,
+private fun InfoPanel(
+    nameLabel: String,
     isHuman: Boolean,
-    score: Int,
-    bid: Int?,           // null = no bid yet this hand
-    tricksWon: Int,
-    bags: Int,
-    modifier: Modifier = Modifier
-) {
-    Column(
-        modifier = modifier.padding(horizontal = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp)
-    ) {
-        // Label + score on one line
-        Row(
-            modifier           = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment  = Alignment.CenterVertically
-        ) {
-            Text(
-                text       = label,
-                color      = if (isHuman) LABEL_COLOR else SCORE_COLOR,
-                fontSize   = 18.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text       = "$score",
-                color      = SCORE_COLOR,
-                fontSize   = 20.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
-        // Books · bid · bags
-        val booksText = "Books $tricksWon"
-        val bidText  = bid?.let { "Bid $it" } ?: "Bid —"
-        val bagsText = if (bags > 0) "  Bags $bags" else ""
-        Text(
-            text     = "$booksText  $bidText$bagsText",
-            color    = DETAIL_COLOR,
-            fontSize = 16.sp
-        )
-    }
-}
-
-@Composable
-private fun SoloPanel(
-    label: String,
-    isHuman: Boolean,
-    score: Int,
     bid: Int?,
     tricksWon: Int,
-    bags: Int,
+    score: Int,
     modifier: Modifier = Modifier
 ) {
     Column(
-        modifier              = modifier.padding(horizontal = 4.dp),
-        verticalArrangement   = Arrangement.spacedBy(2.dp),
-        horizontalAlignment   = Alignment.CenterHorizontally
+        modifier            = modifier.padding(horizontal = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         Text(
-            text       = label,
+            text       = nameLabel,
             color      = if (isHuman) LABEL_COLOR else SCORE_COLOR,
-            fontSize   = 15.sp,
-            fontWeight = if (isHuman) FontWeight.Bold else FontWeight.Normal
+            fontSize   = 14.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign  = TextAlign.Center
         )
         Text(
-            text       = "$score",
+            text      = "Bid ${bid ?: "—"}",
+            color     = DETAIL_COLOR,
+            fontSize  = 13.sp,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            text      = "Books $tricksWon",
+            color     = DETAIL_COLOR,
+            fontSize  = 13.sp,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            text       = "Score $score",
             color      = SCORE_COLOR,
-            fontSize   = 18.sp,
-            fontWeight = FontWeight.Bold
-        )
-        val bidText = bid?.let { "$it" } ?: "—"
-        Text(
-            text  = "Books $tricksWon  B:$bidText",
-            color = DETAIL_COLOR,
-            fontSize = 15.sp
+            fontSize   = 14.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign  = TextAlign.Center
         )
     }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Running total displayed score = accumulated points + accumulated bags. */
 private fun totalScore(state: GameState, key: String): Int =
     (state.score.points[key] ?: 0) + (state.score.bags[key] ?: 0)
 
-/** Total tricks won by all players on [teamId] in the current deal hand. */
 private fun teamTricks(state: GameState, dealHand: Hand?, teamId: Int): Int =
     state.players
         .filter { it.team == teamId }

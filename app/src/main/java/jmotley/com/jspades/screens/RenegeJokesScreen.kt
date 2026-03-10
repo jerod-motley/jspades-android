@@ -1,7 +1,10 @@
 package jmotley.com.jspades.screens
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,11 +38,16 @@ fun RenegeJokesScreen(
     val font = FontFamily(Font(R.font.jenna_sue))
     var draft by remember { mutableStateOf("") }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(RjDarkBg)
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Image(
+            painter = painterResource(id = R.drawable.bg),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
         LazyColumn(
             modifier = Modifier.weight(1f).padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -127,6 +135,7 @@ fun RenegeJokesScreen(
         ) {
             Text("Back", color = RjTextSecondary, fontSize = 16.sp)
         }
+    }
     }
 }
 

@@ -41,7 +41,8 @@ fun MainMenuScreen(
     onNavigateToMessages: () -> Unit = {},
     onNavigateToSuggestions: () -> Unit = {},
     onNavigateToRenegeJokes: () -> Unit = {},
-    onNavigateToStandings: () -> Unit = {}
+    onNavigateToStandings: () -> Unit = {},
+    onNavigateToSettings: () -> Unit = {}
 ) {
     var currentMenu by remember { mutableStateOf(SubMenu.None) }
     val jennasue = FontFamily(Font(R.font.jenna_sue))
@@ -76,7 +77,7 @@ fun MainMenuScreen(
                         "Online"         -> currentMenu = SubMenu.Online
                         "Profile"        -> onNavigateToProfile()
                         "Standings"      -> onNavigateToStandings()
-                        else             -> { /* no-op */ }
+                        "Settings"       -> onNavigateToSettings()
                     }
                 }
                 SubMenu.TeamPlay -> SubButtons(

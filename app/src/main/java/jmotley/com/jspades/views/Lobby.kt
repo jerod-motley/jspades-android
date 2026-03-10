@@ -136,17 +136,6 @@ fun LobbyView(
         val totalW = maxWidth
         val totalH = maxHeight
 
-        // "Table" header
-        Text(
-            text = "Table",
-            color = Color(0xFFFFD700),
-            fontSize = 20.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = totalH * 0.08f)
-        )
-
         // Diamond: arm lengths from screen center
         val armV: Dp = totalH * 0.22f
         val armH: Dp = totalW * 0.36f

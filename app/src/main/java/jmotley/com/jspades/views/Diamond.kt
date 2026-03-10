@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -25,13 +26,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import jmotley.com.jspades.data.Card
+import jmotley.com.jspades.data.GamePhase
 import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.Player
 import jmotley.com.jspades.models.GameViewModel
@@ -67,6 +72,12 @@ fun DiamondView(
     val east  = state.players.find { it.id == "east"  }
     val west  = state.players.find { it.id == "west"  }
 
+    val kittyWinnerId = state.kittyWinnerId
+    val isBidPhase = state.phase == GamePhase.Bid || state.phase == GamePhase.BidHuman
+    val dealerId = if (isBidPhase && state.players.isNotEmpty())
+        state.players[(state.leaderIndex - 1 + state.players.size) % state.players.size].id
+    else null
+
     // Map playerId → card played this trick.
     // During TrickResolve animation, currentTrick is already cleared so we
     // fall back to frozenPlays (the snapshot captured before collectTrick ran).
@@ -95,6 +106,8 @@ fun DiamondView(
                 label              = player.displayName,
                 isWinner           = trickWinner == player.id,
                 hasTrickWinner     = hasTrickWinner,
+                kittyBadge         = kittyWinnerId == player.id,
+                dealerBadge        = dealerId == player.id,
                 initialCardOffset  = Offset(0f, -slotH * 1.5f),  // slides in from above
                 modifier           = Modifier.align(Alignment.TopCenter)
             )
@@ -109,6 +122,8 @@ fun DiamondView(
                 isWinner           = trickWinner == player.id,
                 isLocal            = player.id == localPlayerId,
                 hasTrickWinner     = hasTrickWinner,
+                kittyBadge         = kittyWinnerId == player.id,
+                dealerBadge        = dealerId == player.id,
                 initialCardOffset  = Offset(0f, slotH * 1.5f),   // slides in from below
                 modifier           = Modifier.align(Alignment.BottomCenter)
             )
@@ -122,6 +137,8 @@ fun DiamondView(
                 label              = player.displayName,
                 isWinner           = trickWinner == player.id,
                 hasTrickWinner     = hasTrickWinner,
+                kittyBadge         = kittyWinnerId == player.id,
+                dealerBadge        = dealerId == player.id,
                 initialCardOffset  = Offset(-slotW * 1.5f, 0f),  // slides in from left
                 modifier           = Modifier.align(Alignment.CenterStart)
             )
@@ -135,6 +152,8 @@ fun DiamondView(
                 label              = player.displayName,
                 isWinner           = trickWinner == player.id,
                 hasTrickWinner     = hasTrickWinner,
+                kittyBadge         = kittyWinnerId == player.id,
+                dealerBadge        = dealerId == player.id,
                 initialCardOffset  = Offset(slotW * 1.5f, 0f),   // slides in from right
                 modifier           = Modifier.align(Alignment.CenterEnd)
             )
@@ -150,6 +169,8 @@ private fun PlayerSlot(
     isWinner: Boolean = false,
     isLocal: Boolean = false,
     hasTrickWinner: Boolean = false,
+    kittyBadge: Boolean = false,
+    dealerBadge: Boolean = false,
     /**
      * Pixel offset the card starts from before animating into position.
      * (0,0) = no animation; otherwise the card slides from this offset to rest.
@@ -210,60 +231,76 @@ private fun PlayerSlot(
         }
     }
 
-    Box(
-        modifier = modifier
-            .size(SLOT_W + 16.dp, SLOT_H + 24.dp)
-            .then(
-                if (winnerBorderAlpha > 0f)
-                    Modifier.border(
-                        width = 2.dp,
-                        color = Color(0xFFFFD700).copy(alpha = winnerBorderAlpha),
-                        shape = RoundedCornerShape(10.dp)
-                    )
-                else Modifier
-            ),
-        contentAlignment = Alignment.Center
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // ── Card image or empty slot ─────────────────────────────────────────
-        val cardModifier = Modifier
-            .size(SLOT_W, SLOT_H)
-            .offset { IntOffset(cardOffX.value.roundToInt(), cardOffY.value.roundToInt()) }
-            .scale(cardScale.value)
-            .alpha(cardAlpha.value)
+        // ── Card slot (with optional winner border) ──────────────────────────
+        Box(
+            modifier = Modifier
+                .size(SLOT_W + 16.dp, SLOT_H + 8.dp)
+                .then(
+                    if (winnerBorderAlpha > 0f)
+                        Modifier.border(
+                            width = 2.dp,
+                            color = Color(0xFFFFD700).copy(alpha = winnerBorderAlpha),
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                    else Modifier
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            val cardModifier = Modifier
+                .size(SLOT_W, SLOT_H)
+                .offset { IntOffset(cardOffX.value.roundToInt(), cardOffY.value.roundToInt()) }
+                .scale(cardScale.value)
+                .alpha(cardAlpha.value)
 
-        val displayCard = card
-        if (displayCard != null) {
-            val assetName = displayCard.assetFileName().removeSuffix(".png")
-            val resId     = context.resources.getIdentifier(assetName, "drawable", context.packageName)
-            if (resId != 0) {
-                Image(
-                    painter            = androidx.compose.ui.res.painterResource(id = resId),
-                    contentDescription = null,
-                    modifier           = cardModifier,
-                    contentScale       = ContentScale.Fit
+            val displayCard = card
+            if (displayCard != null) {
+                val assetName = displayCard.assetFileName().removeSuffix(".png")
+                val resId     = context.resources.getIdentifier(assetName, "drawable", context.packageName)
+                if (resId != 0) {
+                    Image(
+                        painter            = androidx.compose.ui.res.painterResource(id = resId),
+                        contentDescription = null,
+                        modifier           = cardModifier,
+                        contentScale       = ContentScale.Fit
+                    )
+                }
+            } else {
+                Box(
+                    modifier = cardModifier.background(
+                        color  = Color(0x33FFFFFF),
+                        shape  = RoundedCornerShape(8.dp)
+                    )
                 )
             }
-        } else {
-            Box(
-                modifier = cardModifier.background(
-                    color  = Color(0x33FFFFFF),
-                    shape  = RoundedCornerShape(8.dp)
-                )
-            )
         }
 
-        // ── Player name label ────────────────────────────────────────────────
+        // ── Player name label — fully below the card slot ────────────────────
+        val badge = when {
+            kittyBadge  -> " K"
+            dealerBadge -> " D"
+            else        -> ""
+        }
         Text(
-            text       = label,
-            color      = if (isLocal) Color(0xFFFFD700) else Color.White,
+            text = buildAnnotatedString {
+                withStyle(SpanStyle(color = if (isLocal) Color(0xFFFFD700) else Color.White)) {
+                    append(label)
+                }
+                if (badge.isNotEmpty()) {
+                    withStyle(SpanStyle(color = Color(0xFFFFD700), fontWeight = FontWeight.Bold)) {
+                        append(badge)
+                    }
+                }
+            },
             fontSize   = 22.sp,
             fontWeight = if (isLocal) FontWeight.Bold else FontWeight.Normal,
             textAlign  = TextAlign.Center,
             softWrap   = false,
             overflow   = TextOverflow.Visible,
-            modifier   = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(top = 4.dp)
+            modifier   = Modifier.padding(top = 4.dp)
         )
     }
 }

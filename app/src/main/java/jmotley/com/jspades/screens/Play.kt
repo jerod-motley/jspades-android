@@ -145,7 +145,11 @@ fun PlayScreen(
                         showEndGameOverlay = true
                     }
                 }
-                else -> {}
+                else -> {
+                    // Leaving EndHand/Finished — clear overlays so they don't flash on re-entry
+                    showEndHandOverlay  = false
+                    showEndGameOverlay  = false
+                }
             }
         }
 
@@ -213,7 +217,7 @@ fun PlayScreen(
         Text(
             text = resolvedGameType.label,
             style = MaterialTheme.typography.titleLarge,
-            color = MaterialTheme.colorScheme.onBackground,
+            color = Color(0xFFFFD700),
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
@@ -327,7 +331,7 @@ fun PlayScreen(
                 )
                 BidView(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
-                    modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 52.dp)
+                    modifier = Modifier.fillMaxSize()
                 )
                 Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
                     Spacer(Modifier.height(20.dp))

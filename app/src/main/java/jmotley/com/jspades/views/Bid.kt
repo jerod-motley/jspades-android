@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -97,9 +98,13 @@ fun BidView(
     var selectedBid by remember(minBid) { mutableIntStateOf(minBid) }
 
     Box(
-        modifier = modifier
-            .background(color = Color(0xCC000000), shape = RoundedCornerShape(16.dp))
-            .padding(24.dp),
+        modifier = modifier.fillMaxSize().background(Color(0xCC000000)),
+        contentAlignment = Alignment.Center
+    ) {
+    Box(
+        modifier = Modifier
+            .background(color = Color(0xFF16213E), shape = RoundedCornerShape(16.dp))
+            .padding(28.dp),
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -107,7 +112,7 @@ fun BidView(
             Text(
                 text = if (isHouseRules) "Team Bid" else "Your Bid",
                 color = Color.White,
-                fontSize = 20.sp,
+                fontSize = 26.sp,
                 fontWeight = FontWeight.Bold
             )
 
@@ -162,10 +167,10 @@ fun BidView(
                 Text(
                     text = if (selectedBid == 0) "Nil" else "$selectedBid",
                     color = Color.White,
-                    fontSize = 36.sp,
+                    fontSize = 44.sp,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.width(60.dp)
+                    modifier = Modifier.width(72.dp)
                 )
                 BidAdjustButton(label = "+") {
                     if (selectedBid < MAX_BID) selectedBid++
@@ -200,7 +205,7 @@ fun BidView(
             // Confirm button
             Box(
                 modifier = Modifier
-                    .size(width = 160.dp, height = 48.dp)
+                    .size(width = 200.dp, height = 56.dp)
                     .background(color = Color(0xFF1B5E20), shape = RoundedCornerShape(8.dp))
                     .clickable {
                         if (isHouseRules) {
@@ -215,10 +220,11 @@ fun BidView(
                     text = "Confirm Bid",
                     color = Color.White,
                     fontWeight = FontWeight.SemiBold,
-                    fontSize = 16.sp
+                    fontSize = 18.sp
                 )
             }
         }
+    }
     }
 }
 
@@ -226,12 +232,12 @@ fun BidView(
 private fun BidAdjustButton(label: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .size(44.dp)
+            .size(56.dp)
             .background(color = Color(0xFF37474F), shape = RoundedCornerShape(8.dp))
             .clickable { onClick() },
         contentAlignment = Alignment.Center
     ) {
-        Text(text = label, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Text(text = label, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -240,11 +246,11 @@ private fun QuickPick(value: Int, label: String, selected: Boolean, onClick: () 
     val bg = if (selected) Color(0xFF1565C0) else Color(0xFF37474F)
     Box(
         modifier = Modifier
-            .size(28.dp)
+            .size(40.dp)
             .background(color = bg, shape = RoundedCornerShape(4.dp))
             .clickable { onClick() },
         contentAlignment = Alignment.Center
     ) {
-        Text(text = label, color = Color.White, fontSize = 11.sp)
+        Text(text = label, color = Color.White, fontSize = 15.sp)
     }
 }
