@@ -102,6 +102,41 @@ fun PlayScreen(
     val context = LocalContext.current
     val currentVideoAsset by viewModel.currentVideoAsset.collectAsState()
 
+    // ── Renege joke state (persisted across sessions) ─────────────────────────
+    var renegeJokeText by remember { mutableStateOf<String?>(null) }
+    val renegeScope = androidx.compose.runtime.rememberCoroutineScope()
+    var renegeJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    val renegeJokes = jmotley.com.jspades.data.Constants.RENEGE_JOKES
+    val renegePrefs = remember { context.getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE) }
+    val defaultRenegeMessage = "You must follow suit!"
+
+    val onRenegeAttempt: () -> Unit = {
+        renegeJob?.cancel()
+        val count = renegePrefs.getInt("renege_count", 0)
+        val lastIndex = renegePrefs.getInt("last_joke_index", -1)
+
+        if (count < 3) {
+            // First 3 attempts: show default message
+            renegeJokeText = defaultRenegeMessage
+            renegePrefs.edit().putInt("renege_count", count + 1).apply()
+        } else {
+            // After 3 defaults: cycle through jokes sequentially
+            val nextIndex = (lastIndex + 1) % renegeJokes.size
+            renegeJokeText = renegeJokes[nextIndex]
+            val editor = renegePrefs.edit().putInt("last_joke_index", nextIndex)
+            // Reset only after every joke has been shown
+            if (nextIndex == renegeJokes.size - 1) {
+                editor.putInt("renege_count", 0).putInt("last_joke_index", -1)
+            }
+            editor.apply()
+        }
+
+        renegeJob = renegeScope.launch {
+            delay(3000L)
+            renegeJokeText = null
+        }
+    }
+
     // ── Video event collector ─────────────────────────────────────────────────
     // Merges all three video flows into a single currentVideoAsset state.
     LaunchedEffect("video") {
@@ -405,6 +440,17 @@ fun PlayScreen(
                             Text("Tap again to play", color = Color.White, fontSize = 14.sp)
                         }
                     }
+                    renegeJokeText?.let { joke ->
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xCC5C1A1A), RoundedCornerShape(0.dp))
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(joke, color = Color(0xFFFFD700), fontSize = 14.sp)
+                        }
+                    }
                     GameInfoView(
                         state = state, viewModel = viewModel,
                         localPlayerId = localPlayerId
@@ -412,7 +458,8 @@ fun PlayScreen(
                     HandView(
                         state = state, viewModel = viewModel,
                         localPlayerId = localPlayerId,
-                        onTapMessageChanged = { showTapMessage = it }
+                        onTapMessageChanged = { showTapMessage = it },
+                        onRenegeAttempt = onRenegeAttempt
                     )
                     Spacer(Modifier.height(62.dp))
                 }

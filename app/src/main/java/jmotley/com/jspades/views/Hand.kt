@@ -75,6 +75,7 @@ fun HandView(
     viewModel: GameViewModel,
     localPlayerId: String,
     onTapMessageChanged: ((Boolean) -> Unit)? = null,
+    onRenegeAttempt: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val liveCards    = state.localHand(localPlayerId)
@@ -144,6 +145,8 @@ fun HandView(
                     onTapMessageChanged?.invoke(false)
                 }
             }
+        } else if (isTrickHuman && card.uid !in validUids) {
+            onRenegeAttempt?.invoke()
         }
     }
 
