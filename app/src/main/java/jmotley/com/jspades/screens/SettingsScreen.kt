@@ -15,17 +15,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -46,9 +42,10 @@ private val SettAccentGold  = Color(0xFFFFD700)
 private val SettTextPrimary = Color.White
 private val SettTextSecond  = Color(0xFFAAAAAA)
 
-private const val PREFS            = "jspades_prefs"
-private const val KEY_SOUND        = "sound_enabled"
-private const val KEY_HOUSE_MIN_BID = "house_rules_min_bid"
+private const val PREFS                 = "jspades_prefs"
+private const val KEY_TWO_SPADES_JOKER  = "two_of_spades_joker"
+private const val KEY_SPADES_MUST_BREAK = "spades_must_break"
+private const val KEY_MIN_BID_FIVE      = "min_bid_five"
 
 @Composable
 fun SettingsScreen(onNavigateBack: () -> Unit) {
@@ -56,8 +53,9 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
     val context = LocalContext.current
     val prefs   = remember { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
 
-    var soundEnabled by remember { mutableStateOf(prefs.getBoolean(KEY_SOUND, true)) }
-    var houseMinBid  by remember { mutableIntStateOf(prefs.getInt(KEY_HOUSE_MIN_BID, 4)) }
+    var twoSpadesJoker  by remember { mutableStateOf(prefs.getBoolean(KEY_TWO_SPADES_JOKER, false)) }
+    var spadesMustBreak by remember { mutableStateOf(prefs.getBoolean(KEY_SPADES_MUST_BREAK, false)) }
+    var minBidFive      by remember { mutableStateOf(prefs.getBoolean(KEY_MIN_BID_FIVE, false)) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Image(
@@ -86,12 +84,12 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text("Sound Effects", color = SettTextPrimary, fontSize = 16.sp)
+                Text("2♠ as 3rd Joker", color = SettTextPrimary, fontSize = 16.sp)
                 Switch(
-                    checked = soundEnabled,
+                    checked = twoSpadesJoker,
                     onCheckedChange = { on ->
-                        soundEnabled = on
-                        prefs.edit().putBoolean(KEY_SOUND, on).apply()
+                        twoSpadesJoker = on
+                        prefs.edit().putBoolean(KEY_TWO_SPADES_JOKER, on).apply()
                     },
                     colors = SwitchDefaults.colors(
                         checkedThumbColor = SettAccentGold,
@@ -104,25 +102,46 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
         Spacer(Modifier.height(8.dp))
 
         SettingsCard {
-            Text(
-                text = "House Rules Minimum Bid",
-                color = SettTextPrimary,
-                fontSize = 16.sp
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                listOf(4, 5).forEach { value: Int ->
-                    RadioButton(
-                        selected = houseMinBid == value,
-                        onClick = {
-                            houseMinBid = value
-                            prefs.edit().putInt(KEY_HOUSE_MIN_BID, value).apply()
-                        },
-                        colors = RadioButtonDefaults.colors(selectedColor = SettAccentGold)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("Spades Must Break", color = SettTextPrimary, fontSize = 16.sp)
+                Switch(
+                    checked = spadesMustBreak,
+                    onCheckedChange = { on ->
+                        spadesMustBreak = on
+                        prefs.edit().putBoolean(KEY_SPADES_MUST_BREAK, on).apply()
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = SettAccentGold,
+                        checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
                     )
-                    Text("$value", color = SettTextPrimary, fontSize = 14.sp)
-                    Spacer(Modifier.width(24.dp))
-                }
+                )
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        SettingsCard {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("Minimum Bid 5", color = SettTextPrimary, fontSize = 16.sp)
+                Switch(
+                    checked = minBidFive,
+                    onCheckedChange = { on ->
+                        minBidFive = on
+                        prefs.edit().putBoolean(KEY_MIN_BID_FIVE, on).apply()
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = SettAccentGold,
+                        checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                    )
+                )
             }
         }
 

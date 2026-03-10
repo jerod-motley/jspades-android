@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.sp
 import jmotley.com.jspades.data.GamePhase
 import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.GameType
+import jmotley.com.jspades.data.effectiveMinBid
 import jmotley.com.jspades.models.GameViewModel
 
 private const val MAX_BID = 13
@@ -58,7 +59,7 @@ fun BidView(
 ) {
     val isHouseRules = state.gameType == GameType.HOUSE_RULES
     val isSolo       = !state.gameType.useTeams
-    val minBid       = state.gameType.minimumBid
+    val minBid       = state.effectiveMinBid
     val playerCount  = state.players.size
 
     // leaderIndex is the first-to-act; dealer is one seat clockwise from the leader.

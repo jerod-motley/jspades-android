@@ -59,7 +59,7 @@ fun ReplayHandView(
     replay: HandReplay,
     onDismiss: () -> Unit
 ) {
-    val lookup   = remember(replay.gameType) { buildCardLookup(replay.gameType) }
+    val lookup   = remember(replay.gameType, replay.twoOfSpadesJoker) { buildCardLookup(replay.gameType, replay.twoOfSpadesJoker) }
     val total    = replay.events.size
     var stepIndex by remember { mutableIntStateOf(0) }
     var isPlaying by remember { mutableStateOf(false) }

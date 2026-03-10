@@ -15,6 +15,7 @@ import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.data.AnimationEvent
 import jmotley.com.jspades.data.ReplayEvent
 import jmotley.com.jspades.data.Score
+import jmotley.com.jspades.data.effectiveMinBid
 import jmotley.com.jspades.models.GameViewModel
 import jmotley.com.jspades.networking.PlayLogApi
 import jmotley.com.jspades.networking.PlayLogGame
@@ -127,6 +128,12 @@ class PhaseManager(
         if (gt.removeTwoOfHearts) deck.removeIf { it.suit == Suit.HEARTS && it.rank == Rank.TWO }
         if (gt.removeTwoOfClubs)  deck.removeIf { it.suit == Suit.CLUBS  && it.rank == Rank.TWO }
 
+        // 3b. Promote 2♠ to DEUCE rank (3rd joker) if the setting is on
+        if (state.twoOfSpadesJoker) {
+            val idx = deck.indexOfFirst { it.suit == Suit.SPADES && it.rank == Rank.TWO }
+            if (idx >= 0) deck[idx] = Card(suit = Suit.SPADES, rank = Rank.DEUCE)
+        }
+
         // 4. Shuffle
         val shuffled = deck.shuffled().toMutableList()
 
@@ -169,8 +176,10 @@ class PhaseManager(
         val kittySlice    = shuffled.take(gt.kittySize).toMutableList()
         val playerCards   = shuffled.drop(gt.kittySize).toMutableList()
 
-        // Ensure 2♠ is in a player's hand
-        val kittyIdx = kittySlice.indexOfFirst { it.suit == Suit.SPADES && it.rank == Rank.TWO }
+        // Ensure 2♠ (Rank.TWO or Rank.DEUCE when twoOfSpadesJoker is on) is in a player's hand
+        val kittyIdx = kittySlice.indexOfFirst {
+            it.suit == Suit.SPADES && (it.rank == Rank.TWO || it.rank == Rank.DEUCE)
+        }
         if (kittyIdx >= 0) {
             val swapIdx = playerCards.indices.random()
             val displaced = playerCards[swapIdx]
@@ -190,7 +199,7 @@ class PhaseManager(
 
         // Record which player holds the 2♠ (kitty winner)
         val kittyWinnerId = dealt.entries.firstOrNull { (_, cards) ->
-            cards.any { it.suit == Suit.SPADES && it.rank == Rank.TWO }
+            cards.any { it.suit == Suit.SPADES && (it.rank == Rank.TWO || it.rank == Rank.DEUCE) }
         }?.key
         if (kittyWinnerId != null) viewModel.setKittyWinner(kittyWinnerId)
     }
@@ -343,7 +352,7 @@ class PhaseManager(
                 val teamBid = teamPlayers.sumOf { player ->
                     s.phaseHands[GamePhase.Deal]?.lastOrNull()
                         ?.perPlayer?.get(player.id)?.bid ?: 0
-                }.coerceAtLeast(s.gameType.minimumBid)
+                }.coerceAtLeast(s.effectiveMinBid)
                 viewModel.setTeamBid(teamId, teamBid)
             }
             // fall through to next team
@@ -364,7 +373,7 @@ class PhaseManager(
         for (teamId in listOf(0, 1)) {
             val teamPlayerIds = s.players.filter { it.team == teamId }.map { it.id }
             var teamTotal = teamPlayerIds.sumOf { id -> hand.perPlayer[id]?.bid ?: 0 }
-            if (isKitty) teamTotal = teamTotal.coerceIn(s.gameType.minimumBid, 12)
+            if (isKitty) teamTotal = teamTotal.coerceIn(s.effectiveMinBid, 12)
             viewModel.setTeamBid(teamId, teamTotal)
         }
     }

@@ -364,10 +364,6 @@ fun PlayScreen(
                     trickWinner = trickWinner,
                     modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp)
                 )
-                BidView(
-                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
-                    modifier = Modifier.fillMaxSize()
-                )
                 Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
                     Spacer(Modifier.height(20.dp))
                     GameInfoView(
@@ -380,6 +376,10 @@ fun PlayScreen(
                     )
                     Spacer(Modifier.height(62.dp))
                 }
+                BidView(
+                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
+                    modifier = Modifier.fillMaxSize()
+                )
             }
 
             // ── Kitty ─────────────────────────────────────────────────────────

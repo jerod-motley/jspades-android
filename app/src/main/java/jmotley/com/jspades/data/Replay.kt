@@ -35,5 +35,6 @@ sealed class ReplayEvent {
 data class HandReplay(
     val players: List<Player>,
     val gameType: GameType,
-    val events: List<ReplayEvent>
+    val events: List<ReplayEvent>,
+    val twoOfSpadesJoker: Boolean = false
 )

@@ -4,6 +4,7 @@ import jmotley.com.jspades.data.Card
 import jmotley.com.jspades.data.GamePhase
 import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.GameType
+import jmotley.com.jspades.data.effectiveMinBid
 import jmotley.com.jspades.data.Player
 import jmotley.com.jspades.data.Rank
 import jmotley.com.jspades.data.Suit
@@ -114,7 +115,7 @@ object BidEngine {
                 } ?: false
                 val deficit = teamScore(state, 1 - player.team) - teamScore(state, player.team)
                 if (!teammateBlind && deficit >= 100)
-                    BidResult(bid = state.gameType.minimumBid, isBlind = true)
+                    BidResult(bid = state.effectiveMinBid, isBlind = true)
                 else
                     BidResult(base.coerceIn(0, 13))
             }

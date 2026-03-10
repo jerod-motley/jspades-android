@@ -14,7 +14,7 @@ Modes (available game types)
 - **Two/Three Player Variants**: Adjusted deal sizes and turn/order logic to support 2- and 3-player Spades variants.
 
 Challenges and achievements
-- The app contains a set of built-in challenges (examples): "Walk All Kings", "Get X Books", "No Aces", "Get All Books", "By Yourself", "Get 4 No Trump", "Double Bid", "Set Two", "Walk 4 Ladies", etc. Challenges are mapped to particular game modes and can be selected from the Challenge UI.
+- The app contains a set of built-in challenges (examples): "Walk All Kings", "Get X Books", "No Aces", "Get All Books", "By Yourself", "Double Bid", "Set Two", "Walk 4 Ladies", etc. Challenges are mapped to particular game modes and can be selected from the Challenge UI.
 - Achievements and challenge progress are persisted locally in the app database.
 
 Options and rules you can configure

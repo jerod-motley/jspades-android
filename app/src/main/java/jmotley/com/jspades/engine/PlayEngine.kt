@@ -101,7 +101,7 @@ object PlayEngine {
      * [classic] gates trump leads on [GameState.spadesBroken].
      */
     private fun winnerLead(player: Player, hand: List<Card>, state: GameState, classic: Boolean): Card {
-        val canLeadTrump = !classic || state.spadesBroken
+        val canLeadTrump = (!classic && !state.spadesMustBreak) || state.spadesBroken
         val numTrump     = hand.count { isTrump(it) }
         val trumpPlayed  = state.discard.count { isTrump(it) }
         val totalTrump   = 13 + (if (state.gameType.includeJokers) 2 else 0) // approx max trump
@@ -156,16 +156,17 @@ object PlayEngine {
         }
 
         // 10. Guaranteed strength-5 winner
-        strength5(hand)?.let { return it }
+        if (canLeadTrump) strength5(hand)?.let { return it }
 
         // 11. Low-strength probe card
         hand.firstOrNull { rateCard(it, hand) < 3 }?.let { return it }
 
         // 12. Low trump (non-top)
-        hand.firstOrNull { isTrump(it) && rateCard(it, hand) < 4 }?.let { return it }
+        if (canLeadTrump) hand.firstOrNull { isTrump(it) && rateCard(it, hand) < 4 }?.let { return it }
 
-        // 13. Anything
-        return hand.first()
+        // 13. Anything — prefer non-trump if spades haven't broken
+        return if (!canLeadTrump) hand.firstOrNull { !isTrump(it) } ?: hand.first()
+               else hand.first()
     }
 
     /** Solo lead: same priority but checks all remaining opponents (not just named seats). */
@@ -173,6 +174,7 @@ object PlayEngine {
         val numTrump    = hand.count { isTrump(it) }
         val trumpPlayed = state.discard.count { isTrump(it) }
         val totalTrump  = 13 + (if (state.gameType.includeJokers) 2 else 0)
+        val canLeadTrump = !state.spadesMustBreak || state.spadesBroken
         val opps        = opponents(player, state)
 
         // 1. All opponents void in spades
@@ -184,12 +186,14 @@ object PlayEngine {
         hand.firstOrNull { it.rank == Rank.ACE && !isTrump(it) }?.let { return it }
 
         // 3. Pull trump
-        if (numTrump > 2 || hand.size < 3) highestTrump(hand, state)?.let { return it }
-        val half = (totalTrump - trumpPlayed) / 2
-        if (numTrump >= half && numTrump > 2) {
-            strength5(hand)?.let { return it }
-            highestTrump(hand, state)?.let { return it }
-            hand.firstOrNull { isTrump(it) && it.rank.ordinal < Rank.JACK.ordinal }?.let { return it }
+        if (canLeadTrump) {
+            if (numTrump > 2 || hand.size < 3) highestTrump(hand, state)?.let { return it }
+            val half = (totalTrump - trumpPlayed) / 2
+            if (numTrump >= half && numTrump > 2) {
+                strength5(hand)?.let { return it }
+                highestTrump(hand, state)?.let { return it }
+                hand.firstOrNull { isTrump(it) && it.rank.ordinal < Rank.JACK.ordinal }?.let { return it }
+            }
         }
 
         // 4. High non-trump (no opponent after me is cutting that suit)
@@ -212,11 +216,12 @@ object PlayEngine {
         hand.filter { !isTrump(it) }
             .firstOrNull { it.rank == highestRemainingNonTrump(it.suit, state) }?.let { return it }
         fishNonTrump(hand, state)?.let { return it }
-        if (numTrump > 1) highestTrump(hand, state)?.let { return it }
-        strength5(hand)?.let { return it }
+        if (canLeadTrump && numTrump > 1) highestTrump(hand, state)?.let { return it }
+        if (canLeadTrump) strength5(hand)?.let { return it }
         hand.firstOrNull { rateCard(it, hand) < 3 }?.let { return it }
-        hand.firstOrNull { isTrump(it) && rateCard(it, hand) < 4 }?.let { return it }
-        return hand.first()
+        if (canLeadTrump) hand.firstOrNull { isTrump(it) && rateCard(it, hand) < 4 }?.let { return it }
+        return if (!canLeadTrump) hand.firstOrNull { !isTrump(it) } ?: hand.first()
+               else hand.first()
     }
 
     // ── Loser leads ────────────────────────────────────────────────────────

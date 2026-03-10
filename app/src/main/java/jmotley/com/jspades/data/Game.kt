@@ -39,7 +39,9 @@ data class Card(
         } else {
             suit.ordinal + 1
         }
-        return "c${rank.value}_$suitIndex.png"
+        // DEUCE is the 2♠-as-3rd-joker rank; it shares the 2♠ card image.
+        val displayValue = if (rank == Rank.DEUCE) Rank.TWO.value else rank.value
+        return "c${displayValue}_$suitIndex.png"
     }
 }
 
@@ -227,7 +229,23 @@ data class GameState(
      * Optional rule: a bid of 10 or more earns double points (bid × 20).
      * Defaults off; toggled from the settings screen before the game ships.
      */
+    /**
+     * Optional rule: the 2♠ acts as the third joker (ranked below Little Joker,
+     * above the Ace of Spades). Only meaningful for game types with [includeJokers].
+     * Defaults off; toggled from the settings screen.
+     */
+    val twoOfSpadesJoker: Boolean = false,
     val enableDoubleBidBonus: Boolean = false,
+    /**
+     * Optional rule: spades cannot be led until they have been "broken"
+     * (a spade played on a non-spade lead). Always true in Classic; optional elsewhere.
+     */
+    val spadesMustBreak: Boolean = false,
+    /**
+     * Optional rule: House Rules minimum bid is raised from 4 to 5.
+     * Only applies to [GameType.HOUSE_RULES]. Defaults off.
+     */
+    val minBidFive: Boolean = false,
     /**
      * Optional rule: every 10 accumulated sandbags costs −100 points.
      * Defaults on per standard Spades rules; toggled from the settings screen.
@@ -257,6 +275,10 @@ data class GameState(
      */
     val lastHandReplay: HandReplay? = null
 )
+
+/** Effective minimum bid: 5 when [GameState.minBidFive] is on for House Rules, otherwise the game type default. */
+val GameState.effectiveMinBid: Int get() =
+    if (minBidFive && gameType == GameType.HOUSE_RULES) 5 else gameType.minimumBid
 
 /** Helpers */
 fun GameState.playerById(id: String): Player? = players.find { it.id == id }

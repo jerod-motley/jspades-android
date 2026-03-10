@@ -96,8 +96,20 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	fun onLobbyComplete(ids: List<String>, names: List<String>, gameType: GameType) {
 		require(ids.size == gameType.playerCount && names.size == gameType.playerCount)
 		val players = defaultPlayers(ids, names, gameType)
+		val prefs = context.getSharedPreferences("jspades_prefs", Context.MODE_PRIVATE)
+		val twoOfSpadesJoker = prefs.getBoolean("two_of_spades_joker", false)
+		val spadesMustBreak  = prefs.getBoolean("spades_must_break", false)
+		val minBidFive       = prefs.getBoolean("min_bid_five", false)
 		// leaderIndex = 1: west (left of south) bids/leads first; south is initial dealer.
-		_state.value = _state.value.copy(players = players, phase = GamePhase.Deal, gameType = gameType, leaderIndex = 1)
+		_state.value = _state.value.copy(
+			players          = players,
+			phase            = GamePhase.Deal,
+			gameType         = gameType,
+			leaderIndex      = 1,
+			twoOfSpadesJoker = twoOfSpadesJoker,
+			spadesMustBreak  = spadesMustBreak,
+			minBidFive       = minBidFive
+		)
 		phaseManager.execute()
 	}
 
@@ -437,9 +449,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 				|| c.rank == jmotley.com.jspades.data.Rank.BIGJOKER }
 		val leadPlay = s.currentTrick.plays.firstOrNull { it != null }
 
-		// Leading: Classic gate — can't lead trump unless that's all you have
+		// Leading: spades-must-break gate — can't lead trump unless spades broken or hand is all trump
 		if (leadPlay == null) {
-			if (s.gameType == GameType.TEAM_CLASSIC && !s.spadesBroken && isTrump(card)) {
+			val mustBreakGate = s.gameType == GameType.TEAM_CLASSIC || s.spadesMustBreak
+			if (mustBreakGate && !s.spadesBroken && isTrump(card)) {
 				return hand.all { isTrump(it) }
 			}
 			return true
@@ -489,9 +502,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		val current = _state.value
 		_state.value = current.copy(
 			lastHandReplay = HandReplay(
-				players   = current.players,
-				gameType  = current.gameType,
-				events    = current.replayEvents
+				players          = current.players,
+				gameType         = current.gameType,
+				events           = current.replayEvents,
+				twoOfSpadesJoker = current.twoOfSpadesJoker
 			),
 			replayEvents = emptyList()
 		)
@@ -523,12 +537,15 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	fun playAgain() {
 		val current = _state.value
 		_state.value = GameState(
-			players     = current.players.map { p ->
+			players          = current.players.map { p ->
 				p.copy(runtimeFlags = RuntimeFlags(seatIndex = p.runtimeFlags.seatIndex))
 			},
-			gameType    = current.gameType,
-			phase       = GamePhase.Deal,
-			leaderIndex = 1
+			gameType         = current.gameType,
+			phase            = GamePhase.Deal,
+			leaderIndex      = 1,
+			twoOfSpadesJoker = current.twoOfSpadesJoker,
+			spadesMustBreak  = current.spadesMustBreak,
+			minBidFive       = current.minBidFive
 		)
 		frustratedVideoFiredThisHand = false
 		setCurrentVideoAsset(null)
