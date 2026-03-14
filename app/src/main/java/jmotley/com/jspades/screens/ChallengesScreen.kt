@@ -30,7 +30,7 @@ private val CardBg     = Color(0xFF16213E)
 private val AccentGold = Color(0xFFFFD700)
 private val AccentGreen= Color(0xFF4CAF50)
 private val TextPrimary   = Color.White
-private val TextSecondary = Color(0xFFAAAAAA)
+private val TextSecondary = Color.White
 
 /**
  * Screen that lists all challenges for a given game type.

@@ -8,6 +8,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,7 +28,7 @@ private val MsgDarkBg       = Color(0xFF1A1A2E)
 private val MsgCardBg       = Color(0xFF16213E)
 private val MsgAccentGold   = Color(0xFFFFD700)
 private val MsgTextPrimary  = Color.White
-private val MsgTextSecondary = Color(0xFFAAAAAA)
+private val MsgTextSecondary = Color.White
 
 @Composable
 fun MessagesScreen(
@@ -66,7 +67,7 @@ fun MessagesScreen(
                     Text(
                         "Could not load messages.",
                         color = MsgTextSecondary,
-                        fontSize = 14.sp,
+                        style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(16.dp)
                     )
                 }
@@ -75,7 +76,7 @@ fun MessagesScreen(
                     Text(
                         "No messages yet — start the conversation!",
                         color = MsgTextSecondary,
-                        fontSize = 14.sp,
+                        style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(16.dp)
                     )
                 }
@@ -87,7 +88,7 @@ fun MessagesScreen(
                 Text(
                     "Community Messages",
                     fontFamily = font,
-                    fontSize = 40.sp,
+                    style = MaterialTheme.typography.displaySmall,
                     color = MsgAccentGold,
                     modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
                     textAlign = TextAlign.Center
@@ -106,7 +107,7 @@ fun MessagesScreen(
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
-                    placeholder = { Text("Say something…", color = MsgTextSecondary, fontSize = 13.sp) },
+                    placeholder = { Text("Say something…", color = MsgTextSecondary, style = MaterialTheme.typography.bodySmall) },
                     modifier = Modifier.weight(1f),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = MsgAccentGold,
@@ -123,7 +124,7 @@ fun MessagesScreen(
                     shape = RoundedCornerShape(6.dp),
                     enabled = draft.isNotBlank()
                 ) {
-                    Text("Send", color = Color.Black, fontSize = 13.sp)
+                    Text("Send", color = Color.Black, style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -132,7 +133,7 @@ fun MessagesScreen(
             onClick = onNavigateBack,
             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
         ) {
-            Text("Back", color = MsgTextSecondary, fontSize = 16.sp)
+            Text("Back", color = MsgTextSecondary, style = MaterialTheme.typography.bodyLarge)
         }
     }
     }
@@ -146,9 +147,9 @@ private fun MessageBubble(message: Message) {
         shape = RoundedCornerShape(10.dp)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            Text(message.author, color = MsgAccentGold, fontSize = 12.sp)
+            Text(message.author, color = MsgAccentGold, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(2.dp))
-            Text(message.text, color = MsgTextPrimary, fontSize = 14.sp)
+            Text(message.text, color = MsgTextPrimary, style = MaterialTheme.typography.bodyMedium)
         }
     }
 }

@@ -27,7 +27,7 @@ private val DarkBg      = Color(0xFF1A1A2E)
 private val CardBg      = Color(0xFF16213E)
 private val AccentGold  = Color(0xFFFFD700)
 private val TextPrimary = Color.White
-private val TextSecondary = Color(0xFFAAAAAA)
+private val TextSecondary = Color.White
 
 @Composable
 fun SuggestionsScreen(

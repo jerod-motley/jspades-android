@@ -21,6 +21,7 @@ import jmotley.com.jspades.networking.PlayLogApi
 import jmotley.com.jspades.networking.PlayLogGame
 import jmotley.com.jspades.networking.PlayLogPayload
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
@@ -68,6 +69,21 @@ class PhaseManager(
     }
 
     /**
+     * Called when the human confirms the bid review summary (OK button).
+     * Bypasses handleBid and goes directly to the post-bid phase.
+     */
+    fun executeBidConfirmed() {
+        if (!busy.compareAndSet(false, true)) return
+        scope.launch {
+            try {
+                advanceAfterBidding()
+            } finally {
+                busy.set(false)
+            }
+        }
+    }
+
+    /**
      * Internal dispatch — calls the handler for the current phase.
      * Handlers that chain synchronously call this directly instead of [execute]
      * so they stay within the same coroutine and don't trip the re-entrancy guard.
@@ -81,6 +97,7 @@ class PhaseManager(
             GamePhase.DealHuman   -> handleDealHuman()
             GamePhase.Bid         -> handleBid()
             GamePhase.BidHuman    -> { /* UI owns this phase — waits for submitBid() */ }
+            GamePhase.BidReview   -> { /* UI owns this phase — waits for submitBidReview() */ }
             GamePhase.KittyReveal -> handleKittyReveal()
             GamePhase.Kitty       -> handleKitty()
             GamePhase.KittyHuman  -> { /* UI owns this phase — waits for kitty exchange */ }
@@ -304,9 +321,9 @@ class PhaseManager(
                 return
             }
         }
-        // All players have bid — compute team totals for team games
+        // All players have bid — compute team totals, then wait for human OK
         if (s.gameType.useTeams) finalizeTeamBids()
-        advanceAfterBidding()
+        viewModel.advancePhase(GamePhase.BidReview)
     }
 
     /**
@@ -358,7 +375,7 @@ class PhaseManager(
             // fall through to next team
         }
 
-        advanceAfterBidding()
+        viewModel.advancePhase(GamePhase.BidReview)
     }
 
     /**
@@ -441,6 +458,14 @@ class PhaseManager(
     private suspend fun handleTrick() {
         val s          = viewModel.state.value
         val n          = s.players.size
+
+        // If the human just played (South's card is the most recent play), pause so
+        // South's card animation has time to land before the next CPU reacts.
+        // plays[] is filled in sequence order, so plays[playedCount-1] = last play.
+        val playedCount = s.currentTrick.plays.count { it != null }
+        if (playedCount > 0 && s.currentTrick.plays[playedCount - 1]?.playerId == "south") {
+            delay(1000)
+        }
 
         // Guard: if the trick is already complete (e.g. human played last),
         // go straight to TrickResolve instead of selecting another card.

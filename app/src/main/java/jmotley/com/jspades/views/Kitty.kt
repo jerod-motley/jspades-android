@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -68,7 +69,7 @@ fun KittyView(
             Text(
                 text = "Kitty",
                 color = Color(0xFFFFD700),
-                fontSize = 22.sp,
+                style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
 
@@ -79,7 +80,7 @@ fun KittyView(
                 Text(
                     text = "No kitty cards",
                     color = Color.White.copy(alpha = 0.5f),
-                    fontSize = 14.sp
+                    style = MaterialTheme.typography.bodyMedium
                 )
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -110,7 +111,7 @@ fun KittyView(
                     text = "Done",
                     color = Color.White,
                     fontWeight = FontWeight.SemiBold,
-                    fontSize = 16.sp
+                    style = MaterialTheme.typography.bodyLarge
                 )
             }
         }
@@ -146,7 +147,7 @@ private fun KittyCard(card: Card, onClick: () -> Unit) {
                 Text(
                     text = "${card.rank.value}\n${card.suit.name.first()}",
                     color = Color.White,
-                    fontSize = 10.sp
+                    style = MaterialTheme.typography.labelSmall
                 )
             }
         }

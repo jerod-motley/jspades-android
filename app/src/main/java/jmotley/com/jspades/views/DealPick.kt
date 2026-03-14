@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -59,7 +60,7 @@ fun DealPickView(
         Text(
             text = "Pick a card",
             color = Color.White,
-            fontSize = 20.sp,
+            style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold
         )
 
@@ -86,7 +87,7 @@ fun DealPickView(
                     Text(
                         text = "${topCard.rank.value}\n${topCard.suit.name.first()}",
                         color = Color.White,
-                        fontSize = 14.sp,
+                        style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -128,7 +129,7 @@ private fun PickButton(label: String, onClick: () -> Unit) {
         Text(
             text = label,
             color = Color.White,
-            fontSize = 16.sp,
+            style = MaterialTheme.typography.bodyLarge,
             fontWeight = FontWeight.SemiBold
         )
     }

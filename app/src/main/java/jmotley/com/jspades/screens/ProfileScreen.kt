@@ -14,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -34,7 +35,7 @@ private val CardBg = Color(0xFF16213E)
 private val AccentGreen = Color(0xFF4CAF50)
 private val AccentGold = Color(0xFFFFD700)
 private val TextPrimary = Color.White
-private val TextSecondary = Color(0xFFAAAAAA)
+private val TextSecondary = Color.White
 
 @Composable
 fun ProfileScreen(
@@ -109,13 +110,13 @@ private fun RegistrationForm(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("Profile", fontFamily = font, fontSize = 48.sp, color = AccentGold)
+        Text("Profile", fontFamily = font, style = MaterialTheme.typography.displaySmall, color = AccentGold)
         Spacer(Modifier.height(8.dp))
         Text(
             "Create a free account to sync your stats and achievements.",
             color = TextSecondary,
             textAlign = TextAlign.Center,
-            fontSize = 14.sp
+            style = MaterialTheme.typography.bodyMedium
         )
         Spacer(Modifier.height(32.dp))
 
@@ -140,7 +141,7 @@ private fun RegistrationForm(
 
         if (errorMessage != null) {
             Spacer(Modifier.height(12.dp))
-            Text(errorMessage, color = Color.Red, fontSize = 13.sp, textAlign = TextAlign.Center)
+            Text(errorMessage, color = Color.Red, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
         }
 
         Spacer(Modifier.height(24.dp))
@@ -150,7 +151,7 @@ private fun RegistrationForm(
             colors = ButtonDefaults.buttonColors(containerColor = AccentGold),
             shape = RoundedCornerShape(8.dp)
         ) {
-            Text("Register", color = Color.Black, fontSize = 18.sp)
+            Text("Register", color = Color.Black, style = MaterialTheme.typography.titleMedium)
         }
         Spacer(Modifier.height(12.dp))
         TextButton(onClick = onBack) {
@@ -168,7 +169,7 @@ private fun LoadingView(font: FontFamily) {
     ) {
         CircularProgressIndicator(color = AccentGold)
         Spacer(Modifier.height(16.dp))
-        Text("Checking...", color = TextSecondary, fontSize = 16.sp)
+        Text("Checking...", color = TextSecondary, style = MaterialTheme.typography.bodyLarge)
     }
 }
 
@@ -179,13 +180,13 @@ private fun SentView(font: FontFamily) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("Check Your Email", fontFamily = font, fontSize = 36.sp, color = AccentGold, textAlign = TextAlign.Center)
+        Text("Check Your Email", fontFamily = font, style = MaterialTheme.typography.headlineMedium, color = AccentGold, textAlign = TextAlign.Center)
         Spacer(Modifier.height(16.dp))
         Text(
             "A verification link has been sent. Click the link in your email, then return to the app.",
             color = TextSecondary,
             textAlign = TextAlign.Center,
-            fontSize = 15.sp
+            style = MaterialTheme.typography.bodyMedium
         )
     }
 }
@@ -202,17 +203,17 @@ private fun NotVerifiedView(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("Not Verified Yet", fontFamily = font, fontSize = 36.sp, color = AccentGold, textAlign = TextAlign.Center)
+        Text("Not Verified Yet", fontFamily = font, style = MaterialTheme.typography.headlineMedium, color = AccentGold, textAlign = TextAlign.Center)
         Spacer(Modifier.height(16.dp))
         Text(
             "Your email hasn't been verified. Check your inbox and click the verification link.",
             color = TextSecondary,
             textAlign = TextAlign.Center,
-            fontSize = 15.sp
+            style = MaterialTheme.typography.bodyMedium
         )
         if (errorMessage != null) {
             Spacer(Modifier.height(12.dp))
-            Text(errorMessage, color = Color.Red, fontSize = 13.sp, textAlign = TextAlign.Center)
+            Text(errorMessage, color = Color.Red, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
         }
         Spacer(Modifier.height(32.dp))
         Button(
@@ -221,7 +222,7 @@ private fun NotVerifiedView(
             modifier = Modifier.fillMaxWidth().height(52.dp),
             shape = RoundedCornerShape(8.dp)
         ) {
-            Text("Recheck", color = Color.Black, fontSize = 18.sp)
+            Text("Recheck", color = Color.Black, style = MaterialTheme.typography.titleMedium)
         }
         Spacer(Modifier.height(12.dp))
         TextButton(onClick = onBack) {
@@ -244,10 +245,13 @@ private fun RegisteredView(
     ) {
         item {
             Spacer(Modifier.height(16.dp))
-            Text(username.ifBlank { "Player" }, fontFamily = font, fontSize = 48.sp, color = AccentGold,
+            TextButton(onClick = onBack) {
+                Text("Back", color = TextSecondary, style = MaterialTheme.typography.bodyLarge)
+            }
+            Text(username.ifBlank { "Player" }, fontFamily = font, style = MaterialTheme.typography.displaySmall, color = AccentGold,
                 modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
             Spacer(Modifier.height(4.dp))
-            Text("Verified Player", color = AccentGreen, fontSize = 13.sp,
+            Text("Verified Player", color = AccentGreen, style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
             Spacer(Modifier.height(16.dp))
         }
@@ -257,7 +261,7 @@ private fun RegisteredView(
                 StatCard("Stats") {
                     Text(
                         "No local stats yet. Play a game to start tracking!",
-                        color = TextSecondary, fontSize = 14.sp,
+                        color = TextSecondary, style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(8.dp)
                     )
                 }
@@ -306,7 +310,7 @@ private fun RegisteredView(
         }
 
         item {
-            Text("Achievements", fontFamily = font, fontSize = 32.sp, color = AccentGold,
+            Text("Achievements", fontFamily = font, style = MaterialTheme.typography.headlineMedium, color = AccentGold,
                 modifier = Modifier.padding(top = 8.dp))
         }
 
@@ -323,7 +327,7 @@ private fun RegisteredView(
         item {
             Spacer(Modifier.height(8.dp))
             TextButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
-                Text("Back", color = TextSecondary, fontSize = 16.sp)
+                Text("Back", color = TextSecondary, style = MaterialTheme.typography.bodyLarge)
             }
             Spacer(Modifier.height(24.dp))
         }
@@ -338,7 +342,7 @@ private fun StatCard(title: String, content: @Composable ColumnScope.() -> Unit)
         shape = RoundedCornerShape(12.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(title, color = AccentGold, fontSize = 16.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+            Text(title, color = AccentGold, style = MaterialTheme.typography.bodyLarge, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
             Spacer(Modifier.height(10.dp))
             content()
         }
@@ -347,12 +351,23 @@ private fun StatCard(title: String, content: @Composable ColumnScope.() -> Unit)
 
 @Composable
 private fun StatRow(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(label, color = TextSecondary, fontSize = 14.sp)
-        Text(value, color = TextPrimary, fontSize = 14.sp)
+    val fontScale = LocalConfiguration.current.fontScale
+    if (fontScale >= 1.3f) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(label, color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+            Text(value, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
+        }
+    } else {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(label, color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+            Text(value, color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
+        }
     }
 }
 
@@ -369,16 +384,16 @@ private fun AchievementRow(title: String, description: String, earnedDate: Strin
         ) {
             Text(
                 if (achieved) "✓" else "🔒",
-                fontSize = 22.sp,
+                style = MaterialTheme.typography.titleLarge,
                 color = if (achieved) AccentGreen else TextSecondary,
                 modifier = Modifier.width(36.dp)
             )
             Column(modifier = Modifier.weight(1f)) {
-                Text(title, color = if (achieved) TextPrimary else TextSecondary, fontSize = 15.sp)
-                Text(description, color = TextSecondary, fontSize = 12.sp)
+                Text(title, color = if (achieved) TextPrimary else TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                Text(description, color = TextSecondary, style = MaterialTheme.typography.bodySmall)
                 if (earnedDate != null) {
                     val displayDate = earnedDate.take(10) // ISO-8601 date portion
-                    Text(displayDate, color = AccentGreen, fontSize = 11.sp)
+                    Text(displayDate, color = AccentGreen, style = MaterialTheme.typography.labelSmall)
                 }
             }
         }

@@ -26,7 +26,7 @@ private val RjDarkBg       = Color(0xFF1A1A2E)
 private val RjCardBg       = Color(0xFF16213E)
 private val RjAccentGold   = Color(0xFFFFD700)
 private val RjTextPrimary  = Color.White
-private val RjTextSecondary = Color(0xFFAAAAAA)
+private val RjTextSecondary = Color.White
 
 @Composable
 fun RenegeJokesScreen(

@@ -175,18 +175,20 @@ enum class GameType(
     /** 3-player solo (no teams). All 54 cards; 18 per player. No kitty. */
     SOLO_THREE_MAN("Three Man Solo", 3, false, true,  false, false, 0, DealMode.STANDARD,            0),
     /** 2-player solo (no teams). Standard 52-card deck; alternate keep/skip deal. */
-    SOLO_TWO_MAN  ("Two Man Solo",   2, false, true,  true,  true,  0, DealMode.TWO_MAN_ALTERNATE,   0);
+    SOLO_TWO_MAN  ("Two Man Solo",   2, false, true,  true,  true,  0, DealMode.TWO_MAN_ALTERNATE,   4);
 
     /**
      * Cards each player receives after the kitty is set aside.
-     * Derived from deck size minus kitty size divided by player count.
+     * For TWO_MAN_ALTERNATE the deal burns 2 deck cards per pick (keep one, discard one),
+     * so the effective hand size is deckSize / (playerCount × 2) = 13, not 26.
      */
     val cardsPerPlayer: Int get() {
         val deckSize = 52 +
             (if (includeJokers) 2 else 0) -
             (if (removeTwoOfHearts) 1 else 0) -
             (if (removeTwoOfClubs) 1 else 0)
-        return (deckSize - kittySize) / playerCount
+        val divisor = if (dealMode == DealMode.TWO_MAN_ALTERNATE) playerCount * 2 else playerCount
+        return (deckSize - kittySize) / divisor
     }
 
     companion object {
@@ -197,7 +199,7 @@ enum class GameType(
 }
 
 /** High-level phases used by the engine to drive UI and side-effects. */
-enum class GamePhase { Lobby, Deal, DealHuman, Bid, BidHuman, KittyReveal, Kitty, KittyHuman, Trick, TrickHuman, TrickResolve, Score, EndHand, Finished }
+enum class GamePhase { Lobby, Deal, DealHuman, Bid, BidHuman, BidReview, KittyReveal, Kitty, KittyHuman, Trick, TrickHuman, TrickResolve, Score, EndHand, Finished }
 
 /** Lightweight metadata for snapshots. */
 data class Metadata(val id: String? = null, val timestampMs: Long? = null)
@@ -273,12 +275,36 @@ data class GameState(
      * Set by [GameViewModel.finalizeHandReplay] in [GamePhase.Score].
      * Passed to ReplayHandView from EndHandView.
      */
-    val lastHandReplay: HandReplay? = null
+    val lastHandReplay: HandReplay? = null,
+    /**
+     * Whether nil (0) bids are allowed for the human and CPU players.
+     * Always true for [GameType.TEAM_CLASSIC]; always false for other team modes
+     * ([GameType.HOUSE_RULES], [GameType.TEAM_KITTY]); user-configurable for all
+     * solo variants via the Settings screen.
+     */
+    val allowNilBid: Boolean = false,
+    /**
+     * Long game: first team/player to reach a higher target wins.
+     * Short targets: team games / 2-man / 3-man = 250; 4-man solo = 100.
+     * Long targets:  team games / 2-man / 3-man = 500; 4-man solo = 250.
+     * Defaults off (short game).
+     */
+    val longGame: Boolean = false
 )
 
 /** Effective minimum bid: 5 when [GameState.minBidFive] is on for House Rules, otherwise the game type default. */
 val GameState.effectiveMinBid: Int get() =
     if (minBidFive && gameType == GameType.HOUSE_RULES) 5 else gameType.minimumBid
+
+/**
+ * Winning score threshold for this game.
+ * 4-man solo: short=100, long=250.
+ * All other variants (team and 2/3-man solo): short=250, long=500.
+ */
+val GameState.targetScore: Int get() = when {
+    gameType == GameType.SOLO_FOUR_MAN -> if (longGame) 250 else 100
+    else                               -> if (longGame) 500 else 250
+}
 
 /** Helpers */
 fun GameState.playerById(id: String): Player? = players.find { it.id == id }

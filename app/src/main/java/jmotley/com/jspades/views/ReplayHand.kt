@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -98,14 +99,14 @@ fun ReplayHandView(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment     = Alignment.CenterVertically
             ) {
-                Text("Hand Replay", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                Text("Hand Replay", color = Color.White, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
                 OutlinedButton(
                     onClick  = { isPlaying = false; onDismiss() },
                     modifier = Modifier.size(36.dp),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
                     border   = null
                 ) {
-                    Text("✕", color = Color.White, fontSize = 16.sp)
+                    Text("✕", color = Color.White, style = MaterialTheme.typography.bodyLarge)
                 }
             }
 
@@ -121,20 +122,20 @@ fun ReplayHandView(
                 Text(
                     text      = if (rs.trickCount > 0) "Trick ${rs.trickCount}" else "Bidding",
                     color     = RP_GOLD,
-                    fontSize  = 13.sp,
+                    style     = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text      = "Step $stepIndex / $total",
-                    color     = Color(0xFFB0BEC5),
-                    fontSize  = 12.sp
+                    color     = Color.White,
+                    style     = MaterialTheme.typography.bodySmall
                 )
                 if (rs.description.isNotEmpty()) {
                     Spacer(Modifier.height(2.dp))
                     Text(
                         text      = rs.description,
                         color     = Color.White,
-                        fontSize  = 12.sp,
+                        style     = MaterialTheme.typography.bodySmall,
                         textAlign = TextAlign.Center
                     )
                 }
@@ -155,7 +156,7 @@ fun ReplayHandView(
                             containerColor = if (selected) RP_GOLD.copy(alpha = 0.15f) else Color.Transparent
                         )
                     ) {
-                        Text(label, color = if (selected) RP_GOLD else Color.White, fontSize = 12.sp)
+                        Text(label, color = if (selected) RP_GOLD else Color.White, style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
@@ -169,21 +170,21 @@ fun ReplayHandView(
                     onClick  = { isPlaying = false; if (stepIndex > 0) stepIndex-- },
                     modifier = Modifier.weight(1f),
                     enabled  = stepIndex > 0
-                ) { Text("◀ Prev", color = Color.White, fontSize = 13.sp) }
+                ) { Text("◀ Prev", color = Color.White, style = MaterialTheme.typography.bodySmall) }
 
                 Button(
                     onClick  = { isPlaying = !isPlaying },
                     modifier = Modifier.weight(1f),
                     enabled  = stepIndex < total || isPlaying
                 ) {
-                    Text(if (isPlaying) "⏸ Pause" else "▶ Play", fontSize = 13.sp)
+                    Text(if (isPlaying) "⏸ Pause" else "▶ Play", style = MaterialTheme.typography.bodySmall)
                 }
 
                 OutlinedButton(
                     onClick  = { if (stepIndex < total) stepIndex++ },
                     modifier = Modifier.weight(1f),
                     enabled  = stepIndex < total
-                ) { Text("Next ▶", color = Color.White, fontSize = 13.sp) }
+                ) { Text("Next ▶", color = Color.White, style = MaterialTheme.typography.bodySmall) }
             }
         }
     }
@@ -217,9 +218,12 @@ private fun TrickDiamond(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            TrickSlot(player = west, card = west?.let { playMap[it.id] }, bid = bids[west?.id])
-            Spacer(Modifier.width(8.dp))
-            TrickSlot(player = east, card = east?.let { playMap[it.id] }, bid = bids[east?.id])
+            Box(modifier = Modifier.weight(1f)) {
+                TrickSlot(player = west, card = west?.let { playMap[it.id] }, bid = bids[west?.id])
+            }
+            Box(modifier = Modifier.weight(1f)) {
+                TrickSlot(player = east, card = east?.let { playMap[it.id] }, bid = bids[east?.id])
+            }
         }
 
         Spacer(Modifier.height(4.dp))
@@ -244,8 +248,8 @@ private fun TrickSlot(
         // Player label + bid
         Text(
             text      = if (player != null) "${player.displayName}${if (bid != null && bid > 0) " ($bid)" else ""}" else "",
-            color     = Color(0xFFB0BEC5),
-            fontSize  = 10.sp,
+            color     = Color.White,
+            style     = MaterialTheme.typography.labelSmall,
             textAlign = TextAlign.Center,
             maxLines  = 1
         )
@@ -269,12 +273,12 @@ private fun TrickSlot(
                         contentScale       = ContentScale.Fit
                     )
                 } else {
-                    Text(card.uid, color = Color.White, fontSize = 9.sp, textAlign = TextAlign.Center)
+                    Text(card.uid, color = Color.White, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
                 }
             } else if (player == null) {
                 // empty slot — no player in this seat
             } else {
-                Text("–", color = Color(0x55FFFFFF), fontSize = 20.sp)
+                Text("–", color = Color(0x55FFFFFF), style = MaterialTheme.typography.titleMedium)
             }
         }
     }
@@ -294,8 +298,8 @@ private fun HandCountsRow(
         players.forEach { p ->
             val count = hands[p.id]?.size ?: 0
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(p.displayName, color = Color(0xFF90A4AE), fontSize = 10.sp)
-                Text("$count", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Text(p.displayName, color = Color.White, style = MaterialTheme.typography.labelSmall)
+                Text("$count", color = Color.White, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
             }
         }
     }

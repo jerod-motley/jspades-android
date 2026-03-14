@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -19,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -28,7 +30,7 @@ import jmotley.com.jspades.models.GameViewModel
 
 private val EG_GOLD   = Color(0xFFFFD700)
 private val EG_PANEL  = Color(0xEE0A0A14)
-private val EG_HEADER = Color(0xFFB0BEC5)
+private val EG_HEADER = Color.White
 
 /**
  * Game-over overlay. Shows the winner, final scores for all teams/players,
@@ -62,14 +64,14 @@ fun EndGameView(
             Text(
                 text       = "Game Over",
                 color      = Color.White,
-                fontSize   = 22.sp,
+                style      = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
 
             Text(
                 text       = winnerLabel,
                 color      = EG_GOLD,
-                fontSize   = 18.sp,
+                style      = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 textAlign  = TextAlign.Center
             )
@@ -143,8 +145,8 @@ private fun TeamFinalScores(state: GameState, localPlayerId: String) {
     // Header row
     Row(Modifier.fillMaxWidth()) {
         Spacer(Modifier.width(80.dp))
-        Text("US",   modifier = Modifier.weight(1f), textAlign = TextAlign.Center, color = EG_GOLD,       fontWeight = FontWeight.Bold, fontSize = 13.sp)
-        Text("THEM", modifier = Modifier.weight(1f), textAlign = TextAlign.Center, color = Color.White,   fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        Text("US",   modifier = Modifier.weight(1f), textAlign = TextAlign.Center, color = EG_GOLD,       fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
+        Text("THEM", modifier = Modifier.weight(1f), textAlign = TextAlign.Center, color = Color.White,   fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
     }
 
     EGDivider()
@@ -186,7 +188,7 @@ private fun SoloFinalScores(state: GameState, localPlayerId: String) {
                 textAlign  = TextAlign.Center,
                 color      = if (p.id == localPlayerId) EG_GOLD else Color.White,
                 fontWeight = FontWeight.Bold,
-                fontSize   = 12.sp
+                style      = MaterialTheme.typography.bodySmall
             )
         }
     }
@@ -217,27 +219,54 @@ private fun EGStatRow(
     bold: Boolean = false,
     labelColor: Color = EG_HEADER
 ) {
-    val weight = if (bold) FontWeight.Bold else FontWeight.Normal
-    Row(
-        modifier          = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text       = label,
-            modifier   = Modifier.width(80.dp),
-            color      = labelColor,
-            fontSize   = 12.sp,
-            fontWeight = weight
-        )
-        values.forEach { v ->
+    val weight    = if (bold) FontWeight.Bold else FontWeight.Normal
+    val fontScale = LocalConfiguration.current.fontScale
+    if (fontScale >= 1.3f) {
+        Column(
+            modifier            = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
             Text(
-                text       = v,
-                modifier   = Modifier.weight(1f),
-                textAlign  = TextAlign.Center,
-                color      = Color.White,
-                fontSize   = 13.sp,
+                text       = label,
+                color      = labelColor,
+                style      = MaterialTheme.typography.bodySmall,
                 fontWeight = weight
             )
+            Row(modifier = Modifier.fillMaxWidth()) {
+                values.forEach { v ->
+                    Text(
+                        text       = v,
+                        modifier   = Modifier.weight(1f),
+                        textAlign  = TextAlign.Center,
+                        color      = Color.White,
+                        style      = MaterialTheme.typography.bodySmall,
+                        fontWeight = weight
+                    )
+                }
+            }
+        }
+    } else {
+        Row(
+            modifier          = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text       = label,
+                modifier   = Modifier.width(80.dp),
+                color      = labelColor,
+                style      = MaterialTheme.typography.bodySmall,
+                fontWeight = weight
+            )
+            values.forEach { v ->
+                Text(
+                    text       = v,
+                    modifier   = Modifier.weight(1f),
+                    textAlign  = TextAlign.Center,
+                    color      = Color.White,
+                    style      = MaterialTheme.typography.bodySmall,
+                    fontWeight = weight
+                )
+            }
         }
     }
 }

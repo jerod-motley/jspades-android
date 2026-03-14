@@ -7,6 +7,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -24,7 +25,7 @@ import jmotley.com.jspades.data.AppConfig
 
 private val StdDarkBg       = Color(0xFF1A1A2E)
 private val StdAccentGold   = Color(0xFFFFD700)
-private val StdTextSecondary = Color(0xFFAAAAAA)
+private val StdTextSecondary = Color.White
 
 @Composable
 fun StandingsScreen(onNavigateBack: () -> Unit) {
@@ -44,7 +45,7 @@ fun StandingsScreen(onNavigateBack: () -> Unit) {
         Text(
             "Standings",
             fontFamily = font,
-            fontSize = 40.sp,
+            style = MaterialTheme.typography.displaySmall,
             color = StdAccentGold,
             modifier = Modifier
                 .fillMaxWidth()
@@ -60,7 +61,7 @@ fun StandingsScreen(onNavigateBack: () -> Unit) {
                 Text(
                     "Leaderboard coming soon!",
                     color = StdTextSecondary,
-                    fontSize = 16.sp,
+                    style = MaterialTheme.typography.bodyLarge,
                     textAlign = TextAlign.Center
                 )
             }
@@ -81,7 +82,7 @@ fun StandingsScreen(onNavigateBack: () -> Unit) {
             onClick = onNavigateBack,
             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
         ) {
-            Text("Back", color = StdTextSecondary, fontSize = 16.sp)
+            Text("Back", color = StdTextSecondary, style = MaterialTheme.typography.bodyLarge)
         }
     }
     }

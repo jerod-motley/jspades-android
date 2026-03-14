@@ -97,18 +97,29 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		require(ids.size == gameType.playerCount && names.size == gameType.playerCount)
 		val players = defaultPlayers(ids, names, gameType)
 		val prefs = context.getSharedPreferences("jspades_prefs", Context.MODE_PRIVATE)
-		val twoOfSpadesJoker = prefs.getBoolean("two_of_spades_joker", false)
-		val spadesMustBreak  = prefs.getBoolean("spades_must_break", false)
-		val minBidFive       = prefs.getBoolean("min_bid_five", false)
+		val twoOfSpadesJoker      = prefs.getBoolean("two_of_spades_joker", false)
+		val spadesMustBreak       = prefs.getBoolean("spades_must_break", false)
+		val minBidFive            = prefs.getBoolean("min_bid_five", false)
+		val enableSandbagPenalty  = prefs.getBoolean("count_overs", true)
+		val allowNilBid = when {
+			gameType == GameType.TEAM_CLASSIC                                           -> true
+			gameType == GameType.HOUSE_RULES || gameType == GameType.TEAM_KITTY         -> false
+			else  /* solo variants */                                                   -> prefs.getBoolean("allow_nil_bid", false)
+		}
+		val longGame = prefs.getBoolean("long_game", false)
 		// leaderIndex = 1: west (left of south) bids/leads first; south is initial dealer.
 		_state.value = _state.value.copy(
 			players          = players,
 			phase            = GamePhase.Deal,
 			gameType         = gameType,
 			leaderIndex      = 1,
-			twoOfSpadesJoker = twoOfSpadesJoker,
-			spadesMustBreak  = spadesMustBreak,
-			minBidFive       = minBidFive
+			currentTrick     = Trick(plays = List(gameType.playerCount) { null }),
+			twoOfSpadesJoker     = twoOfSpadesJoker,
+			spadesMustBreak      = spadesMustBreak,
+			minBidFive           = minBidFive,
+			enableSandbagPenalty = enableSandbagPenalty,
+			allowNilBid          = allowNilBid,
+			longGame             = longGame
 		)
 		phaseManager.execute()
 	}
@@ -403,7 +414,15 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
 		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
 		phaseHands[GamePhase.Deal] = dealHands
-		_state.value = current.copy(deck = deck, phaseHands = phaseHands)
+
+		// When the human's hand is complete, stamp originalDealHands so HandView
+		// has a stable slot template throughout trick play.
+		val updatedOriginalHands = if (humanDone) {
+			current.originalDealHands + (localPlayerId to newHumanHand)
+		} else {
+			current.originalDealHands
+		}
+		_state.value = current.copy(deck = deck, phaseHands = phaseHands, originalDealHands = updatedOriginalHands)
 
 		if (humanDone) {
 			advancePhase(GamePhase.Bid)
@@ -422,6 +441,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		submitBid(playerId = localPlayerId, bid = bid)
 		advancePhase(GamePhase.Bid)
 		phaseManager.execute()
+	}
+
+	/** Human confirmed the bid review summary — advance to the post-bid phase. */
+	fun submitBidReview() {
+		phaseManager.executeBidConfirmed()
 	}
 
 	// ── Human trick play ──────────────────────────────────────────────────────

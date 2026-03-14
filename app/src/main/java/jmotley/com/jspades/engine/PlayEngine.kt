@@ -71,8 +71,9 @@ object PlayEngine {
         val phs  = getHandState(state, player.id)
         val bid  = phs?.bid ?: 0
 
-        // Nil bidder → always passive (never wants to win)
-        if (bid == 0) return if (isTwoPlayer) Mode.LOSER_TWO else Mode.LOSER
+        // Nil bidder with nil intact → always passive (never wants to win)
+        // Once nil is broken (tricksWon > 0), fall through to normal mode selection
+        if (bid == 0 && (phs?.tricksWon ?: 0) == 0) return if (isTwoPlayer) Mode.LOSER_TWO else Mode.LOSER
 
         val stillNeeds = if (state.gameType.useTeams) {
             val hand    = state.phaseHands[GamePhase.Deal]?.lastOrNull()
@@ -84,7 +85,9 @@ object PlayEngine {
             (phs?.tricksWon ?: 0) < bid
         }
 
-        return if (!stillNeeds) {
+        return if (!stillNeeds
+            && state.gameType != GameType.SOLO_THREE_MAN
+            && state.gameType != GameType.SOLO_FOUR_MAN) {
             if (isTwoPlayer) Mode.LOSER_HIGH_TWO else Mode.LOSER_HIGH
         } else when (state.gameType) {
             GameType.TEAM_CLASSIC                            -> Mode.WINNER_CLASSIC
@@ -277,8 +280,11 @@ object PlayEngine {
 
         if (!hasLead) {
             // Void in lead suit
-            val rightOpp = rightOpponent(player, state)
+            val rightOpp    = rightOpponent(player, state)
+            val teammatePhs = teammate?.let { getHandState(state, it.id) }
             return when {
+                // Nil-bidding teammate is winning: cut to rescue their nil
+                isTeammateWin && teammatePhs?.bid == 0 -> cut(player, hand, state)
                 // Partner winning with King → throw off (King is already the top play)
                 isTeammateWin && winnerCard?.rank == Rank.KING && !isTrump(winnerCard) -> throwOff(hand, state)
                 // Partner winning with highest remaining in suit AND right opponent can't cut → throw off
@@ -303,6 +309,15 @@ object PlayEngine {
         }
 
         // Non-trump lead, has cards in suit
+        // Rescue nil-bidding teammate: beat them with the lowest winning card in suit
+        if (isTeammateWin) {
+            val teammatePhs = teammate?.let { getHandState(state, it.id) }
+            if (teammatePhs?.bid == 0) {
+                val suitCards = hand.filter { followsSuit(it, lead) }
+                val beating   = suitCards.filter { it.rank.ordinal > (winnerCard?.rank?.ordinal ?: -1) }
+                return beating.minByOrNull { it.rank.ordinal } ?: throwOff(hand, state)
+            }
+        }
         if (isLast && isTeammateWin) return throwOff(hand, state)
         val suitCards  = hand.filter { followsSuit(it, lead) }
         val winnerRank = winnerCard?.rank?.ordinal ?: -1
@@ -341,8 +356,11 @@ object PlayEngine {
             return hand.filter { followsSuit(it, lead) }.minBy { it.rank.ordinal }
         }
 
-        // Last player: lowest winning card, or any lead-suit card
+        // Last player: if current winner bid nil and has no tricks yet, let them take it to break their nil
         if (isLast) {
+            val winnerPhs   = winner?.let { getHandState(state, it.playerId) }
+            val winnerIsNil = winnerPhs?.bid == 0 && winnerPhs.tricksWon == 0
+            if (winnerIsNil) return throwOff(hand, state)
             return hand.filter { followsSuit(it, lead) && it.rank.ordinal > (winnerCard?.rank?.ordinal ?: -1) }
                 .minByOrNull { it.rank.ordinal }
                 ?: hand.filter { followsSuit(it, lead) }.minBy { it.rank.ordinal }

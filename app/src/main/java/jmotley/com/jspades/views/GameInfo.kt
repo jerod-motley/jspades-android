@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -25,7 +26,7 @@ import jmotley.com.jspades.models.GameViewModel
 
 private val LABEL_COLOR   = Color(0xFFFFD700)   // gold  — human team / local player
 private val SCORE_COLOR   = Color.White
-private val DETAIL_COLOR  = Color(0xFFB0BEC5)    // cool grey — bid / books
+private val DETAIL_COLOR  = Color.White
 private val DIVIDER_COLOR = Color(0x44FFFFFF)
 
 /**
@@ -121,26 +122,26 @@ private fun InfoPanel(
         Text(
             text       = nameLabel,
             color      = if (isHuman) LABEL_COLOR else SCORE_COLOR,
-            fontSize   = 14.sp,
+            style      = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Bold,
             textAlign  = TextAlign.Center
         )
         Text(
             text      = "Bid ${bid ?: "—"}",
             color     = DETAIL_COLOR,
-            fontSize  = 13.sp,
+            style     = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center
         )
         Text(
             text      = "Books $tricksWon",
             color     = DETAIL_COLOR,
-            fontSize  = 13.sp,
+            style     = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center
         )
         Text(
             text       = "Score $score",
             color      = SCORE_COLOR,
-            fontSize   = 14.sp,
+            style      = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Bold,
             textAlign  = TextAlign.Center
         )

@@ -270,7 +270,7 @@ fun PlayScreen(
                 .statusBarsPadding()
                 .padding(end = 4.dp)
         ) {
-            Text("✕", fontSize = 20.sp)
+            Text("✕", style = MaterialTheme.typography.titleMedium)
         }
 
         // ── Quit confirmation dialog ──────────────────────────────────────────────
@@ -336,34 +336,11 @@ fun PlayScreen(
             }
 
             // ── Bid ───────────────────────────────────────────────────────────
-            // CPU players bidding
-            GamePhase.Bid -> {
-                DiamondView(
-                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
-                    trickWinner = trickWinner,
-                    modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp)
-                )
-                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
-                    Spacer(Modifier.height(20.dp))
-                    GameInfoView(
-                        state = state, viewModel = viewModel,
-                        localPlayerId = localPlayerId
-                    )
-                    HandView(
-                        state = state, viewModel = viewModel,
-                        localPlayerId = localPlayerId
-                    )
-                    Spacer(Modifier.height(62.dp))
-                }
-            }
-
-            // Human's turn to bid
-            GamePhase.BidHuman -> {
-                DiamondView(
-                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
-                    trickWinner = trickWinner,
-                    modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp)
-                )
+            // All bid phases: scoreboard panel at top, hand visible at bottom.
+            // BidHuman adds the selector; BidReview adds the OK button.
+            GamePhase.Bid,
+            GamePhase.BidHuman,
+            GamePhase.BidReview -> {
                 Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
                     Spacer(Modifier.height(20.dp))
                     GameInfoView(
@@ -378,7 +355,10 @@ fun PlayScreen(
                 }
                 BidView(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(top = 56.dp, start = 16.dp, end = 16.dp)
                 )
             }
 
@@ -437,7 +417,7 @@ fun PlayScreen(
                                 .padding(horizontal = 16.dp, vertical = 8.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text("Tap again to play", color = Color.White, fontSize = 14.sp)
+                            Text("Tap again to play", color = Color.White, style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                     renegeJokeText?.let { joke ->
@@ -448,7 +428,7 @@ fun PlayScreen(
                                 .padding(horizontal = 16.dp, vertical = 8.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(joke, color = Color(0xFFFFD700), fontSize = 14.sp)
+                            Text(joke, color = Color(0xFFFFD700), style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                     GameInfoView(
@@ -508,11 +488,10 @@ fun PlayScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(bannerText, color = Color.White, fontSize = 22.sp,
-                        style = MaterialTheme.typography.titleLarge)
+                    Text(bannerText, color = Color.White, style = MaterialTheme.typography.titleLarge)
                     if (cr.reason != null) {
                         Spacer(Modifier.height(4.dp))
-                        Text(cr.reason, color = Color.White, fontSize = 14.sp)
+                        Text(cr.reason, color = Color.White, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }

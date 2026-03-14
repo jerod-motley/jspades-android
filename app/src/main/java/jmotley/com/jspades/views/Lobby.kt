@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -228,7 +229,7 @@ private fun NamePlate(name: String, isLocal: Boolean) {
         Text(
             text = name,
             color = fg,
-            fontSize = 16.sp,
+            style = MaterialTheme.typography.bodyLarge,
             fontWeight = weight,
             textAlign = TextAlign.Center
         )

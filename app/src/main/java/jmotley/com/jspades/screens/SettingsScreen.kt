@@ -28,24 +28,29 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material3.MaterialTheme
 import jmotley.com.jspades.R
 
 private val SettDarkBg      = Color(0xFF1A1A2E)
 private val SettCardBg      = Color(0xFF16213E)
 private val SettAccentGold  = Color(0xFFFFD700)
 private val SettTextPrimary = Color.White
-private val SettTextSecond  = Color(0xFFAAAAAA)
+private val SettTextSecond  = Color.White
 
 private const val PREFS                 = "jspades_prefs"
 private const val KEY_TWO_SPADES_JOKER  = "two_of_spades_joker"
 private const val KEY_SPADES_MUST_BREAK = "spades_must_break"
 private const val KEY_MIN_BID_FIVE      = "min_bid_five"
+private const val KEY_ALLOW_NIL_BID     = "allow_nil_bid"
+private const val KEY_COUNT_OVERS       = "count_overs"
+private const val KEY_LONG_GAME         = "long_game"
 
 @Composable
 fun SettingsScreen(onNavigateBack: () -> Unit) {
@@ -56,6 +61,9 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
     var twoSpadesJoker  by remember { mutableStateOf(prefs.getBoolean(KEY_TWO_SPADES_JOKER, false)) }
     var spadesMustBreak by remember { mutableStateOf(prefs.getBoolean(KEY_SPADES_MUST_BREAK, false)) }
     var minBidFive      by remember { mutableStateOf(prefs.getBoolean(KEY_MIN_BID_FIVE, false)) }
+    var allowNilBid     by remember { mutableStateOf(prefs.getBoolean(KEY_ALLOW_NIL_BID, false)) }
+    var countOvers      by remember { mutableStateOf(prefs.getBoolean(KEY_COUNT_OVERS, true)) }
+    var longGame        by remember { mutableStateOf(prefs.getBoolean(KEY_LONG_GAME, false)) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Image(
@@ -70,7 +78,7 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
         Text(
             text = "Settings",
             fontFamily = font,
-            fontSize = 40.sp,
+            style = MaterialTheme.typography.displaySmall,
             color = SettAccentGold,
             modifier = Modifier
                 .fillMaxWidth()
@@ -79,69 +87,264 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
         )
 
         SettingsCard {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("2♠ as 3rd Joker", color = SettTextPrimary, fontSize = 16.sp)
-                Switch(
-                    checked = twoSpadesJoker,
-                    onCheckedChange = { on ->
-                        twoSpadesJoker = on
-                        prefs.edit().putBoolean(KEY_TWO_SPADES_JOKER, on).apply()
-                    },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = SettAccentGold,
-                        checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+            val fontScale = LocalConfiguration.current.fontScale
+            if (fontScale >= 1.3f) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("2♠ as 3rd Joker", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = twoSpadesJoker,
+                        onCheckedChange = { on: Boolean ->
+                            twoSpadesJoker = on
+                            prefs.edit().putBoolean(KEY_TWO_SPADES_JOKER, on).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = SettAccentGold,
+                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                        )
                     )
-                )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("2♠ as 3rd Joker", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = twoSpadesJoker,
+                        onCheckedChange = { on: Boolean ->
+                            twoSpadesJoker = on
+                            prefs.edit().putBoolean(KEY_TWO_SPADES_JOKER, on).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = SettAccentGold,
+                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                        )
+                    )
+                }
             }
         }
 
         Spacer(Modifier.height(8.dp))
 
         SettingsCard {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("Spades Must Break", color = SettTextPrimary, fontSize = 16.sp)
-                Switch(
-                    checked = spadesMustBreak,
-                    onCheckedChange = { on ->
-                        spadesMustBreak = on
-                        prefs.edit().putBoolean(KEY_SPADES_MUST_BREAK, on).apply()
-                    },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = SettAccentGold,
-                        checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+            val fontScale = LocalConfiguration.current.fontScale
+            if (fontScale >= 1.3f) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("Spades Must Break", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = spadesMustBreak,
+                        onCheckedChange = { on: Boolean ->
+                            spadesMustBreak = on
+                            prefs.edit().putBoolean(KEY_SPADES_MUST_BREAK, on).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = SettAccentGold,
+                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                        )
                     )
-                )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Spades Must Break", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = spadesMustBreak,
+                        onCheckedChange = { on: Boolean ->
+                            spadesMustBreak = on
+                            prefs.edit().putBoolean(KEY_SPADES_MUST_BREAK, on).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = SettAccentGold,
+                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                        )
+                    )
+                }
             }
         }
 
         Spacer(Modifier.height(8.dp))
 
         SettingsCard {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("Minimum Bid 5", color = SettTextPrimary, fontSize = 16.sp)
-                Switch(
-                    checked = minBidFive,
-                    onCheckedChange = { on ->
-                        minBidFive = on
-                        prefs.edit().putBoolean(KEY_MIN_BID_FIVE, on).apply()
-                    },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = SettAccentGold,
-                        checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+            val fontScale = LocalConfiguration.current.fontScale
+            if (fontScale >= 1.3f) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("Allow Nil Bid (Solo)", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = allowNilBid,
+                        onCheckedChange = { on: Boolean ->
+                            allowNilBid = on
+                            prefs.edit().putBoolean(KEY_ALLOW_NIL_BID, on).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = SettAccentGold,
+                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                        )
                     )
-                )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Allow Nil Bid (Solo)", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = allowNilBid,
+                        onCheckedChange = { on: Boolean ->
+                            allowNilBid = on
+                            prefs.edit().putBoolean(KEY_ALLOW_NIL_BID, on).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = SettAccentGold,
+                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                        )
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        SettingsCard {
+            val fontScale = LocalConfiguration.current.fontScale
+            if (fontScale >= 1.3f) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("Count Overs", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = countOvers,
+                        onCheckedChange = { on: Boolean ->
+                            countOvers = on
+                            prefs.edit().putBoolean(KEY_COUNT_OVERS, on).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = SettAccentGold,
+                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                        )
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Count Overs", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = countOvers,
+                        onCheckedChange = { on: Boolean ->
+                            countOvers = on
+                            prefs.edit().putBoolean(KEY_COUNT_OVERS, on).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = SettAccentGold,
+                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                        )
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        SettingsCard {
+            val fontScale = LocalConfiguration.current.fontScale
+            if (fontScale >= 1.3f) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("Minimum Bid 5", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = minBidFive,
+                        onCheckedChange = { on: Boolean ->
+                            minBidFive = on
+                            prefs.edit().putBoolean(KEY_MIN_BID_FIVE, on).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = SettAccentGold,
+                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                        )
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Minimum Bid 5", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = minBidFive,
+                        onCheckedChange = { on: Boolean ->
+                            minBidFive = on
+                            prefs.edit().putBoolean(KEY_MIN_BID_FIVE, on).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = SettAccentGold,
+                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                        )
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        SettingsCard {
+            val fontScale = LocalConfiguration.current.fontScale
+            if (fontScale >= 1.3f) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(text = "Long Game", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = longGame,
+                        onCheckedChange = { on: Boolean ->
+                            longGame = on
+                            prefs.edit().putBoolean(KEY_LONG_GAME, on).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = SettAccentGold,
+                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                        )
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(text = "Long Game", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = longGame,
+                        onCheckedChange = { on: Boolean ->
+                            longGame = on
+                            prefs.edit().putBoolean(KEY_LONG_GAME, on).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = SettAccentGold,
+                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                        )
+                    )
+                }
             }
         }
 
@@ -153,7 +356,7 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
                 .fillMaxWidth()
                 .padding(bottom = 8.dp)
         ) {
-            Text("Back", color = SettTextSecond, fontSize = 16.sp)
+            Text("Back", color = SettTextSecond, style = MaterialTheme.typography.bodyLarge)
         }
         }
     }
