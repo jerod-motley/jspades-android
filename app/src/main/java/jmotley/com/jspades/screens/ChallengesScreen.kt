@@ -112,7 +112,7 @@ fun ChallengesScreen(
                                 pendingChallenge = ch
                                 pickedX = 7
                             } else {
-                                AchievementsRepo.setActiveChallenge(context, ch.sk, ch.winCriteria, ch.allowBid)
+                                AchievementsRepo.setActiveChallenge(context, ch.sk, ch.winCriteria, ch.allowBid, ch.shortText)
                                 AchievementsRepo.markChallengePending(context, ch.sk)
                                 onStartChallenge(ch.sk, ch.applicableGameTypes.firstOrNull() ?: "Classic")
                             }
@@ -143,7 +143,7 @@ fun ChallengesScreen(
             onXChange = { pickedX = it },
             onConfirm = {
                 val bidrule = "MinBooks:$pickedX"
-                AchievementsRepo.setActiveChallenge(context, ch.sk, bidrule, ch.allowBid)
+                AchievementsRepo.setActiveChallenge(context, ch.sk, bidrule, ch.allowBid, ch.shortText)
                 AchievementsRepo.markChallengePending(context, ch.sk)
                 pendingChallenge = null
                 onStartChallenge(ch.sk, ch.applicableGameTypes.firstOrNull() ?: "Classic")

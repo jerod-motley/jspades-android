@@ -85,7 +85,31 @@ object PlayEngine {
             (phs?.tricksWon ?: 0) < bid
         }
 
-        return if (!stillNeeds
+        // Only shed bags (LOSER_HIGH) when opponents can no longer be set.
+        // If opponents haven't met their contract yet, stay in winner mode to try to set them.
+        val opponentsMadeBid = if (state.gameType.useTeams) {
+            val hand        = state.phaseHands[GamePhase.Deal]?.lastOrNull()
+            val oppTeam     = 1 - player.team
+            val oppTeamBid  = (hand?.teamBids?.getOrNull(oppTeam) ?: 0) ?: 0
+            val oppTeamWon  = state.players.filter { it.team == oppTeam }
+                .sumOf { p -> hand?.perPlayer?.get(p.id)?.tricksWon ?: 0 }
+            oppTeamWon >= oppTeamBid
+        } else if (isTwoPlayer) {
+            // Two-man: check if the single opponent has actually met their bid yet.
+            // Don't shed bags until the opponent can no longer be set.
+            val hand = state.phaseHands[GamePhase.Deal]?.lastOrNull()
+            val opp  = opponents(player, state).firstOrNull()
+            if (opp != null) {
+                val oppBid = hand?.perPlayer?.get(opp.id)?.bid ?: 0
+                val oppWon = hand?.perPlayer?.get(opp.id)?.tricksWon ?: 0
+                oppWon >= oppBid
+            } else true
+        } else {
+            // Solo (3/4 man): no setting concept; treat as always true so LOSER_HIGH can activate
+            true
+        }
+
+        return if (!stillNeeds && opponentsMadeBid
             && state.gameType != GameType.SOLO_THREE_MAN
             && state.gameType != GameType.SOLO_FOUR_MAN) {
             if (isTwoPlayer) Mode.LOSER_HIGH_TWO else Mode.LOSER_HIGH
@@ -531,7 +555,7 @@ object PlayEngine {
         return nonTrump.minByOrNull { it.rank.ordinal } ?: hand.minBy { it.rank.ordinal }
     }
 
-    /** LoserHigh throwOff: discard the highest possible card. */
+    /** LoserHigh throwOff: dump the highest non-trump to shed bags. */
     private fun loserHighThrowOff(hand: List<Card>, lead: Card): Card =
         hand.filter { !isTrump(it) }.maxByOrNull { it.rank.ordinal }
             ?: hand.minBy { it.rank.ordinal }

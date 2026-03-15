@@ -47,8 +47,8 @@ import kotlin.math.roundToInt
 import androidx.compose.ui.draw.scale
 
 /** Card slot size in the diamond. */
-private val SLOT_W = 64.dp
-private val SLOT_H = 96.dp
+private val SLOT_W = 58.dp
+private val SLOT_H = 86.dp
 
 /**
  * Diamond view: displays the active player positions with their played cards,
@@ -95,7 +95,7 @@ fun DiamondView(
     val slotW   = with(density) { (SLOT_W + 16.dp).toPx() }
     val slotH   = with(density) { (SLOT_H + 24.dp).toPx() }
 
-    BoxWithConstraints(modifier = modifier.size(280.dp, 320.dp)) {
+    BoxWithConstraints(modifier = modifier.size(252.dp, 360.dp)) {
 
         val hasTrickWinner = trickWinner != null
 
@@ -296,7 +296,7 @@ private fun PlayerSlot(
                     }
                 }
             },
-            style      = MaterialTheme.typography.titleLarge,
+            style      = MaterialTheme.typography.titleLarge.copy(fontSize = 18.sp, lineHeight = 22.sp),
             fontWeight = if (isLocal) FontWeight.Bold else FontWeight.Normal,
             textAlign  = TextAlign.Center,
             softWrap   = false,

@@ -173,7 +173,7 @@ enum class GameType(
     /** 4-player solo (no teams). Standard 52-card deck. No kitty. */
     SOLO_FOUR_MAN ("Four Man Solo",  4, false, true,  true,  true,  0, DealMode.STANDARD,            0),
     /** 3-player solo (no teams). All 54 cards; 18 per player. No kitty. */
-    SOLO_THREE_MAN("Three Man Solo", 3, false, true,  false, false, 0, DealMode.STANDARD,            0),
+    SOLO_THREE_MAN("Three Man Solo", 3, false, true,  false, false, 0, DealMode.STANDARD,            4),
     /** 2-player solo (no teams). Standard 52-card deck; alternate keep/skip deal. */
     SOLO_TWO_MAN  ("Two Man Solo",   2, false, true,  true,  true,  0, DealMode.TWO_MAN_ALTERNATE,   4);
 
@@ -200,6 +200,9 @@ enum class GameType(
 
 /** High-level phases used by the engine to drive UI and side-effects. */
 enum class GamePhase { Lobby, Deal, DealHuman, Bid, BidHuman, BidReview, KittyReveal, Kitty, KittyHuman, Trick, TrickHuman, TrickResolve, Score, EndHand, Finished }
+
+/** Controls the score threshold required to win the game. */
+enum class GameLength { SHORT, MEDIUM, LONG }
 
 /** Lightweight metadata for snapshots. */
 data class Metadata(val id: String? = null, val timestampMs: Long? = null)
@@ -284,12 +287,13 @@ data class GameState(
      */
     val allowNilBid: Boolean = false,
     /**
-     * Long game: first team/player to reach a higher target wins.
-     * Short targets: team games / 2-man / 3-man = 250; 4-man solo = 100.
-     * Long targets:  team games / 2-man / 3-man = 500; 4-man solo = 250.
-     * Defaults off (short game).
+     * Game length: controls the score threshold needed to win.
+     * SHORT / MEDIUM / LONG targets:
+     *   Team / 2-man / 3-man solo: 150 / 250 / 500.
+     *   4-man solo:                 70 / 150 / 250.
+     * Defaults to MEDIUM.
      */
-    val longGame: Boolean = false
+    val gameLength: GameLength = GameLength.MEDIUM
 )
 
 /** Effective minimum bid: 5 when [GameState.minBidFive] is on for House Rules, otherwise the game type default. */
@@ -298,12 +302,12 @@ val GameState.effectiveMinBid: Int get() =
 
 /**
  * Winning score threshold for this game.
- * 4-man solo: short=100, long=250.
- * All other variants (team and 2/3-man solo): short=250, long=500.
+ * 4-man solo:  Short=70,  Medium=150, Long=250.
+ * All others:  Short=150, Medium=250, Long=500.
  */
-val GameState.targetScore: Int get() = when {
-    gameType == GameType.SOLO_FOUR_MAN -> if (longGame) 250 else 100
-    else                               -> if (longGame) 500 else 250
+val GameState.targetScore: Int get() = when (gameType) {
+    GameType.SOLO_FOUR_MAN -> when (gameLength) { GameLength.SHORT -> 70;  GameLength.MEDIUM -> 150; GameLength.LONG -> 250 }
+    else                   -> when (gameLength) { GameLength.SHORT -> 150; GameLength.MEDIUM -> 250; GameLength.LONG -> 500 }
 }
 
 /** Helpers */

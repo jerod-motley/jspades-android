@@ -79,8 +79,9 @@ object ChallengeEvaluation {
             }
 
             "no_aces_team" -> {
-                val aceWon = winnerCard.rank == Rank.ACE
-                if (aceWon) fail("An ace walked (ace won the trick)") else emptyList()
+                // Human holds all aces via deal bias; only fail if an *opponent's* ace walks
+                val oppAceWon = winnerId in oppTeamIds && winnerCard.rank == Rank.ACE
+                if (oppAceWon) fail("An opponent's ace walked") else emptyList()
             }
 
             "get_all_books_kitty", "run_boston", "kitty_boston" -> {

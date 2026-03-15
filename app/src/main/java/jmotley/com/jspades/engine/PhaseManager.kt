@@ -16,6 +16,7 @@ import jmotley.com.jspades.data.AnimationEvent
 import jmotley.com.jspades.data.ReplayEvent
 import jmotley.com.jspades.data.Score
 import jmotley.com.jspades.data.effectiveMinBid
+import jmotley.com.jspades.data.targetScore
 import jmotley.com.jspades.models.GameViewModel
 import jmotley.com.jspades.networking.PlayLogApi
 import jmotley.com.jspades.networking.PlayLogGame
@@ -154,6 +155,10 @@ class PhaseManager(
         // 4. Shuffle
         val shuffled = deck.shuffled().toMutableList()
 
+        // 4b. Apply challenge-specific deal bias (if a challenge is active)
+        val activeSk = AchievementsRepo.getActiveChallenge(context) ?: ""
+        if (activeSk.isNotEmpty()) applyChallengeBias(shuffled, activeSk, ids, gt)
+
         // 5. Dispatch to the correct deal algorithm
         when (gt.dealMode) {
             DealMode.STANDARD            -> dealStandard(shuffled, ids, gt)
@@ -248,6 +253,143 @@ class PhaseManager(
     }
 
     /**
+     * Applies a challenge-specific deal bias to the shuffled deck in-place.
+     *
+     * For STANDARD / KITTY deals, moves target cards into the section owned by the
+     * intended player. Section layout: kittyOffset + playerIndex × cardsPerPlayer.
+     *
+     * For TWO_MAN_ALTERNATE, places target cards at the human's first viewing positions
+     * (indices 2, 6, 10 … in the original shuffled list, since the CPU auto-consumes
+     * positions 0–1 before the human's first pick).
+     *
+     * No-ops silently if a target card is not present in the deck (e.g. no jokers in Classic).
+     */
+    private fun applyChallengeBias(
+        shuffled: MutableList<Card>,
+        activeSk: String,
+        ids: List<String>,
+        gt: GameType
+    ) {
+        val cpp      = gt.cardsPerPlayer
+        val kOff     = gt.kittySize                                       // 0 for non-kitty
+        val humanIdx = ids.indexOf("south").takeIf { it >= 0 } ?: 0
+        val partnerIdx = ids.indexOf("north").takeIf { it >= 0 && gt.useTeams } ?: -1
+        val opp1Idx  = ids.indices.firstOrNull { it != humanIdx && it != partnerIdx } ?: -1
+        val opp2Idx  = ids.indices.lastOrNull  { it != humanIdx && it != partnerIdx && it != opp1Idx } ?: -1
+
+        // Move a card into a player's section. Avoids displacing any card with the
+        // same rank that was already placed (critical when placing all 4 of a rank).
+        fun moveToSection(rank: Rank, suit: Suit, sectionIdx: Int) {
+            if (sectionIdx < 0) return
+            val sStart = kOff + sectionIdx * cpp
+            val sEnd   = kOff + (sectionIdx + 1) * cpp
+            if (sEnd > shuffled.size) return
+            val from = shuffled.indexOfFirst { it.rank == rank && it.suit == suit }
+            if (from < 0 || from in sStart until sEnd) return
+            val to = (sStart until sEnd).firstOrNull { i -> i != from && shuffled[i].rank != rank } ?: return
+            val tmp = shuffled[from]; shuffled[from] = shuffled[to]; shuffled[to] = tmp
+        }
+
+        // Move a card away from the human's section into opp1's section.
+        fun moveFromHuman(rank: Rank, suit: Suit) {
+            val from = shuffled.indexOfFirst { it.rank == rank && it.suit == suit }
+            if (from < 0) return
+            val humanStart = kOff + humanIdx * cpp
+            if (from !in humanStart until humanStart + cpp) return
+            if (opp1Idx < 0) return
+            val opp1Start = kOff + opp1Idx * cpp
+            val opp1End   = opp1Start + cpp
+            if (opp1End > shuffled.size) return
+            val to = (opp1Start until opp1End).firstOrNull { it != from } ?: return
+            val tmp = shuffled[from]; shuffled[from] = shuffled[to]; shuffled[to] = tmp
+        }
+
+        // TWO_MAN_ALTERNATE: put target cards at human viewing slots (2, 6, 10 …).
+        if (gt.dealMode == DealMode.TWO_MAN_ALTERNATE) {
+            val targets: List<Pair<Rank, Suit>> = when (activeSk) {
+                "two_man_board", "get_all_two_solo" ->
+                    listOf(Rank.ACE to Suit.SPADES, Rank.KING to Suit.SPADES)
+                "walk_4_ladies" ->
+                    Suit.values().map { Rank.QUEEN to it }
+                "get_5_no_trump_two_solo" ->
+                    listOf(Rank.ACE to Suit.HEARTS, Rank.ACE to Suit.DIAMONDS, Rank.ACE to Suit.CLUBS)
+                else -> emptyList()
+            }
+            var slot = 2
+            for ((rank, suit) in targets) {
+                if (slot >= shuffled.size) break
+                val from = shuffled.indexOfFirst { it.rank == rank && it.suit == suit }
+                if (from >= 0 && from != slot) {
+                    val tmp = shuffled[from]; shuffled[from] = shuffled[slot]; shuffled[slot] = tmp
+                }
+                slot += 4
+            }
+            return
+        }
+
+        val hasBigJoker = shuffled.any { it.rank == Rank.BIGJOKER }
+
+        when (activeSk) {
+            "walk_all_kings", "all_kings_walk" ->
+                Suit.values().forEach { moveToSection(Rank.KING, it, humanIdx) }
+
+            "no_aces_team", "all_aces_walk" ->
+                Suit.values().forEach { moveToSection(Rank.ACE, it, humanIdx) }
+
+            "run_boston", "get_all_books_kitty", "kitty_boston",
+            "big_joker_leads", "run_boston_alone", "by_yourself_kitty",
+            "three_man_board" -> {
+                if (hasBigJoker) moveToSection(Rank.BIGJOKER, Suit.SPADES, humanIdx)
+                else moveToSection(Rank.ACE, Suit.SPADES, humanIdx)
+            }
+
+            "run_boston_partner_bid" -> {
+                if (hasBigJoker) moveToSection(Rank.BIGJOKER, Suit.SPADES, humanIdx)
+                else moveToSection(Rank.ACE, Suit.SPADES, humanIdx)
+            }
+
+            "boston_no_jokers" -> {
+                // Big Joker → partner, Little Joker → opp1, neither stays with human
+                if (partnerIdx >= 0) moveToSection(Rank.BIGJOKER, Suit.SPADES, partnerIdx)
+                if (opp1Idx >= 0)    moveToSection(Rank.LITTLEJOKER, Suit.SPADES, opp1Idx)
+            }
+
+            "nil_success", "blind_nil", "nil_partner_boston" -> {
+                // Remove high trump from human's hand so nil is achievable
+                moveFromHuman(Rank.BIGJOKER, Suit.SPADES)
+                moveFromHuman(Rank.LITTLEJOKER, Suit.SPADES)
+                moveFromHuman(Rank.DEUCE, Suit.SPADES)
+                moveFromHuman(Rank.ACE, Suit.SPADES)
+            }
+
+            "no_jokers" -> {
+                if (gt.kittySize > 0) {
+                    // Move both jokers into the kitty section [0..kittySize-1]
+                    for (rank in listOf(Rank.BIGJOKER, Rank.LITTLEJOKER)) {
+                        val from = shuffled.indexOfFirst { it.rank == rank }
+                        if (from < 0 || from < gt.kittySize) continue
+                        val to = (0 until gt.kittySize).firstOrNull() ?: continue
+                        val tmp = shuffled[from]; shuffled[from] = shuffled[to]; shuffled[to] = tmp
+                    }
+                } else {
+                    if (opp1Idx >= 0) moveToSection(Rank.BIGJOKER, Suit.SPADES, opp1Idx)
+                    if (opp2Idx >= 0) moveToSection(Rank.LITTLEJOKER, Suit.SPADES, opp2Idx)
+                    else if (opp1Idx >= 0) moveToSection(Rank.LITTLEJOKER, Suit.SPADES, opp1Idx)
+                }
+            }
+
+            "no_red_wins" -> {
+                if (hasBigJoker) {
+                    moveToSection(Rank.BIGJOKER, Suit.SPADES, humanIdx)
+                    moveToSection(Rank.LITTLEJOKER, Suit.SPADES, humanIdx)
+                }
+            }
+
+            // All other challenges use a random deal — no bias needed.
+        }
+    }
+
+    /**
      * Pick exactly one card for [hand] from the top of [deck], consuming two cards.
      * Decision is random (50/50 keep-top vs keep-second).
      */
@@ -304,6 +446,13 @@ class PhaseManager(
             val player = s.players[(s.leaderIndex + offset) % n]
             if (!player.runtimeFlags.didBid) {
                 if (player.id == "south") {
+                    // Challenge may lock south out of bidding (e.g. run_boston_partner_bid)
+                    val allowBid = AchievementsRepo.getActiveChallengeAllowBid(context)
+                    if (allowBid != null && allowBid != "south") {
+                        viewModel.submitBid("south", 0, false)
+                        viewModel.emitAnimation(AnimationEvent.BidPlaced("south", 0))
+                        return
+                    }
                     viewModel.advancePhase(GamePhase.BidHuman)
                     dispatch()
                     return
@@ -359,6 +508,12 @@ class PhaseManager(
 
             // All CPUs on this team have bid
             if (humanOnTeam && !humanAlreadyBid) {
+                val allowBid = AchievementsRepo.getActiveChallengeAllowBid(context)
+                if (allowBid != null && allowBid != "south") {
+                    viewModel.submitBid("south", 0, false)
+                    viewModel.emitAnimation(AnimationEvent.BidPlaced("south", 0))
+                    return
+                }
                 viewModel.advancePhase(GamePhase.BidHuman)
                 dispatch()
                 return
@@ -605,7 +760,7 @@ class PhaseManager(
         }
         val high = totals.values.maxOrNull() ?: 0
         val low  = totals.values.minOrNull() ?: 0
-        viewModel.advancePhase(if (high >= TARGET_SCORE || low <= LOSING_SCORE) GamePhase.Finished else GamePhase.EndHand)
+        viewModel.advancePhase(if (high >= u.targetScore || low <= LOSING_SCORE) GamePhase.Finished else GamePhase.EndHand)
         dispatch()
     }
 
@@ -613,9 +768,6 @@ class PhaseManager(
     private suspend fun handleEndHand() { /* UI owns this phase */ }
 
     // ── Scoring helpers ───────────────────────────────────────────────────────
-
-    /** First team/player to reach this score wins (if leading all others). */
-    private val TARGET_SCORE = 500
 
     /** A team/player that falls to this score (while behind) is eliminated. */
     private val LOSING_SCORE = -200

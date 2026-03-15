@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -101,6 +102,13 @@ fun PlayScreen(
     var showEndGameOverlay by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val currentVideoAsset by viewModel.currentVideoAsset.collectAsState()
+
+    // Always clear the active challenge when leaving the play screen, so a
+    // challenge that was started but not completed (e.g. user backed out) can
+    // never bleed into a subsequent normal game.
+    DisposableEffect(Unit) {
+        onDispose { AchievementsRepo.clearActiveChallenge(context) }
+    }
 
     // ── Renege joke state (persisted across sessions) ─────────────────────────
     var renegeJokeText by remember { mutableStateOf<String?>(null) }
@@ -248,15 +256,15 @@ fun PlayScreen(
             }
         }
 
-        // ── Top header: display the current game type label and respect status bar safe area ──
+        // ── Top header: show challenge short name when active, otherwise game type label ──
+        val headerTitle = AchievementsRepo.getActiveChallengeShortText(context) ?: resolvedGameType.label
         Text(
-            text = resolvedGameType.label,
-            style = MaterialTheme.typography.titleLarge,
+            text = headerTitle,
+            style = MaterialTheme.typography.titleSmall,
             color = Color(0xFFFFD700),
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .statusBarsPadding()
-                .padding(vertical = 8.dp)
+                .padding(vertical = 4.dp)
         )
 
         // ── Close / quit button ───────────────────────────────────────────────────
@@ -267,10 +275,9 @@ fun PlayScreen(
             },
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .statusBarsPadding()
-                .padding(end = 4.dp)
+                .padding(top = 4.dp, end = 4.dp)
         ) {
-            Text("✕", style = MaterialTheme.typography.titleMedium)
+            Text("✕", style = MaterialTheme.typography.titleSmall)
         }
 
         // ── Quit confirmation dialog ──────────────────────────────────────────────
@@ -357,8 +364,7 @@ fun PlayScreen(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
                     modifier = Modifier
                         .align(Alignment.TopCenter)
-                        .statusBarsPadding()
-                        .padding(top = 56.dp, start = 16.dp, end = 16.dp)
+                        .padding(top = 28.dp, start = 16.dp, end = 16.dp)
                 )
             }
 
@@ -405,7 +411,7 @@ fun PlayScreen(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
                     trickWinner = trickWinner,
                     frozenPlays = frozenPlays,
-                    modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp)
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 32.dp)
                 )
                 Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
                     Spacer(Modifier.height(20.dp))

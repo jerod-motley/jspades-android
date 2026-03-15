@@ -74,11 +74,12 @@ object AchievementsRepo {
 
     // ── Challenge active-challenge prefs ──────────────────────────────────────
 
-    fun setActiveChallenge(ctx: Context, sk: String, winCriteria: String?, allowBid: String?) {
+    fun setActiveChallenge(ctx: Context, sk: String, winCriteria: String?, allowBid: String?, shortText: String? = null) {
         prefs(ctx).edit()
             .putString("active_challenge_sk", sk)
             .putString("active_challenge_bidrule", winCriteria ?: "")
             .putString("active_challenge_allow_bid", allowBid ?: "south")
+            .putString("active_challenge_short_text", shortText ?: "")
             .apply()
         _activeChallengeFlow.value = sk
     }
@@ -88,6 +89,7 @@ object AchievementsRepo {
             .remove("active_challenge_sk")
             .remove("active_challenge_bidrule")
             .remove("active_challenge_allow_bid")
+            .remove("active_challenge_short_text")
             .apply()
         _activeChallengeFlow.value = null
     }
@@ -97,6 +99,11 @@ object AchievementsRepo {
 
     fun getActiveChallengeAllowBid(ctx: Context): String? =
         prefs(ctx).getString("active_challenge_allow_bid", null)
+
+    fun getActiveChallengeShortText(ctx: Context): String? {
+        val v = prefs(ctx).getString("active_challenge_short_text", null)
+        return if (v.isNullOrBlank()) null else v
+    }
 
     fun getActiveChallengeBidRule(ctx: Context): String? {
         val v = prefs(ctx).getString("active_challenge_bidrule", null)
@@ -134,8 +141,10 @@ object AchievementsRepo {
                 saveCompletedChallenges(ctx, current)
                 _completedChallengesFlow.value = current
             }
-            clearActiveChallenge(ctx)
         }
+        // Always clear active challenge after a result — normal games must not inherit it.
+        // To retry a failed challenge the player returns to the Challenges screen.
+        clearActiveChallenge(ctx)
     }
 
     // ── Completed challenges persistence ──────────────────────────────────────

@@ -3,6 +3,8 @@ package jmotley.com.jspades.screens
 import android.content.Context
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.layout.ContentScale
@@ -36,7 +38,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.text.font.FontWeight
 import jmotley.com.jspades.R
+import jmotley.com.jspades.data.GameLength
 
 private val SettDarkBg      = Color(0xFF1A1A2E)
 private val SettCardBg      = Color(0xFF16213E)
@@ -50,7 +54,7 @@ private const val KEY_SPADES_MUST_BREAK = "spades_must_break"
 private const val KEY_MIN_BID_FIVE      = "min_bid_five"
 private const val KEY_ALLOW_NIL_BID     = "allow_nil_bid"
 private const val KEY_COUNT_OVERS       = "count_overs"
-private const val KEY_LONG_GAME         = "long_game"
+private const val KEY_GAME_LENGTH       = "game_length"
 
 @Composable
 fun SettingsScreen(onNavigateBack: () -> Unit) {
@@ -63,7 +67,7 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
     var minBidFive      by remember { mutableStateOf(prefs.getBoolean(KEY_MIN_BID_FIVE, false)) }
     var allowNilBid     by remember { mutableStateOf(prefs.getBoolean(KEY_ALLOW_NIL_BID, false)) }
     var countOvers      by remember { mutableStateOf(prefs.getBoolean(KEY_COUNT_OVERS, true)) }
-    var longGame        by remember { mutableStateOf(prefs.getBoolean(KEY_LONG_GAME, false)) }
+    var gameLength      by remember { mutableStateOf(GameLength.valueOf(prefs.getString(KEY_GAME_LENGTH, GameLength.MEDIUM.name) ?: GameLength.MEDIUM.name)) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Image(
@@ -307,43 +311,33 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
         Spacer(Modifier.height(8.dp))
 
         SettingsCard {
-            val fontScale = LocalConfiguration.current.fontScale
-            if (fontScale >= 1.3f) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(text = "Long Game", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
-                    Switch(
-                        checked = longGame,
-                        onCheckedChange = { on: Boolean ->
-                            longGame = on
-                            prefs.edit().putBoolean(KEY_LONG_GAME, on).apply()
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = SettAccentGold,
-                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
-                        )
-                    )
-                }
-            } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(text = "Long Game", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
-                    Switch(
-                        checked = longGame,
-                        onCheckedChange = { on: Boolean ->
-                            longGame = on
-                            prefs.edit().putBoolean(KEY_LONG_GAME, on).apply()
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = SettAccentGold,
-                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
-                        )
-                    )
+            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(text = "Game Length", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    GameLength.values().forEach { option ->
+                        val selected = gameLength == option
+                        val label = option.name.lowercase().replaceFirstChar { c -> c.uppercase() }
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .border(1.dp, if (selected) SettAccentGold else Color.White.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                                .background(if (selected) SettAccentGold.copy(alpha = 0.2f) else Color.Transparent, RoundedCornerShape(8.dp))
+                                .clickable {
+                                    gameLength = option
+                                    prefs.edit().putString(KEY_GAME_LENGTH, option.name).apply()
+                                }
+                                .padding(vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = label,
+                                color = if (selected) SettAccentGold else Color.White,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
                 }
             }
         }

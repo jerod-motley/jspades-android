@@ -167,6 +167,7 @@ object BidEngine {
             }
 
             // Two Man: blind bid of 7 when player is 100+ points behind opponent.
+            // Otherwise floor at effectiveMinBid (board = 4).
             GameType.SOLO_TWO_MAN -> {
                 val myScore  = playerScore(state, player.id)
                 val topScore = state.players.filter { it.id != player.id }
@@ -174,7 +175,7 @@ object BidEngine {
                 if (topScore - myScore >= 100)
                     BidResult(bid = 7, isBlind = true)
                 else
-                    BidResult(base.coerceIn(0, 13))
+                    BidResult(base.coerceAtLeast(state.effectiveMinBid).coerceAtMost(13))
             }
         }
     }
