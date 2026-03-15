@@ -212,6 +212,9 @@ data class GameState(
     /** Canonical player array (never re-ordered). */
     val players: List<Player> = emptyList(),
     val leaderIndex: Int = 0, // index into `players` indicating who leads this hand/trick
+    /** Who leads bidding/play at the START of the current hand. Never overwritten by trick results.
+     *  Used by [GameViewModel.resetForNextHand] to correctly rotate the dealer each hand. */
+    val handLeaderIndex: Int = 0,
     val currentTrick: Trick = Trick(),
     val hands: Map<String, Hand> = emptyMap(), // playerId -> Hand
     val kitty: Hand? = null,
@@ -296,9 +299,16 @@ data class GameState(
     val gameLength: GameLength = GameLength.MEDIUM
 )
 
-/** Effective minimum bid: 5 when [GameState.minBidFive] is on for House Rules, otherwise the game type default. */
-val GameState.effectiveMinBid: Int get() =
-    if (minBidFive && gameType == GameType.HOUSE_RULES) 5 else gameType.minimumBid
+/**
+ * Effective minimum bid.
+ * When [minBidFive] is on it applies to all game types whose default minimum bid is 4
+ * (House Rules, Three Man Solo, Two Man Solo), raising it to 5.
+ * All other game types use their hardcoded [GameType.minimumBid].
+ */
+val GameState.effectiveMinBid: Int get() {
+    val base = gameType.minimumBid
+    return if (minBidFive && base == 4) 5 else base
+}
 
 /**
  * Winning score threshold for this game.

@@ -114,6 +114,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			phase            = GamePhase.Deal,
 			gameType         = gameType,
 			leaderIndex      = 1,
+			handLeaderIndex  = 1,
 			currentTrick     = Trick(plays = List(gameType.playerCount) { null }),
 			twoOfSpadesJoker     = twoOfSpadesJoker,
 			spadesMustBreak      = spadesMustBreak,
@@ -186,6 +187,19 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		val teamBids   = hand.teamBids.toMutableList()
 		if (teamId in teamBids.indices) teamBids[teamId] = bid
 		dealHands[dealHands.lastIndex] = hand.copy(teamBids = teamBids)
+		phaseHands[GamePhase.Deal] = dealHands
+		_state.value = current.copy(phaseHands = phaseHands)
+	}
+
+	/** Store the blind flag for a team in [Hand.teamBlind]. */
+	fun setTeamBlind(teamId: Int, isBlind: Boolean) {
+		val current = _state.value
+		val phaseHands = current.phaseHands.toMutableMap()
+		val dealHands  = phaseHands[GamePhase.Deal]?.toMutableList() ?: return
+		val hand       = dealHands.lastOrNull() ?: return
+		val teamBlind  = hand.teamBlind.toMutableList()
+		if (teamId in teamBlind.indices) teamBlind[teamId] = isBlind
+		dealHands[dealHands.lastIndex] = hand.copy(teamBlind = teamBlind)
 		phaseHands[GamePhase.Deal] = dealHands
 		_state.value = current.copy(phaseHands = phaseHands)
 	}
@@ -351,9 +365,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		val players = current.players.map { p ->
 			p.copy(runtimeFlags = RuntimeFlags(seatIndex = p.runtimeFlags.seatIndex))
 		}
+		val nextLeader = (current.handLeaderIndex + 1) % n
 		_state.value = current.copy(
 			players           = players,
-			leaderIndex       = (current.leaderIndex + 1) % n,
+			leaderIndex       = nextLeader,
+			handLeaderIndex   = nextLeader,
 			currentTrick      = Trick(plays = List(n) { null }),
 			discard           = emptyList(),
 			spadesBroken      = false,
@@ -398,20 +414,24 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
 		perPlayer[localPlayerId] = humanState.copy(hand = newHumanHand)
 
-		val humanDone = newHumanHand.size >= current.gameType.cardsPerPlayer
+		val cpp       = current.gameType.cardsPerPlayer
+		val humanDone = newHumanHand.size >= cpp
 
-		// If more rounds remain, CPU auto-picks for the next round
-		if (!humanDone && deck.size >= 2) {
-			val cpuId   = current.players.first { it.id != localPlayerId }.id
+		// CPU picks after the human whenever it hasn't yet reached its hand limit.
+		// Handles both orderings: CPU-first (pre-picked one card in dealTwoManAlternate)
+		// and human-first (human is the non-dealer; CPU starts with 0 cards).
+		val cpuId    = current.players.first { it.id != localPlayerId }.id
+		val cpuState = perPlayer[cpuId] ?: PlayerHandState()
+		if (cpuState.hand.size < cpp && deck.size >= 2) {
 			val cpuTop  = deck.removeAt(0)
 			val cpuNext = deck.removeAt(0)
 			val cpuCard = if (kotlin.random.Random.nextBoolean()) cpuTop else cpuNext
-			val cpuState = perPlayer[cpuId] ?: PlayerHandState()
 			perPlayer[cpuId] = cpuState.copy(
 				hand = (cpuState.hand + cpuCard)
 					.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
 			)
 		}
+		val bothDone = humanDone && (perPlayer[cpuId]?.hand?.size ?: 0) >= cpp
 
 		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
 		phaseHands[GamePhase.Deal] = dealHands
@@ -425,7 +445,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		}
 		_state.value = current.copy(deck = deck, phaseHands = phaseHands, originalDealHands = updatedOriginalHands)
 
-		if (humanDone) {
+		if (bothDone) {
 			advancePhase(GamePhase.Bid)
 			phaseManager.execute()
 		}
@@ -568,6 +588,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			gameType         = current.gameType,
 			phase            = GamePhase.Deal,
 			leaderIndex      = 1,
+			handLeaderIndex  = 1,
 			twoOfSpadesJoker = current.twoOfSpadesJoker,
 			spadesMustBreak  = current.spadesMustBreak,
 			minBidFive       = current.minBidFive

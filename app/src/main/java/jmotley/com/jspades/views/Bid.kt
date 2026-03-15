@@ -35,6 +35,16 @@ import jmotley.com.jspades.models.GameViewModel
 
 private const val MAX_BID = 13
 
+private data class BidRow(val name: String, val bid: Int?, val hasBid: Boolean, val isBlind: Boolean)
+
+/** "B7", "Nil", "B0" (blind nil), or the plain number. */
+private fun formatBid(bid: Int, isBlind: Boolean): String = when {
+    bid == 0 && isBlind -> "B Nil"
+    bid == 0            -> "Nil"
+    isBlind             -> "B$bid"
+    else                -> "$bid"
+}
+
 /**
  * Bid panel: shown during [GamePhase.Bid], [GamePhase.BidHuman], and [GamePhase.BidReview].
  *
@@ -63,9 +73,9 @@ fun BidView(
 
     // All players in clockwise order from leaderIndex for the scoreboard (solo games)
     val bidRows = (0 until n).map { offset ->
-        val player = state.players[(state.leaderIndex + offset) % n]
-        val bid    = dealHand?.perPlayer?.get(player.id)?.bid
-        Triple(player.displayName, bid, player.runtimeFlags.didBid)
+        val player  = state.players[(state.leaderIndex + offset) % n]
+        val phs     = dealHand?.perPlayer?.get(player.id)
+        BidRow(player.displayName, phs?.bid, player.runtimeFlags.didBid, phs?.isBlind ?: false)
     }
 
     val nilAllowed  = state.allowNilBid
@@ -111,10 +121,10 @@ fun BidView(
             val allOppBid   = opponentPlayers.all { it.runtimeFlags.didBid }
             val oppTotal    = if (allOppBid) dealHand?.teamBids?.getOrNull(opponentTeamId) else null
 
-            val partnerHasBid = partnerPlayer?.runtimeFlags?.didBid ?: false
-            val partnerBidVal = if (partnerHasBid) dealHand?.perPlayer?.get(partnerPlayer?.id)?.bid else null
+            val partnerHasBid  = partnerPlayer?.runtimeFlags?.didBid ?: false
+            val partnerPhs     = if (partnerHasBid) dealHand?.perPlayer?.get(partnerPlayer?.id) else null
             val partnerBidText = when {
-                partnerHasBid && partnerBidVal != null -> if (partnerBidVal == 0) "Nil" else "$partnerBidVal"
+                partnerHasBid && partnerPhs?.bid != null -> formatBid(partnerPhs.bid, partnerPhs.isBlind)
                 else -> "–"
             }
 
@@ -129,15 +139,16 @@ fun BidView(
                 // Individual opponent rows (not shown for House Rules — team bids as unit)
                 if (!isHouseRules) {
                     opponentPlayers.forEach { p ->
+                        val phs    = dealHand?.perPlayer?.get(p.id)
                         val hasBid = p.runtimeFlags.didBid
-                        val bid    = if (hasBid) dealHand?.perPlayer?.get(p.id)?.bid else null
+                        val bid    = if (hasBid) phs?.bid else null
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(start = 12.dp),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(p.displayName, color = Color.White, style = MaterialTheme.typography.bodySmall)
                             Text(
-                                text = if (hasBid && bid != null) (if (bid == 0) "Nil" else "$bid") else "–",
+                                text = if (hasBid && bid != null) formatBid(bid, phs?.isBlind ?: false) else "–",
                                 color = if (hasBid) Color(0xFFFFD700) else Color.White,
                                 style = MaterialTheme.typography.bodySmall,
                                 fontWeight = FontWeight.SemiBold
@@ -157,20 +168,28 @@ fun BidView(
                 )
             }
         } else {
-            // Solo: horizontal row
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                bidRows.forEach { (name, bid, hasBid) ->
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(text = name, color = Color.White, style = MaterialTheme.typography.labelSmall)
-                        Text(
-                            text = when {
-                                hasBid && bid != null -> if (bid == 0) "Nil" else "$bid"
-                                else -> "–"
-                            },
-                            color = if (hasBid) Color(0xFFFFD700) else Color.White,
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
+            // Solo: horizontal row.
+            // During BidHuman, only show players who bid before the local player so
+            // the human cannot see bids from players who haven't gone yet.
+            val localOffset = (0 until n).firstOrNull { offset ->
+                state.players[(state.leaderIndex + offset) % n].id == localPlayerId
+            } ?: n
+            val visibleRows = if (isHumanTurn) bidRows.take(localOffset) else bidRows
+            if (visibleRows.isNotEmpty()) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    visibleRows.forEach { row ->
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(text = row.name, color = Color.White, style = MaterialTheme.typography.labelSmall)
+                            Text(
+                                text = when {
+                                    row.hasBid && row.bid != null -> formatBid(row.bid, row.isBlind)
+                                    else -> "–"
+                                },
+                                color = if (row.hasBid) Color(0xFFFFD700) else Color.White,
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }

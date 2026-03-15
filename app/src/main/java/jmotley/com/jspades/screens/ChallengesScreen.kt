@@ -108,7 +108,7 @@ fun ChallengesScreen(
                         isCompleted = isCompleted,
                         isActive    = isActive,
                         onStart = {
-                            if (ch.winCriteria?.startsWith("MinBooks:") == true) {
+                            if (ch.winCriteria == "MinBooks:X") {
                                 pendingChallenge = ch
                                 pickedX = 7
                             } else {

@@ -39,6 +39,13 @@ private val GOLD   = Color(0xFFFFD700)
 private val PANEL  = Color(0xEE0A0A14)   // near-black, slightly blue-tinted
 private val HEADER = Color.White
 
+private fun formatBidEnd(bid: Int, isBlind: Boolean): String = when {
+    bid == 0 && isBlind -> "B Nil"
+    bid == 0            -> "Nil"
+    isBlind             -> "B$bid"
+    else                -> "$bid"
+}
+
 /**
  * End-of-hand summary overlay. Shows each team's (or player's) bid, tricks taken,
  * points earned this hand, and the updated running total. Offers "Next Hand" to
@@ -164,9 +171,11 @@ private fun TeamStatsTable(
     StatDivider()
 
     // Bid
-    val humanBid = dealHand?.teamBids?.getOrNull(humanTeam) ?: 0
-    val oppBid   = dealHand?.teamBids?.getOrNull(oppTeam)   ?: 0
-    StatRow("Bid", humanBid.toString(), oppBid.toString())
+    val humanBid      = dealHand?.teamBids?.getOrNull(humanTeam) ?: 0
+    val oppBid        = dealHand?.teamBids?.getOrNull(oppTeam)   ?: 0
+    val humanTeamBlind = dealHand?.teamBlind?.getOrNull(humanTeam) ?: false
+    val oppTeamBlind   = dealHand?.teamBlind?.getOrNull(oppTeam)   ?: false
+    StatRow("Bid", formatBidEnd(humanBid, humanTeamBlind), formatBidEnd(oppBid, oppTeamBlind))
 
     // Tricks
     val humanTricks = state.players.filter { it.team == humanTeam }.sumOf { p -> dealHand?.perPlayer?.get(p.id)?.tricksWon ?: 0 }
@@ -227,7 +236,10 @@ private fun SoloStatsTable(
     StatDivider()
 
     // Bid
-    StatRow("Bid", *ordered.map { p -> (dealHand?.perPlayer?.get(p.id)?.bid ?: 0).toString() }.toTypedArray())
+    StatRow("Bid", *ordered.map { p ->
+        val phs = dealHand?.perPlayer?.get(p.id)
+        formatBidEnd(phs?.bid ?: 0, phs?.isBlind ?: false)
+    }.toTypedArray())
 
     // Won
     StatRow("Won", *ordered.map { p -> (dealHand?.perPlayer?.get(p.id)?.tricksWon ?: 0).toString() }.toTypedArray())

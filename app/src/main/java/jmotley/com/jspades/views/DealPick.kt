@@ -69,8 +69,8 @@ fun DealPickView(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "If you accept a card, you discard the next card in the deck without seeing it. If you reject a card, you must take the next card in the deck without seeing it.",
-            color = Color(0xFFB0BEC5),
+            text = "Keep, and you discard the next card in the deck without seeing it. Skip, and you must take the next card in the deck without seeing it.",
+            color = Color.White,
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 24.dp)

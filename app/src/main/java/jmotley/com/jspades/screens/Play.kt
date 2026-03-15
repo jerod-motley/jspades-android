@@ -118,6 +118,15 @@ fun PlayScreen(
     val renegePrefs = remember { context.getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE) }
     val defaultRenegeMessage = "You must follow suit!"
 
+    val onSpadesNotBroken: () -> Unit = {
+        renegeJob?.cancel()
+        renegeJokeText = "Spades have not broken yet"
+        renegeJob = renegeScope.launch {
+            delay(2500L)
+            renegeJokeText = null
+        }
+    }
+
     val onRenegeAttempt: () -> Unit = {
         renegeJob?.cancel()
         val count = renegePrefs.getInt("renege_count", 0)
@@ -445,7 +454,8 @@ fun PlayScreen(
                         state = state, viewModel = viewModel,
                         localPlayerId = localPlayerId,
                         onTapMessageChanged = { showTapMessage = it },
-                        onRenegeAttempt = onRenegeAttempt
+                        onRenegeAttempt = onRenegeAttempt,
+                        onSpadesNotBroken = onSpadesNotBroken
                     )
                     Spacer(Modifier.height(62.dp))
                 }

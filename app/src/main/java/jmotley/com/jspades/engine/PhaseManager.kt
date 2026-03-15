@@ -235,15 +235,25 @@ class PhaseManager(
      * top card when DealHuman begins. Subsequent picks are handled by
      * [GameViewModel.applyDealPick] as the human taps Keep / Skip in the UI.
      */
+    /**
+     * Two Man Solo alternate deal (interactive version).
+     *
+     * The non-dealer (leaderIndex player) picks first each round.
+     * If the CPU is the non-dealer, give it one automatic pick so the human sees
+     * the correct top card when DealHuman begins.
+     * If the human is the non-dealer, both hands start empty — the UI drives
+     * the first pick and [GameViewModel.applyDealPick] handles the CPU's reply pick.
+     */
     private fun dealTwoManAlternate(shuffled: MutableList<Card>, ids: List<String>, gt: GameType) {
-        val deck    = shuffled.toMutableList()
-        val cpuHand = mutableListOf<Card>()
+        val deck = shuffled.toMutableList()
+        val s    = viewModel.state.value
+        val nonDealerIsHuman = s.players.getOrNull(s.leaderIndex)?.id == "south"
 
-        // CPU (non-dealer) takes round-1 pick automatically
-        pickOneCard(deck, cpuHand)
+        val cpuHand = mutableListOf<Card>()
+        if (!nonDealerIsHuman) pickOneCard(deck, cpuHand) // CPU is non-dealer: pre-pick
 
         val perPlayer = mapOf(
-            ids[0] to PlayerHandState(),   // human — empty until pick UI runs
+            ids[0] to PlayerHandState(),   // south — empty until pick UI runs
             ids[1] to PlayerHandState(
                 hand = cpuHand.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
             )
@@ -307,7 +317,7 @@ class PhaseManager(
         // TWO_MAN_ALTERNATE: put target cards at human viewing slots (2, 6, 10 …).
         if (gt.dealMode == DealMode.TWO_MAN_ALTERNATE) {
             val targets: List<Pair<Rank, Suit>> = when (activeSk) {
-                "two_man_board", "get_all_two_solo" ->
+                "two_man_boston", "get_all_two_solo" ->
                     listOf(Rank.ACE to Suit.SPADES, Rank.KING to Suit.SPADES)
                 "walk_4_ladies" ->
                     Suit.values().map { Rank.QUEEN to it }
@@ -336,9 +346,9 @@ class PhaseManager(
             "no_aces_team", "all_aces_walk" ->
                 Suit.values().forEach { moveToSection(Rank.ACE, it, humanIdx) }
 
-            "run_boston", "get_all_books_kitty", "kitty_boston",
+            "run_boston", "get_all_books", "kitty_boston",
             "big_joker_leads", "run_boston_alone", "by_yourself_kitty",
-            "three_man_board" -> {
+            "three_man_boston" -> {
                 if (hasBigJoker) moveToSection(Rank.BIGJOKER, Suit.SPADES, humanIdx)
                 else moveToSection(Rank.ACE, Suit.SPADES, humanIdx)
             }
@@ -495,39 +505,67 @@ class PhaseManager(
             val humanOnTeam    = teamPlayers.any { it.id == "south" }
             val humanAlreadyBid = s.players.find { it.id == "south" }?.runtimeFlags?.didBid ?: false
 
-            // Find the next unbidd CPU player on this team
-            val nextCpu = teamPlayers.firstOrNull { !it.runtimeFlags.didBid && it.id != "south" }
-            if (nextCpu != null) {
-                val hand   = getPlayerHand(s, nextCpu.id)
-                val result = BidEngine.computeCpuBid(hand, nextCpu, s)
-                viewModel.submitBid(nextCpu.id, result.bid, result.isBlind)
-                // Fire-and-forget: one CPU bid per execute() call
-                viewModel.emitAnimation(AnimationEvent.BidPlaced(nextCpu.id, result.bid))
-                return
-            }
+            // Check if this team is already committed to a blind bid (set by a previous CPU on the team)
+            val teamAlreadyBlind = s.phaseHands[GamePhase.Deal]?.lastOrNull()
+                ?.teamBlind?.getOrNull(teamId) ?: false
 
-            // All CPUs on this team have bid
-            if (humanOnTeam && !humanAlreadyBid) {
-                val allowBid = AchievementsRepo.getActiveChallengeAllowBid(context)
-                if (allowBid != null && allowBid != "south") {
-                    viewModel.submitBid("south", 0, false)
-                    viewModel.emitAnimation(AnimationEvent.BidPlaced("south", 0))
+            if (teamAlreadyBlind) {
+                // Blind already committed — auto-fill any remaining unbidd players and skip BidHuman
+                val remaining = teamPlayers.filter { !it.runtimeFlags.didBid }
+                if (remaining.isNotEmpty()) {
+                    remaining.forEach { p -> viewModel.submitBid(p.id, 0, false) }
+                    viewModel.emitAnimation(AnimationEvent.BidPlaced(remaining.first().id, 0))
                     return
                 }
-                viewModel.advancePhase(GamePhase.BidHuman)
-                dispatch()
-                return
-            }
+                // fall through to next team
+            } else {
+                // Find the next unbidd CPU player on this team
+                val nextCpu = teamPlayers.firstOrNull { !it.runtimeFlags.didBid && it.id != "south" }
+                if (nextCpu != null) {
+                    val hand   = getPlayerHand(s, nextCpu.id)
+                    val result = BidEngine.computeCpuBid(hand, nextCpu, s)
 
-            if (!humanOnTeam) {
-                // CPU-only team — sum individual bids and store team total (idempotent)
-                val teamBid = teamPlayers.sumOf { player ->
-                    s.phaseHands[GamePhase.Deal]?.lastOrNull()
-                        ?.perPlayer?.get(player.id)?.bid ?: 0
-                }.coerceAtLeast(s.effectiveMinBid)
-                viewModel.setTeamBid(teamId, teamBid)
+                    if (result.isBlind) {
+                        // Team goes blind: commit combined bid of 7, auto-fill all teammates
+                        viewModel.submitBid(nextCpu.id, 0, false)
+                        teamPlayers.filter { it.id != nextCpu.id }.forEach { p ->
+                            viewModel.submitBid(p.id, 0, false)
+                        }
+                        viewModel.setTeamBid(teamId, 7)
+                        viewModel.setTeamBlind(teamId, true)
+                        viewModel.emitAnimation(AnimationEvent.BidPlaced(nextCpu.id, 7))
+                        return
+                    }
+
+                    viewModel.submitBid(nextCpu.id, result.bid, result.isBlind)
+                    // Fire-and-forget: one CPU bid per execute() call
+                    viewModel.emitAnimation(AnimationEvent.BidPlaced(nextCpu.id, result.bid))
+                    return
+                }
+
+                // All CPUs on this team have bid
+                if (humanOnTeam && !humanAlreadyBid) {
+                    val allowBid = AchievementsRepo.getActiveChallengeAllowBid(context)
+                    if (allowBid != null && allowBid != "south") {
+                        viewModel.submitBid("south", 0, false)
+                        viewModel.emitAnimation(AnimationEvent.BidPlaced("south", 0))
+                        return
+                    }
+                    viewModel.advancePhase(GamePhase.BidHuman)
+                    dispatch()
+                    return
+                }
+
+                if (!humanOnTeam) {
+                    // CPU-only team — sum individual bids and store team total (idempotent)
+                    val teamBid = teamPlayers.sumOf { player ->
+                        s.phaseHands[GamePhase.Deal]?.lastOrNull()
+                            ?.perPlayer?.get(player.id)?.bid ?: 0
+                    }.coerceAtLeast(s.effectiveMinBid)
+                    viewModel.setTeamBid(teamId, teamBid)
+                }
+                // fall through to next team
             }
-            // fall through to next team
         }
 
         viewModel.advancePhase(GamePhase.BidReview)

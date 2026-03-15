@@ -84,7 +84,7 @@ object ChallengeEvaluation {
                 if (oppAceWon) fail("An opponent's ace walked") else emptyList()
             }
 
-            "get_all_books_kitty", "run_boston", "kitty_boston" -> {
+            "get_all_books", "run_boston", "kitty_boston" -> {
                 if (winnerId in oppTeamIds) fail("Opponent won a trick") else emptyList()
             }
 
@@ -93,7 +93,7 @@ object ChallengeEvaluation {
                 if (opponentAceWon) fail("An opponent's ace walked") else emptyList()
             }
 
-            "by_yourself_kitty", "run_boston_alone", "three_man_board", "two_man_board" -> {
+            "by_yourself_kitty", "run_boston_alone", "three_man_boston", "two_man_boston" -> {
                 if (winnerId != "south") fail("Someone other than south won a trick") else emptyList()
             }
 
@@ -194,7 +194,7 @@ object ChallengeEvaluation {
 
             // ── Kitty ─────────────────────────────────────────────────────────
 
-            "get_all_books_kitty" -> {
+            "get_all_books" -> {
                 if (humanTeamTricks == totalTricks) success() else fail("Team won $humanTeamTricks/$totalTricks tricks")
             }
 
@@ -216,16 +216,9 @@ object ChallengeEvaluation {
                 if (noTrumpWins >= target) success() else fail("South won $noTrumpWins no-trump tricks, needed $target")
             }
 
-            "get_x_books_classic" -> {
+            "get_10_books_classic" -> {
                 val x = bidRule.minBooks ?: return emptyList()
                 if (humanTeamTricks >= x) success() else fail("Team won $humanTeamTricks books, needed $x")
-            }
-
-            "double_bid_classic" -> {
-                val oppBid = hand.teamBids.getOrNull(1 - humanTeam) ?: 0
-                val oppTricks = oppTeamIds.sumOf { hand.perPlayer[it]?.tricksWon ?: 0 }
-                if (oppTricks >= oppBid * 2) success()
-                else fail("Opponents won $oppTricks tricks, needed ${oppBid * 2} (double their bid of $oppBid)")
             }
 
             // ── Four Man Solo ─────────────────────────────────────────────────
@@ -241,12 +234,6 @@ object ChallengeEvaluation {
                     phs.bid > 0 && phs.tricksWon < phs.bid
                 }
                 if (setCount >= 2) success() else fail("Only $setCount opponents were set (needed 2)")
-            }
-
-            "get_4_no_trump_four_solo" -> {
-                val noTrumpWins = countNoTrumpWins("south", trickHistory)
-                val target = bidRule.noTrump ?: 4
-                if (noTrumpWins >= target) success() else fail("South won $noTrumpWins no-trump tricks, needed $target")
             }
 
             // ── Three Man Solo ────────────────────────────────────────────────
@@ -318,12 +305,12 @@ object ChallengeEvaluation {
                 else fail("Team won $humanTeamTricks/$totalTricks tricks")
             }
 
-            "three_man_board" -> {
+            "three_man_boston" -> {
                 if (southPhs.tricksWon == totalTricks) success()
                 else fail("South won ${southPhs.tricksWon}/$totalTricks tricks")
             }
 
-            "two_man_board" -> {
+            "two_man_boston" -> {
                 if (southPhs.tricksWon == totalTricks) success()
                 else fail("South won ${southPhs.tricksWon}/$totalTricks tricks")
             }

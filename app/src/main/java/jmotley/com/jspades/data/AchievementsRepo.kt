@@ -124,7 +124,7 @@ object AchievementsRepo {
     /**
      * Called by PlayScreen after a ChallengeResult is collected.
      * On success: records the challenge as completed and clears active prefs.
-     * On failure: removes from pending but retains active prefs so the player can retry.
+     * On failure: removes from pending.
      */
     fun finalizeChallenge(ctx: Context, sk: String, succeeded: Boolean) {
         val pending = loadPending(ctx).toMutableSet()

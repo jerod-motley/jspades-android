@@ -45,6 +45,9 @@ import androidx.compose.ui.draw.alpha
 import jmotley.com.jspades.data.Card
 import jmotley.com.jspades.data.GamePhase
 import jmotley.com.jspades.data.GameState
+import jmotley.com.jspades.data.GameType
+import jmotley.com.jspades.data.Rank
+import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.data.localHand
 import jmotley.com.jspades.models.GameViewModel
 
@@ -77,6 +80,7 @@ fun HandView(
     localPlayerId: String,
     onTapMessageChanged: ((Boolean) -> Unit)? = null,
     onRenegeAttempt: (() -> Unit)? = null,
+    onSpadesNotBroken: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val liveCards    = state.localHand(localPlayerId)
@@ -147,7 +151,16 @@ fun HandView(
                 }
             }
         } else if (isTrickHuman && card.uid !in validUids) {
-            onRenegeAttempt?.invoke()
+            val isLead     = state.currentTrick.plays.firstOrNull { it != null } == null
+            val isTrumpCard = card.suit == Suit.SPADES
+                    || card.rank == Rank.LITTLEJOKER
+                    || card.rank == Rank.BIGJOKER
+            val spadesGate = state.gameType == GameType.TEAM_CLASSIC || state.spadesMustBreak
+            if (isLead && isTrumpCard && spadesGate && !state.spadesBroken) {
+                onSpadesNotBroken?.invoke()
+            } else {
+                onRenegeAttempt?.invoke()
+            }
         }
     }
 

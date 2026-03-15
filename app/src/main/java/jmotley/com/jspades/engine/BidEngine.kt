@@ -106,7 +106,7 @@ object BidEngine {
         val base = computeBaseBid(hand)
         return when (state.gameType) {
 
-            // House Rules: blind bid (minimumBid=5) when team is 100+ points behind.
+            // House Rules: blind bid of 7 when team is 100+ points behind.
             GameType.HOUSE_RULES -> {
                 val currentHand   = state.phaseHands[GamePhase.Deal]?.lastOrNull()
                 val teammateBlind = currentHand?.perPlayer?.entries?.any { (id, phs) ->
@@ -115,7 +115,7 @@ object BidEngine {
                 } ?: false
                 val deficit = teamScore(state, 1 - player.team) - teamScore(state, player.team)
                 if (!teammateBlind && deficit >= 100)
-                    BidResult(bid = state.effectiveMinBid, isBlind = true)
+                    BidResult(bid = 7, isBlind = true)
                 else
                     BidResult(base.coerceIn(0, 13))
             }
@@ -162,7 +162,7 @@ object BidEngine {
                     val walking = hand.count {
                         (it.rank == Rank.QUEEN || it.rank == Rank.JACK) && it.suit != Suit.SPADES
                     }
-                    BidResult((base + walking / 2).coerceIn(0, 18))
+                    BidResult((base + walking / 2).coerceAtLeast(state.effectiveMinBid).coerceAtMost(18))
                 }
             }
 
