@@ -51,6 +51,7 @@ import jmotley.com.jspades.views.ReplayHandView
 import jmotley.com.jspades.views.GameInfoView
 import jmotley.com.jspades.views.HandView
 import jmotley.com.jspades.views.KittyView
+import jmotley.com.jspades.views.KittyWinnerReveal
 import jmotley.com.jspades.views.LobbyView
 import android.app.Activity
 import android.net.Uri
@@ -254,11 +255,25 @@ fun PlayScreen(
                         // Wait for the last card's slide-in: (cardCount-1)×50ms stagger + 320ms.
                         // Uses the same constants as CardTile so we track the real animation end.
                         delay(((event.cardCount - 1) * 50 + 320).toLong())
-                        viewModel.advancePhase(GamePhase.Bid)
+                        if (state.gameType == GameType.TEAM_KITTY) {
+                            viewModel.advancePhase(GamePhase.DeuceReveal)
+                        } else {
+                            viewModel.advancePhase(GamePhase.Bid)
+                        }
+                    }
+                    is AnimationEvent.DeuceRevealed -> {
+                        // Show 2♠ holder for 2 seconds before kitty exchange begins
+                        delay(2000)
+                        viewModel.advancePhase(GamePhase.KittyReveal)
                     }
                     is AnimationEvent.KittyRevealed -> {
-                        // Show kitty cards to the human briefly before CPU takes over
-                        delay(1500)
+                        // Show winner reveal for 2 seconds, then route to the correct phase
+                        delay(2000)
+                        if (event.winnerId == localPlayerId) {
+                            viewModel.advancePhase(GamePhase.KittyHuman)
+                        } else {
+                            viewModel.advancePhase(GamePhase.Kitty)
+                        }
                     }
                 }
                 viewModel.phaseManager.execute()
@@ -337,7 +352,7 @@ fun PlayScreen(
                     )
                 } else {
                     Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
-                        Spacer(Modifier.height(20.dp))
+                        Spacer(Modifier.height(10.dp))
                         GameInfoView(
                             state = state, viewModel = viewModel,
                             localPlayerId = localPlayerId
@@ -346,7 +361,7 @@ fun PlayScreen(
                             state = state, viewModel = viewModel,
                             localPlayerId = localPlayerId
                         )
-                        Spacer(Modifier.height(62.dp))
+                        Spacer(Modifier.height(10.dp))
                     }
                 }
             }
@@ -358,7 +373,7 @@ fun PlayScreen(
             GamePhase.BidHuman,
             GamePhase.BidReview -> {
                 Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
-                    Spacer(Modifier.height(20.dp))
+                    Spacer(Modifier.height(10.dp))
                     GameInfoView(
                         state = state, viewModel = viewModel,
                         localPlayerId = localPlayerId
@@ -367,7 +382,7 @@ fun PlayScreen(
                         state = state, viewModel = viewModel,
                         localPlayerId = localPlayerId
                     )
-                    Spacer(Modifier.height(62.dp))
+                    Spacer(Modifier.height(10.dp))
                 }
                 BidView(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
@@ -377,37 +392,45 @@ fun PlayScreen(
                 )
             }
 
-            // ── Kitty ─────────────────────────────────────────────────────────
-            GamePhase.KittyReveal,
-            GamePhase.Kitty -> {
-                KittyView(
+            // ── Deuce reveal (kitty mode, pre-bid) ───────────────────────────
+            // Show which player holds the 2♠ for 2 seconds, then proceed to bidding
+            GamePhase.DeuceReveal -> {
+                DiamondView(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
-                    modifier = Modifier.align(Alignment.Center)
+                    trickWinner = null, frozenPlays = emptyList(), showKittyCard = true,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 32.dp)
                 )
-                GameInfoView(
-                    state = state, viewModel = viewModel,
-                    localPlayerId = localPlayerId,
-                    modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 62.dp)
+                KittyWinnerReveal(
+                    state = state, localPlayerId = localPlayerId,
+                    modifier = Modifier.align(Alignment.Center)
                 )
             }
 
+            // ── Kitty ─────────────────────────────────────────────────────────
+            // KittyReveal: diamond only (2♠ in winner's slot); no overlay — already shown at DeuceReveal
+            GamePhase.KittyReveal -> {
+                DiamondView(
+                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
+                    trickWinner = null, frozenPlays = emptyList(), showKittyCard = true,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 32.dp)
+                )
+            }
+
+            // Kitty (CPU exchange): diamond visible; CPU resolves instantly in engine
+            GamePhase.Kitty -> {
+                DiamondView(
+                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
+                    trickWinner = null, frozenPlays = emptyList(),
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 32.dp)
+                )
+            }
+
+            // KittyHuman: full-screen card exchange UI — no diamond, no bid view
             GamePhase.KittyHuman -> {
                 KittyView(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
-                    modifier = Modifier.align(Alignment.Center)
+                    modifier = Modifier.fillMaxSize()
                 )
-                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
-                    Spacer(Modifier.height(20.dp))
-                    GameInfoView(
-                        state = state, viewModel = viewModel,
-                        localPlayerId = localPlayerId
-                    )
-                    HandView(
-                        state = state, viewModel = viewModel,
-                        localPlayerId = localPlayerId
-                    )
-                    Spacer(Modifier.height(62.dp))
-                }
             }
 
             // ── Trick / Play ──────────────────────────────────────────────────
@@ -423,7 +446,7 @@ fun PlayScreen(
                     modifier = Modifier.align(Alignment.TopCenter).padding(top = 32.dp)
                 )
                 Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
-                    Spacer(Modifier.height(20.dp))
+                    Spacer(Modifier.height(10.dp))
                     if (showTapMessage) {
                         Box(
                             modifier = Modifier
@@ -457,7 +480,7 @@ fun PlayScreen(
                         onRenegeAttempt = onRenegeAttempt,
                         onSpadesNotBroken = onSpadesNotBroken
                     )
-                    Spacer(Modifier.height(62.dp))
+                    Spacer(Modifier.height(10.dp))
                 }
             }
 

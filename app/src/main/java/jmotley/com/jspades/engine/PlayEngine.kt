@@ -77,7 +77,7 @@ object PlayEngine {
 
         val stillNeeds = if (state.gameType.useTeams) {
             val hand    = state.phaseHands[GamePhase.Deal]?.lastOrNull()
-            val teamBid = (hand?.teamBids?.getOrNull(player.team) ?: 0) ?: 0
+            val teamBid = hand?.teamBids?.getOrNull(player.team) ?: 0
             val teamWon = state.players.filter { it.team == player.team }
                 .sumOf { p -> hand?.perPlayer?.get(p.id)?.tricksWon ?: 0 }
             teamWon < teamBid
@@ -90,7 +90,7 @@ object PlayEngine {
         val opponentsMadeBid = if (state.gameType.useTeams) {
             val hand        = state.phaseHands[GamePhase.Deal]?.lastOrNull()
             val oppTeam     = 1 - player.team
-            val oppTeamBid  = (hand?.teamBids?.getOrNull(oppTeam) ?: 0) ?: 0
+            val oppTeamBid  = hand?.teamBids?.getOrNull(oppTeam) ?: 0
             val oppTeamWon  = state.players.filter { it.team == oppTeam }
                 .sumOf { p -> hand?.perPlayer?.get(p.id)?.tricksWon ?: 0 }
             oppTeamWon >= oppTeamBid
@@ -145,10 +145,10 @@ object PlayEngine {
         // 2. Non-trump ace
         hand.firstOrNull { it.rank == Rank.ACE && !isTrump(it) }?.let { return it }
 
-        // 3. Pull trump
+        // 3. Pull trump — lead the highest trump the player holds (by TRUMP_CHAIN order).
         if (canLeadTrump) {
             if (numTrump > 2 || hand.size < 3) {
-                highestTrump(hand, state)?.let { return it }
+                highestTrumpInHand(hand)?.let { return it }
             }
             val half = (totalTrump - trumpPlayed) / 2
             if (numTrump >= half && numTrump > 2) {
@@ -212,9 +212,11 @@ object PlayEngine {
         // 2. Non-trump ace
         hand.firstOrNull { it.rank == Rank.ACE && !isTrump(it) }?.let { return it }
 
-        // 3. Pull trump
+        // 3. Pull trump — lead the highest trump the player holds (by TRUMP_CHAIN order).
         if (canLeadTrump) {
-            if (numTrump > 2 || hand.size < 3) highestTrump(hand, state)?.let { return it }
+            if (numTrump > 2 || hand.size < 3) {
+                highestTrumpInHand(hand)?.let { return it }
+            }
             val half = (totalTrump - trumpPlayed) / 2
             if (numTrump >= half && numTrump > 2) {
                 strength5(hand)?.let { return it }
@@ -309,6 +311,8 @@ object PlayEngine {
             return when {
                 // Nil-bidding teammate is winning: cut to rescue their nil
                 isTeammateWin && teammatePhs?.bid == 0 -> cut(player, hand, state)
+                // Partner winning with trump → throw off (never overtrump your own partner)
+                isTeammateWin && winnerCard != null && isTrump(winnerCard) -> throwOff(hand, state)
                 // Partner winning with King → throw off (King is already the top play)
                 isTeammateWin && winnerCard?.rank == Rank.KING && !isTrump(winnerCard) -> throwOff(hand, state)
                 // Partner winning with highest remaining in suit AND right opponent can't cut → throw off
@@ -325,8 +329,11 @@ object PlayEngine {
             return hand.filter { followsSuit(it, lead) }.minBy { it.rank.ordinal }
         }
 
-        // Trump was led: play strongest beating trump
+        // Trump was led: don't overtrump partner when they're already winning and there's
+        // still an opponent to play after us (non-last position). Only beat if we must
+        // (partner is losing) or we're last.
         if (isTrump(lead)) {
+            if (isTeammateWin && !isLast) return throwOff(hand, state)
             return hand.filter { isTrump(it) && it.rank.ordinal > (winnerCard?.rank?.ordinal ?: -1) }
                 .minByOrNull { it.rank.ordinal }
                 ?: hand.filter { isTrump(it) }.minBy { it.rank.ordinal }
@@ -426,7 +433,7 @@ object PlayEngine {
         val winner     = currentWinner(state)
         val winnerCard = winner?.card
 
-        if (!hasLead) return loserHighThrowOff(hand, lead)
+        if (!hasLead) return loserHighThrowOff(hand)
 
         // Trump lead: highest trump below winner
         if (isTrump(lead)) {
@@ -556,7 +563,7 @@ object PlayEngine {
     }
 
     /** LoserHigh throwOff: dump the highest non-trump to shed bags. */
-    private fun loserHighThrowOff(hand: List<Card>, lead: Card): Card =
+    private fun loserHighThrowOff(hand: List<Card>): Card =
         hand.filter { !isTrump(it) }.maxByOrNull { it.rank.ordinal }
             ?: hand.minBy { it.rank.ordinal }
 
@@ -629,6 +636,10 @@ object PlayEngine {
         return hand.firstOrNull { isTrump(it) && it.rank == topRank }
     }
 
+    /** Highest trump the player actually holds, ranked by [TRUMP_CHAIN] order. */
+    private fun highestTrumpInHand(hand: List<Card>): Card? =
+        TRUMP_CHAIN.firstNotNullOfOrNull { rank -> hand.firstOrNull { isTrump(it) && it.rank == rank } }
+
     private fun highestInAnyNonTrump(hand: List<Card>, state: GameState): Card? =
         hand.filter { !isTrump(it) }
             .firstOrNull { it.rank == highestRemainingNonTrump(it.suit, state) }
@@ -669,8 +680,14 @@ object PlayEngine {
             .firstOrNull { it.rank == highestRemainingNonTrump(it.suit, state) }
 
     private fun fishNonTrump(hand: List<Card>, state: GameState): Card? {
+        // Find the best non-trump suit to fish in — but only fish if the target (highest)
+        // card in that suit is actually the highest remaining (i.e., it can walk).
         val bestSuit = hand.filter { !isTrump(it) }
             .groupBy { it.suit }
+            .filter { (suit, cards) ->
+                val topCard = cards.maxByOrNull { it.rank.ordinal }
+                topCard != null && topCard.rank == highestRemainingNonTrump(suit, state)
+            }
             .maxByOrNull { (_, cards) -> cards.maxOfOrNull { rateCard(it, hand) } ?: 0 }
             ?.key ?: return null
         val suitCards = hand.filter { it.suit == bestSuit }.sortedByDescending { it.rank.ordinal }

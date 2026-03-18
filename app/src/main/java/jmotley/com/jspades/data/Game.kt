@@ -199,7 +199,7 @@ enum class GameType(
 }
 
 /** High-level phases used by the engine to drive UI and side-effects. */
-enum class GamePhase { Lobby, Deal, DealHuman, Bid, BidHuman, BidReview, KittyReveal, Kitty, KittyHuman, Trick, TrickHuman, TrickResolve, Score, EndHand, Finished }
+enum class GamePhase { Lobby, Deal, DealHuman, DeuceReveal, KittyReveal, Kitty, KittyHuman, Bid, BidHuman, BidReview, Trick, TrickHuman, TrickResolve, Score, EndHand, Finished }
 
 /** Controls the score threshold required to win the game. */
 enum class GameLength { SHORT, MEDIUM, LONG }

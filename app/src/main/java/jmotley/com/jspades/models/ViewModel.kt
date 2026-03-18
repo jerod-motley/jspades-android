@@ -30,6 +30,7 @@ import jmotley.com.jspades.data.HandReplay
 import jmotley.com.jspades.data.GameLength
 import jmotley.com.jspades.data.ReplayEvent
 import jmotley.com.jspades.engine.PhaseManager
+import jmotley.com.jspades.logging.PlayLogger
 
 class GameViewModel(application: Application) : AndroidViewModel(application) {
 	private val context: Context get() = getApplication<Application>().applicationContext
@@ -173,6 +174,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		}
 		_state.value = current.copy(players = players, phaseHands = phaseHands)
 		recordReplayEvent(ReplayEvent.Bid(playerId, bid, isBlind))
+
+		// Log the bid for debugging
+		PlayLogger.logBid(playerId, bid, isBlind)
 	}
 
 	/**
@@ -238,11 +242,13 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		val discardUids = discards.map { it.uid }.toSet()
 		val newHand = (phs.hand + kittyCards)
 			.filter { it.uid !in discardUids }
-			.sortedBy { it.rank.ordinal }
+			.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
 		perPlayer[winnerId] = phs.copy(hand = newHand)
 		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
 		phaseHands[GamePhase.Deal] = dealHands
-		_state.value = current.copy(phaseHands = phaseHands, kitty = null)
+		// Update originalDealHands so HandView's slot template reflects the post-exchange hand
+		val updatedOriginalHands = current.originalDealHands + (winnerId to newHand)
+		_state.value = current.copy(phaseHands = phaseHands, kitty = null, originalDealHands = updatedOriginalHands)
 	}
 
 	/** Play a card into the current trick slot. */
@@ -254,6 +260,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			plays[idx] = Play(playerId = playerId, card = card)
 			_state.value = current.copy(currentTrick = Trick(plays = plays))
 			recordReplayEvent(ReplayEvent.CardPlay(playerId, card.uid))
+			// Log the play (also logged as trick when trick resolves)
+			PlayLogger.logPlay(Play(playerId = playerId, card = card))
 		}
 	}
 
@@ -404,6 +412,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		val next     = deck.removeAt(0)
 		val humanCard = if (keep) top else next
 
+		// Log two-man pick (accepted / discarded)
+		PlayLogger.logTwoManPick(localPlayerId, humanCard, if (keep) next else top)
+
 		val phaseHands = current.phaseHands.toMutableMap()
 		val dealHands  = phaseHands[GamePhase.Deal]?.toMutableList() ?: return
 		val hand       = dealHands.lastOrNull() ?: return
@@ -470,6 +481,19 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	// ── Human trick play ──────────────────────────────────────────────────────
+
+	/**
+	 * Human kitty discard: apply the exchange and return control to the engine.
+	 * Advances to [GamePhase.Bid] so bidding follows kitty exchange.
+	 */
+	fun submitHumanKittyDiscard(discards: List<Card>) {
+		applyKittyExchange("south", discards)
+		// Kitty winner is awarded one free trick before play begins
+		val winnerId = _state.value.kittyWinnerId
+		if (winnerId != null) awardTrick(winnerId)
+		advancePhase(GamePhase.Bid)
+		phaseManager.execute()
+	}
 
 	/**
 	 * Commit the human player's card play and return control to the engine.

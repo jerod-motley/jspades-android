@@ -12,9 +12,15 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -85,6 +91,9 @@ class MainActivity : ComponentActivity() {
                 val navController = rememberNavController()
                 Scaffold(
                     containerColor = Color.Black,
+                    contentWindowInsets = WindowInsets.safeDrawing.only(
+                        WindowInsetsSides.Top + WindowInsetsSides.Horizontal
+                    ),
                     bottomBar = { if (adsReady) AdBannerView() }
                 ) { innerPadding ->
                     NavHost(
@@ -157,29 +166,31 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun AdBannerView() {
-    if (BuildConfig.GOOGLE_ADS_ENABLED) {
-        var showFacebook by remember { mutableStateOf(false) }
-        if (!showFacebook) {
-            AndroidView(factory = { ctx ->
-                com.google.android.gms.ads.AdView(ctx).apply {
-                    val dm = ctx.resources.displayMetrics
-                    val widthDp = (dm.widthPixels / dm.density).toInt()
-                    setAdSize(com.google.android.gms.ads.AdSize
-                        .getCurrentOrientationAnchoredAdaptiveBannerAdSize(ctx, widthDp))
-                    adUnitId = "ca-app-pub-3940256099942544/6300978111" // Google test ID
-                    adListener = object : com.google.android.gms.ads.AdListener() {
-                        override fun onAdFailedToLoad(error: com.google.android.gms.ads.LoadAdError) {
-                            showFacebook = true
+    Column(modifier = Modifier.navigationBarsPadding()) {
+        if (BuildConfig.GOOGLE_ADS_ENABLED) {
+            var showFacebook by remember { mutableStateOf(false) }
+            if (!showFacebook) {
+                AndroidView(factory = { ctx ->
+                    com.google.android.gms.ads.AdView(ctx).apply {
+                        val dm = ctx.resources.displayMetrics
+                        val widthDp = (dm.widthPixels / dm.density).toInt()
+                        setAdSize(com.google.android.gms.ads.AdSize
+                            .getCurrentOrientationAnchoredAdaptiveBannerAdSize(ctx, widthDp))
+                        adUnitId = "ca-app-pub-3940256099942544/6300978111" // Google test ID
+                        adListener = object : com.google.android.gms.ads.AdListener() {
+                            override fun onAdFailedToLoad(error: com.google.android.gms.ads.LoadAdError) {
+                                showFacebook = true
+                            }
                         }
+                        loadAd(com.google.android.gms.ads.AdRequest.Builder().build())
                     }
-                    loadAd(com.google.android.gms.ads.AdRequest.Builder().build())
-                }
-            })
+                })
+            } else if (BuildConfig.FACEBOOK_ADS_ENABLED) {
+                FbBannerView()
+            }
         } else if (BuildConfig.FACEBOOK_ADS_ENABLED) {
             FbBannerView()
         }
-    } else if (BuildConfig.FACEBOOK_ADS_ENABLED) {
-        FbBannerView()
     }
 }
 

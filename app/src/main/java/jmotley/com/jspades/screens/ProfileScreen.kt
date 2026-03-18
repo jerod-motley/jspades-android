@@ -267,44 +267,39 @@ private fun RegisteredView(
                 }
             }
         } else {
-            val winRate = if (stats.gamesPlayed > 0) stats.wins * 100 / stats.gamesPlayed else 0
-            val bookDiff = stats.booksWon - stats.booksAgainst
-            val totalBids = stats.bidsMade + stats.bidsSet
-            val bidSuccessRate = if (totalBids > 0) stats.bidsMade * 100 / totalBids else 0
-            val avgBid = if (stats.bidsMade > 0) stats.totalBidLevel.toFloat() / stats.bidsMade else 0f
-            val totalDeclarer = stats.handsAsDeclarerWon + stats.handsAsDeclarerLost
-            val declarerRate = if (totalDeclarer > 0) stats.handsAsDeclarerWon * 100 / totalDeclarer else 0
+            val winRate = if (stats.gamesPlayed > 0) stats.gamesWon * 100 / stats.gamesPlayed else 0
+            val totalBids = stats.timesMetBid + stats.timesDidNotMeetBid
+            val bidSuccessRate = if (totalBids > 0) stats.timesMetBid * 100 / totalBids else 0
 
             item {
                 StatCard("Match Record") {
                     StatRow("Games Played", "${stats.gamesPlayed}")
-                    StatRow("Wins", "${stats.wins}")
-                    StatRow("Losses", "${stats.losses}")
+                    StatRow("Wins", "${stats.gamesWon}")
+                    StatRow("Losses", "${stats.gamesLost}")
                     StatRow("Win Rate", "$winRate%")
-                    StatRow("Bostons", "${stats.bostons}")
-                    StatRow("Win Streak", "${stats.consecutiveWins}")
                 }
             }
             item {
-                StatCard("Books Performance") {
-                    StatRow("Books Won", "${stats.booksWon}")
-                    StatRow("Books Against", "${stats.booksAgainst}")
-                    StatRow("Book Differential", if (bookDiff >= 0) "+$bookDiff" else "$bookDiff")
+                StatCard("Game Types") {
+                    if (stats.playedHouseRules > 0)  StatRow("House Rules",  "${stats.playedHouseRules}")
+                    if (stats.playedKitty > 0)        StatRow("Kitty",        "${stats.playedKitty}")
+                    if (stats.playedClassic > 0)      StatRow("Classic",      "${stats.playedClassic}")
+                    if (stats.playedFourMan > 0)      StatRow("Four Man Solo","${stats.playedFourMan}")
+                    if (stats.playedThreeMan > 0)     StatRow("Three Man Solo","${stats.playedThreeMan}")
+                    if (stats.playedTwoMan > 0)       StatRow("Two Man Solo", "${stats.playedTwoMan}")
                 }
             }
             item {
-                StatCard("Bidding Performance") {
-                    StatRow("Bids Made", "${stats.bidsMade}")
-                    StatRow("Bids Set", "${stats.bidsSet}")
+                StatCard("Bidding") {
+                    StatRow("Bids Made", "${stats.timesMetBid}")
+                    StatRow("Bids Missed", "${stats.timesDidNotMeetBid}")
                     StatRow("Bid Success Rate", "$bidSuccessRate%")
-                    StatRow("Avg Bid Level", String.format("%.1f", avgBid))
                 }
             }
             item {
-                StatCard("As Bid Winner") {
-                    StatRow("Hands Won", "${stats.handsAsDeclarerWon}")
-                    StatRow("Hands Lost", "${stats.handsAsDeclarerLost}")
-                    StatRow("Success Rate", "$declarerRate%")
+                StatCard("Setting") {
+                    StatRow("Times Set Opponents", "${stats.timesSetOpponents}")
+                    StatRow("Times Been Set", "${stats.timesBeenSet}")
                 }
             }
         }

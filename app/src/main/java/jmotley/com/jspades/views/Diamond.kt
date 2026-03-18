@@ -40,6 +40,8 @@ import jmotley.com.jspades.data.Card
 import jmotley.com.jspades.data.GamePhase
 import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.Player
+import jmotley.com.jspades.data.Rank
+import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.models.GameViewModel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
@@ -66,6 +68,8 @@ fun DiamondView(
     localPlayerId: String,
     trickWinner: String? = null,
     frozenPlays: List<jmotley.com.jspades.data.Play> = emptyList(),
+    /** When true, the 2♠ card is shown in the kitty winner's slot (DeuceReveal / KittyReveal phases). */
+    showKittyCard: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val south = state.players.find { it.id == "south" }
@@ -82,7 +86,10 @@ fun DiamondView(
     // Map playerId → card played this trick.
     // During TrickResolve animation, currentTrick is already cleared so we
     // fall back to frozenPlays (the snapshot captured before collectTrick ran).
-    val playedCards: Map<String, Card> = if (frozenPlays.isNotEmpty()) {
+    val playedCards: Map<String, Card> = if (showKittyCard && kittyWinnerId != null) {
+        // During DeuceReveal / KittyReveal: show the 2♠ in the winner's slot
+        mapOf(kittyWinnerId to Card(Suit.SPADES, Rank.TWO))
+    } else if (frozenPlays.isNotEmpty()) {
         frozenPlays.associate { it.playerId to it.card }
     } else {
         state.currentTrick.plays

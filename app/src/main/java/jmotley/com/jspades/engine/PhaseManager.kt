@@ -1,6 +1,7 @@
 package jmotley.com.jspades.engine
 
 import android.content.Context
+import jmotley.com.jspades.logging.PlayLogger
 import jmotley.com.jspades.data.AchievementsRepo
 import jmotley.com.jspades.data.Card
 import jmotley.com.jspades.data.DealMode
@@ -96,6 +97,7 @@ class PhaseManager(
             GamePhase.Lobby       -> handleLobby()
             GamePhase.Deal        -> handleDeal()
             GamePhase.DealHuman   -> handleDealHuman()
+            GamePhase.DeuceReveal -> handleDeuceReveal()
             GamePhase.Bid         -> handleBid()
             GamePhase.BidHuman    -> { /* UI owns this phase — waits for submitBid() */ }
             GamePhase.BidReview   -> { /* UI owns this phase — waits for submitBidReview() */ }
@@ -132,9 +134,9 @@ class PhaseManager(
             Rank.TWO, Rank.THREE, Rank.FOUR, Rank.FIVE, Rank.SIX, Rank.SEVEN,
             Rank.EIGHT, Rank.NINE, Rank.TEN, Rank.JACK, Rank.QUEEN, Rank.KING, Rank.ACE
         )
-        val deck: MutableList<Card> = Suit.entries
-            .flatMap { suit -> standardRanks.map { rank -> Card(suit = suit, rank = rank) } }
-            .toMutableList()
+        val deck: MutableList<Card> = Suit.entries.flatMap { suit ->
+            standardRanks.map { rank -> Card(suit = suit, rank = rank) }
+        }.toMutableList()
 
         // 2. Optionally append jokers
         if (gt.includeJokers) {
@@ -165,6 +167,10 @@ class PhaseManager(
             DealMode.KITTY_TWO_OF_SPADES -> dealWithKitty(shuffled, ids, gt)
             DealMode.TWO_MAN_ALTERNATE   -> dealTwoManAlternate(shuffled, ids, gt)
         }
+
+        // Log game type and dealt hands for debugging
+        PlayLogger.logGameType(viewModel.state.value)
+        PlayLogger.logDealtHands(viewModel.state.value)
 
         viewModel.advancePhase(GamePhase.DealHuman)
         dispatch()
@@ -427,6 +433,12 @@ class PhaseManager(
         viewModel.emitAnimation(AnimationEvent.DealComplete(cardCount))
     }
 
+    private suspend fun handleDeuceReveal() {
+        val winnerId = viewModel.state.value.kittyWinnerId ?: return
+        // Stay in DeuceReveal — emit event; animation collector delays 2 seconds then advances to Bid.
+        viewModel.emitAnimation(AnimationEvent.DeuceRevealed(winnerId))
+    }
+
     /**
      * Bid: dispatch to the correct bid flow based on game type.
      *
@@ -434,7 +446,8 @@ class PhaseManager(
      * All other game types use a per-player clockwise flow starting from leaderIndex.
      */
     private suspend fun handleBid() {
-        if (viewModel.state.value.gameType == GameType.HOUSE_RULES) {
+        val gt = viewModel.state.value.gameType
+        if (gt == GameType.HOUSE_RULES || gt == GameType.TEAM_KITTY) {
             handleBidHouseRules()
         } else {
             handleBidIndividual()
@@ -574,6 +587,8 @@ class PhaseManager(
     /**
      * Compute and store team bids from individual player bids (Classic / Kitty).
      * For Kitty, caps the team total at 12 and floors at minimumBid (5).
+     * For TEAM_KITTY, the human's team bid is already set via submitHumanTeamBid —
+     * skip that team so we don't double-count by summing individual bids.
      */
     private fun finalizeTeamBids() {
         val s    = viewModel.state.value
@@ -581,18 +596,20 @@ class PhaseManager(
         val isKitty = s.gameType == GameType.TEAM_KITTY
 
         for (teamId in listOf(0, 1)) {
+            // TEAM_KITTY: skip teams whose bid was already entered as a team total
+            if (isKitty && (hand.teamBids.getOrNull(teamId) ?: 0) != 0) continue
             val teamPlayerIds = s.players.filter { it.team == teamId }.map { it.id }
             var teamTotal = teamPlayerIds.sumOf { id -> hand.perPlayer[id]?.bid ?: 0 }
             if (isKitty) teamTotal = teamTotal.coerceIn(s.effectiveMinBid, 12)
             viewModel.setTeamBid(teamId, teamTotal)
         }
+        // Log finalized team/player bids
+        PlayLogger.logBids(viewModel.state.value)
     }
 
-    /** Advance from bidding to Kitty or straight to Trick depending on game type. */
+    /** Advance from bidding to Trick — kitty is always resolved before bidding. */
     private suspend fun advanceAfterBidding() {
-        val hasKitty = viewModel.state.value.kitty != null
-        val next = if (hasKitty) GamePhase.KittyReveal else GamePhase.Trick
-        viewModel.advancePhase(next)
+        viewModel.advancePhase(GamePhase.Trick)
         dispatch()
     }
 
@@ -609,16 +626,10 @@ class PhaseManager(
      * CPU kitty winner  → Kitty (engine handles the discard automatically).
      */
     private suspend fun handleKittyReveal() {
-        val winnerId = viewModel.state.value.kittyWinnerId
-        if (winnerId == "south") {
-            // Human winner — advance immediately; player controls pace via the exchange UI
-            viewModel.advancePhase(GamePhase.KittyHuman)
-            dispatch()
-        } else {
-            // CPU winner — fire-and-forget: UI shows kitty cards briefly, then calls execute()
-            viewModel.advancePhase(GamePhase.Kitty)
-            viewModel.emitAnimation(AnimationEvent.KittyRevealed(winnerId!!))
-        }
+        val winnerId = viewModel.state.value.kittyWinnerId ?: return
+        // Stay in KittyReveal — emit the event and let the animation collector
+        // delay 2 seconds, then advance to KittyHuman (human) or Kitty (CPU).
+        viewModel.emitAnimation(AnimationEvent.KittyRevealed(winnerId))
     }
 
     /**
@@ -633,9 +644,11 @@ class PhaseManager(
             val playerHand = getPlayerHand(s, winnerId)
             val discards   = PlayEngine.computeKittyDiscard(playerHand, kittyCards, kittyCards.size)
             viewModel.applyKittyExchange(winnerId, discards)
+            // Kitty winner is awarded one free trick before play begins
+            viewModel.awardTrick(winnerId)
         }
         // Exchange is pure computation — advance directly, no delay needed
-        viewModel.advancePhase(GamePhase.Trick)
+        viewModel.advancePhase(GamePhase.Bid)
         dispatch()
     }
 
@@ -700,6 +713,9 @@ class PhaseManager(
         val s     = viewModel.state.value
         val plays = s.currentTrick.plays.filterNotNull()
         if (plays.isEmpty()) { dispatch(); return }
+
+        // Log completed trick plays
+        PlayLogger.logTrick(plays)
 
         val leadPlay   = plays.first()
         val leadCard   = leadPlay.card
@@ -780,7 +796,10 @@ class PhaseManager(
 
         viewModel.finalizeHandReplay()
         if (hand != null) {
-            viewModel.applyScore(scoreHand(s, hand))
+            val delta = scoreHand(s, hand)
+            viewModel.applyScore(delta)
+            // Log hand score delta and final totals
+            PlayLogger.logHandScore(hand, delta, viewModel.state.value.score)
             AchievementsRepo.checkAndAwardPerHand(context, s, hand)
         }
 

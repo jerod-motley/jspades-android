@@ -34,4 +34,10 @@ sealed class AnimationEvent {
      * execute() to continue from GamePhase.Kitty.
      */
     data class KittyRevealed(val winnerId: String) : AnimationEvent()
+
+    /**
+     * 2♠ holder revealed before bidding (kitty mode only).
+     * UI shows the reveal for 2 seconds, then advances to Bid and calls execute().
+     */
+    data class DeuceRevealed(val winnerId: String) : AnimationEvent()
 }

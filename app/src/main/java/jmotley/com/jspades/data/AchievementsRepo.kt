@@ -211,6 +211,47 @@ object AchievementsRepo {
             }
             if (setCount >= 2) mark(ctx, AchievementIds.SET_MULTIPLE_OPPONENTS)
         }
+
+        // ── Stats ─────────────────────────────────────────────────────────────
+
+        // times_met_bid / times_did_not_meet_bid — based on human's result this hand
+        if (state.gameType.useTeams) {
+            val humanBid    = hand.teamBids.getOrNull(humanTeam) ?: 0
+            val humanTricks = humanTeamTricks
+            if (humanBid > 0) {
+                if (humanTricks >= humanBid) StatsRepo.increment(ctx) { copy(timesMetBid = timesMetBid + 1) }
+                else                         StatsRepo.increment(ctx) { copy(timesDidNotMeetBid = timesDidNotMeetBid + 1) }
+            }
+        } else {
+            if (southPhs.bid > 0) {
+                if (southPhs.tricksWon >= southPhs.bid) StatsRepo.increment(ctx) { copy(timesMetBid = timesMetBid + 1) }
+                else                                    StatsRepo.increment(ctx) { copy(timesDidNotMeetBid = timesDidNotMeetBid + 1) }
+            }
+        }
+
+        // times_set_opponents — human set the opposing side this hand
+        val humanSetOpponents = if (state.gameType.useTeams) {
+            val oppTeam   = 1 - humanTeam
+            val oppTricks = state.players.filter { it.team == oppTeam }
+                .sumOf { hand.perPlayer[it.id]?.tricksWon ?: 0 }
+            val oppBid    = hand.teamBids.getOrNull(oppTeam) ?: 0
+            oppBid > 0 && oppTricks < oppBid
+        } else {
+            state.players.filter { it.id != "south" }.any { p ->
+                val phs = hand.perPlayer[p.id] ?: return@any false
+                phs.bid > 0 && phs.tricksWon < phs.bid
+            }
+        }
+        if (humanSetOpponents) StatsRepo.increment(ctx) { copy(timesSetOpponents = timesSetOpponents + 1) }
+
+        // times_been_set — human was set this hand
+        val humanWasSet = if (state.gameType.useTeams) {
+            val humanBid = hand.teamBids.getOrNull(humanTeam) ?: 0
+            humanBid > 0 && humanTeamTricks < humanBid
+        } else {
+            southPhs.bid > 0 && southPhs.tricksWon < southPhs.bid
+        }
+        if (humanWasSet) StatsRepo.increment(ctx) { copy(timesBeenSet = timesBeenSet + 1) }
     }
 
     /** Called at GamePhase.Finished. Evaluates Wins, Losses, and BlowoutWins. */
@@ -233,9 +274,22 @@ object AchievementsRepo {
             mark(ctx, AchievementIds.WINS)
             val bestOpponent = totals.filterKeys { it != humanKey }.values.maxOrNull() ?: 0
             if (humanScore - bestOpponent >= 250) mark(ctx, AchievementIds.BLOWOUT_WINS)
+            StatsRepo.increment(ctx) { copy(gamesWon = gamesWon + 1) }
         } else {
             mark(ctx, AchievementIds.LOSSES)
+            StatsRepo.increment(ctx) { copy(gamesLost = gamesLost + 1) }
         }
+
+        // games_played + exactly one played_* for the game type
+        val gameTypeStat: Stats.() -> Stats = when (state.gameType) {
+            GameType.HOUSE_RULES    -> { { copy(gamesPlayed = gamesPlayed + 1, playedHouseRules  = playedHouseRules  + 1) } }
+            GameType.TEAM_KITTY    -> { { copy(gamesPlayed = gamesPlayed + 1, playedKitty        = playedKitty        + 1) } }
+            GameType.TEAM_CLASSIC  -> { { copy(gamesPlayed = gamesPlayed + 1, playedClassic      = playedClassic      + 1) } }
+            GameType.SOLO_TWO_MAN  -> { { copy(gamesPlayed = gamesPlayed + 1, playedTwoMan       = playedTwoMan       + 1) } }
+            GameType.SOLO_THREE_MAN-> { { copy(gamesPlayed = gamesPlayed + 1, playedThreeMan     = playedThreeMan     + 1) } }
+            GameType.SOLO_FOUR_MAN -> { { copy(gamesPlayed = gamesPlayed + 1, playedFourMan      = playedFourMan      + 1) } }
+        }
+        StatsRepo.increment(ctx, gameTypeStat)
     }
 
     suspend fun sendIfVerified(ctx: Context) {

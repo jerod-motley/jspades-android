@@ -1,6 +1,6 @@
 <resources>
     <string name="app_name">jSpades</string>
-    <string name="facebook_app_id">525859954472810</string>
-    <string name="fb_banner_placement">YOUR_BANNER_PLACEMENT_ID</string>
-    <string name="fb_interstitial_placement">YOUR_INTERSTITIAL_PLACEMENT_ID</string>
+    <string name="facebook_app_id">1547503083003926</string>
+    <string name="fb_banner_placement">1547503083003926_1547503149670586</string>
+    <string name="fb_interstitial_placement">1547503083003926_1547503156337252</string>
 </resources>

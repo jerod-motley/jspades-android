@@ -62,7 +62,7 @@ fun BidView(
     localPlayerId: String,
     modifier: Modifier = Modifier
 ) {
-    val isHouseRules = state.gameType == GameType.HOUSE_RULES
+    val isHouseRules = state.gameType == GameType.HOUSE_RULES || state.gameType == GameType.TEAM_KITTY
     val isSolo       = !state.gameType.useTeams
     val isHumanTurn  = state.phase == GamePhase.BidHuman
     val isReview     = state.phase == GamePhase.BidReview
@@ -136,24 +136,22 @@ fun BidView(
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold
                 )
-                // Individual opponent rows (not shown for House Rules — team bids as unit)
-                if (!isHouseRules) {
-                    opponentPlayers.forEach { p ->
-                        val phs    = dealHand?.perPlayer?.get(p.id)
-                        val hasBid = p.runtimeFlags.didBid
-                        val bid    = if (hasBid) phs?.bid else null
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(start = 12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(p.displayName, color = Color.White, style = MaterialTheme.typography.bodySmall)
-                            Text(
-                                text = if (hasBid && bid != null) formatBid(bid, phs?.isBlind ?: false) else "–",
-                                color = if (hasBid) Color(0xFFFFD700) else Color.White,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
+                // Individual opponent rows (all non-TEAM_CLASSIC team games show per-player bids)
+                opponentPlayers.forEach { p ->
+                    val phs    = dealHand?.perPlayer?.get(p.id)
+                    val hasBid = p.runtimeFlags.didBid
+                    val bid    = if (hasBid) phs?.bid else null
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(start = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(p.displayName, color = Color.White, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            text = if (hasBid && bid != null) formatBid(bid, phs?.isBlind ?: false) else "–",
+                            color = if (hasBid) Color(0xFFFFD700) else Color.White,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
 
