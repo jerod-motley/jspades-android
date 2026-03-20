@@ -314,7 +314,7 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
             Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(text = "Game Length", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    GameLength.values().forEach { option ->
+                    GameLength.values().filter { it != GameLength.TEST }.forEach { option: GameLength ->
                         val selected = gameLength == option
                         val label = option.name.lowercase().replaceFirstChar { c -> c.uppercase() }
                         Box(

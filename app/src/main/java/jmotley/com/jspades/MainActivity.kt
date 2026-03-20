@@ -108,8 +108,9 @@ class MainActivity : ComponentActivity() {
                                     navController.navigate("play/$encoded")
                                 },
                                 onNavigateToProfile = { navController.navigate("profile") },
-                                onNavigateToChallenges = {
-                                    navController.navigate("challenges")
+                                onNavigateToChallenges = { gameType ->
+                                    val encoded = URLEncoder.encode(gameType, "utf-8")
+                                    navController.navigate("challenges/$encoded")
                                 },
                                 onNavigateToMessages     = { navController.navigate("messages") },
                                 onNavigateToSuggestions  = { navController.navigate("suggestions") },
@@ -128,8 +129,12 @@ class MainActivity : ComponentActivity() {
                                 onNavigateBack = { navController.popBackStack() }
                             )
                         }
-                        composable("challenges") {
+                        composable("challenges/{gameType}") { backStackEntry ->
+                            val raw = backStackEntry.arguments
+                                ?.getString("gameType") ?: "Classic"
+                            val decoded = try { URLDecoder.decode(raw, "utf-8") } catch (_: Exception) { raw }
                             ChallengesScreen(
+                                gameTypeLabel = decoded,
                                 onStartChallenge = { _, gameType ->
                                     val encoded = URLEncoder.encode(gameType, "utf-8")
                                     navController.navigate("play/$encoded")
@@ -176,7 +181,7 @@ private fun AdBannerView() {
                         val widthDp = (dm.widthPixels / dm.density).toInt()
                         setAdSize(com.google.android.gms.ads.AdSize
                             .getCurrentOrientationAnchoredAdaptiveBannerAdSize(ctx, widthDp))
-                        adUnitId = "ca-app-pub-3940256099942544/6300978111" // Google test ID
+                        adUnitId = "ca-app-pub-9978563261260279/1783777324" //"ca-app-pub-3940256099942544/6300978111" // Google test ID
                         adListener = object : com.google.android.gms.ads.AdListener() {
                             override fun onAdFailedToLoad(error: com.google.android.gms.ads.LoadAdError) {
                                 showFacebook = true

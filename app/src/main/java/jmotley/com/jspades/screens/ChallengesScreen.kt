@@ -42,6 +42,7 @@ private val TextSecondary = Color.White
  */
 @Composable
 fun ChallengesScreen(
+    gameTypeLabel: String,
     onStartChallenge: (sk: String, gameType: String) -> Unit,
     onNavigateBack: () -> Unit
 ) {
@@ -53,12 +54,19 @@ fun ChallengesScreen(
         ChallengesRepo.init(context)
     }
 
-    val allChallenges   by ChallengesRepo.challengesFlow.collectAsState()
     val completedList   by AchievementsRepo.completedChallengesFlow.collectAsState()
     val activeChallenge by AchievementsRepo.activeChallengeFlow.collectAsState()
 
-    val challenges = allChallenges
-    val completedSks = remember(completedList) { completedList.filter { it.achieved }.map { it.name }.toSet() }
+    val allChallenges by ChallengesRepo.challengesFlow.collectAsState()
+    val challenges = remember(allChallenges, gameTypeLabel) {
+        ChallengesRepo.forGameType(gameTypeLabel)
+    }
+    val completedSks = remember(completedList, gameTypeLabel) {
+        completedList
+            .filter { it.achieved && (it.gameType.isBlank() || it.gameType == gameTypeLabel) }
+            .map { it.challengeSk() }
+            .toSet()
+    }
 
     // State for the MinBooks:X picker dialog
     var pendingChallenge by remember { mutableStateOf<Challenge?>(null) }
@@ -114,7 +122,7 @@ fun ChallengesScreen(
                             } else {
                                 AchievementsRepo.setActiveChallenge(context, ch.sk, ch.winCriteria, ch.allowBid, ch.shortText)
                                 AchievementsRepo.markChallengePending(context, ch.sk)
-                                onStartChallenge(ch.sk, ch.applicableGameTypes.firstOrNull() ?: "Classic")
+                                onStartChallenge(ch.sk, gameTypeLabel)
                             }
                         }
                     )
@@ -146,7 +154,7 @@ fun ChallengesScreen(
                 AchievementsRepo.setActiveChallenge(context, ch.sk, bidrule, ch.allowBid, ch.shortText)
                 AchievementsRepo.markChallengePending(context, ch.sk)
                 pendingChallenge = null
-                onStartChallenge(ch.sk, ch.applicableGameTypes.firstOrNull() ?: "Classic")
+                onStartChallenge(ch.sk, gameTypeLabel)
             },
             onDismiss = { pendingChallenge = null }
         )

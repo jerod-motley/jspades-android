@@ -18,6 +18,17 @@ data class AchievementItem(
     val date: String? = null
 )
 
+@Serializable
+data class CompletedChallengeItem(
+    val sk: String = "",
+    val gameType: String = "",
+    val achieved: Boolean = false,
+    val date: String? = null,
+    val name: String? = null
+) {
+    fun challengeSk(): String = if (sk.isNotBlank()) sk else (name ?: "")
+}
+
 object AchievementsRepo {
     private val json = Json { ignoreUnknownKeys = true }
     private val scope = CoroutineScope(Dispatchers.IO)
@@ -29,8 +40,8 @@ object AchievementsRepo {
 
     // ── Challenges ────────────────────────────────────────────────────────────
 
-    private val _completedChallengesFlow = MutableStateFlow<List<AchievementItem>>(emptyList())
-    val completedChallengesFlow: StateFlow<List<AchievementItem>> = _completedChallengesFlow
+    private val _completedChallengesFlow = MutableStateFlow<List<CompletedChallengeItem>>(emptyList())
+    val completedChallengesFlow: StateFlow<List<CompletedChallengeItem>> = _completedChallengesFlow
 
     private val _pendingFlow = MutableStateFlow<Set<String>>(emptySet())
     val pendingFlow: StateFlow<Set<String>> = _pendingFlow
@@ -66,6 +77,21 @@ object AchievementsRepo {
     fun loadAchievements(ctx: Context): List<AchievementItem> {
         val raw = prefs(ctx).getString("achievements_json", null) ?: return emptyList()
         return runCatching { json.decodeFromString<List<AchievementItem>>(raw) }.getOrDefault(emptyList())
+    }
+
+    fun applyServerAchievements(ctx: Context, serverItems: List<AchievementItem>) {
+        if (serverItems.isEmpty()) return
+
+        val merged = (loadAchievements(ctx) + serverItems)
+            .filter { it.achieved }
+            .groupBy { it.name }
+            .map { (_, items) ->
+                items.maxByOrNull { it.date ?: "" } ?: items.first()
+            }
+            .sortedBy { it.name }
+
+        saveAchievements(ctx, merged)
+        _achievementsFlow.value = merged
     }
 
     private fun saveAchievements(ctx: Context, items: List<AchievementItem>) {
@@ -126,7 +152,7 @@ object AchievementsRepo {
      * On success: records the challenge as completed and clears active prefs.
      * On failure: removes from pending.
      */
-    fun finalizeChallenge(ctx: Context, sk: String, succeeded: Boolean) {
+    fun finalizeChallenge(ctx: Context, sk: String, gameType: String, succeeded: Boolean) {
         val pending = loadPending(ctx).toMutableSet()
         pending.remove(sk)
         savePending(ctx, pending)
@@ -134,9 +160,15 @@ object AchievementsRepo {
 
         if (succeeded) {
             val current = loadCompletedChallenges(ctx).toMutableList()
-            if (current.none { it.name == sk && it.achieved }) {
-                val entry = AchievementItem(name = sk, achieved = true, date = Instant.now().toString())
-                val idx = current.indexOfFirst { it.name == sk }
+            if (current.none { it.challengeSk() == sk && it.gameType == gameType && it.achieved }) {
+                val entry = CompletedChallengeItem(
+                    sk = sk,
+                    gameType = gameType,
+                    achieved = true,
+                    date = Instant.now().toString(),
+                    name = sk
+                )
+                val idx = current.indexOfFirst { it.challengeSk() == sk && it.gameType == gameType }
                 if (idx >= 0) current[idx] = entry else current.add(entry)
                 saveCompletedChallenges(ctx, current)
                 _completedChallengesFlow.value = current
@@ -149,12 +181,39 @@ object AchievementsRepo {
 
     // ── Completed challenges persistence ──────────────────────────────────────
 
-    fun loadCompletedChallenges(ctx: Context): List<AchievementItem> {
+    fun loadCompletedChallenges(ctx: Context): List<CompletedChallengeItem> {
         val raw = prefs(ctx).getString("challenges_json", null) ?: return emptyList()
-        return runCatching { json.decodeFromString<List<AchievementItem>>(raw) }.getOrDefault(emptyList())
+        return runCatching { json.decodeFromString<List<CompletedChallengeItem>>(raw) }.getOrElse {
+            runCatching {
+                json.decodeFromString<List<AchievementItem>>(raw).map {
+                    CompletedChallengeItem(
+                        sk = it.name,
+                        gameType = "",
+                        achieved = it.achieved,
+                        date = it.date,
+                        name = it.name
+                    )
+                }
+            }.getOrDefault(emptyList())
+        }
     }
 
-    private fun saveCompletedChallenges(ctx: Context, items: List<AchievementItem>) {
+    fun applyServerCompletedChallenges(ctx: Context, serverItems: List<CompletedChallengeItem>) {
+        if (serverItems.isEmpty()) return
+
+        val merged = (loadCompletedChallenges(ctx) + serverItems)
+            .filter { it.achieved }
+            .groupBy { it.challengeSk() to it.gameType }
+            .map { (_, items) ->
+                items.maxByOrNull { it.date ?: "" } ?: items.first()
+            }
+            .sortedBy { it.challengeSk() }
+
+        saveCompletedChallenges(ctx, merged)
+        _completedChallengesFlow.value = merged
+    }
+
+    private fun saveCompletedChallenges(ctx: Context, items: List<CompletedChallengeItem>) {
         prefs(ctx).edit().putString("challenges_json", json.encodeToString(items)).apply()
     }
 
@@ -300,9 +359,10 @@ object AchievementsRepo {
         val username = appPrefs.getString("player_username", "") ?: ""
         val stats = StatsRepo.load(ctx)
         val achievements = loadAchievements(ctx)
+        val challenges = loadCompletedChallenges(ctx)
         runCatching {
             jmotley.com.jspades.networking.ProfileApi.updateProfile(
-                email, username, StatsRepo.toServerMap(stats), achievements
+                email, username, StatsRepo.toServerMap(stats), achievements, challenges
             )
             StatsRepo.clearPendingDeltas(ctx)
         }

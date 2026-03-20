@@ -22,7 +22,7 @@ import jmotley.com.jspades.R
  */
 object InterstitialManager {
 
-    private const val ADMOB_UNIT_ID = "ca-app-pub-3940256099942544/1033173712" // Google test ID
+    private const val ADMOB_UNIT_ID = "ca-app-pub-9978563261260279/2189775212" //"ca-app-pub-3940256099942544/1033173712" // Google test ID
 
     private var admobAd: InterstitialAd? = null
     private var fbAd: com.facebook.ads.InterstitialAd? = null

@@ -100,6 +100,8 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
                     ctx.getSharedPreferences("app_prefs", Context.MODE_PRIVATE).edit()
                         .putBoolean("player_registered", true).apply()
                     response.stats?.let { StatsRepo.applyServerStats(ctx, it) }
+                    response.achievements?.let { AchievementsRepo.applyServerAchievements(ctx, it) }
+                    response.challenges?.let { AchievementsRepo.applyServerCompletedChallenges(ctx, it) }
                     val updatedStats = StatsRepo.load(ctx)
                     val achievements = AchievementsRepo.loadAchievements(ctx)
                     _state.update {

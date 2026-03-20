@@ -202,7 +202,7 @@ enum class GameType(
 enum class GamePhase { Lobby, Deal, DealHuman, DeuceReveal, KittyReveal, Kitty, KittyHuman, Bid, BidHuman, BidReview, Trick, TrickHuman, TrickResolve, Score, EndHand, Finished }
 
 /** Controls the score threshold required to win the game. */
-enum class GameLength { SHORT, MEDIUM, LONG }
+enum class GameLength { SHORT, MEDIUM, LONG, TEST }
 
 /** Lightweight metadata for snapshots. */
 data class Metadata(val id: String? = null, val timestampMs: Long? = null)
@@ -316,8 +316,8 @@ val GameState.effectiveMinBid: Int get() {
  * All others:  Short=150, Medium=250, Long=500.
  */
 val GameState.targetScore: Int get() = when (gameType) {
-    GameType.SOLO_FOUR_MAN -> when (gameLength) { GameLength.SHORT -> 70;  GameLength.MEDIUM -> 150; GameLength.LONG -> 250 }
-    else                   -> when (gameLength) { GameLength.SHORT -> 150; GameLength.MEDIUM -> 250; GameLength.LONG -> 500 }
+    GameType.SOLO_FOUR_MAN -> when (gameLength) { GameLength.TEST -> 100; GameLength.SHORT -> 70;  GameLength.MEDIUM -> 150; GameLength.LONG -> 250 }
+    else                   -> when (gameLength) { GameLength.TEST -> 100; GameLength.SHORT -> 150; GameLength.MEDIUM -> 250; GameLength.LONG -> 500 }
 }
 
 /** Helpers */

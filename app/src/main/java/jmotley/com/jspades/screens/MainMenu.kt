@@ -32,13 +32,13 @@ import androidx.compose.ui.unit.sp
 import jmotley.com.jspades.R
 
 /** Which sub-menu is visible, or None for the root. */
-private enum class SubMenu { None, TeamPlay, Solo, Online }
+private enum class SubMenu { None, TeamPlay, Solo, Challenge, Online }
 
 @Composable
 fun MainMenuScreen(
     onNavigateToPlay: (gameType: String) -> Unit = {},
     onNavigateToProfile: () -> Unit = {},
-    onNavigateToChallenges: () -> Unit = {},
+    onNavigateToChallenges: (gameType: String) -> Unit = {},
     onNavigateToMessages: () -> Unit = {},
     onNavigateToSuggestions: () -> Unit = {},
     onNavigateToRenegeJokes: () -> Unit = {},
@@ -74,7 +74,7 @@ fun MainMenuScreen(
                     when (tapped) {
                         "Team Play"      -> currentMenu = SubMenu.TeamPlay
                         "Solo Play"      -> currentMenu = SubMenu.Solo
-                        "Challenge Mode" -> onNavigateToChallenges()
+                        "Challenge Mode" -> currentMenu = SubMenu.Challenge
                         "Online"         -> currentMenu = SubMenu.Online
                         "Profile"        -> onNavigateToProfile()
                         "Standings"      -> onNavigateToStandings()
@@ -94,6 +94,13 @@ fun MainMenuScreen(
                 ) { tapped ->
                     if (tapped == "Return") currentMenu = SubMenu.None
                     else onNavigateToPlay(tapped)
+                }
+                SubMenu.Challenge -> SubButtons(
+                    labels = listOf("House Rules", "Kitty", "Classic", "Four Man Solo", "Three Man Solo", "Two Man Solo", "Return"),
+                    font = jennasue
+                ) { tapped ->
+                    if (tapped == "Return") currentMenu = SubMenu.None
+                    else onNavigateToChallenges(tapped)
                 }
                 SubMenu.Online -> SubButtons(
                     labels = listOf("Messages", "Suggestions", "Renege Jokes", "Return"),

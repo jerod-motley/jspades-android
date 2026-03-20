@@ -29,6 +29,7 @@ import jmotley.com.jspades.data.localHand
 import jmotley.com.jspades.data.HandReplay
 import jmotley.com.jspades.data.GameLength
 import jmotley.com.jspades.data.ReplayEvent
+import jmotley.com.jspades.data.AppConfig
 import jmotley.com.jspades.engine.PhaseManager
 import jmotley.com.jspades.logging.PlayLogger
 
@@ -108,7 +109,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			gameType == GameType.HOUSE_RULES || gameType == GameType.TEAM_KITTY         -> false
 			else  /* solo variants */                                                   -> prefs.getBoolean("allow_nil_bid", false)
 		}
-		val gameLength = GameLength.valueOf(prefs.getString("game_length", GameLength.MEDIUM.name) ?: GameLength.MEDIUM.name)
+		val gameLength = if (AppConfig.TEST_MODE) GameLength.TEST
+		                 else GameLength.valueOf(prefs.getString("game_length", GameLength.MEDIUM.name) ?: GameLength.MEDIUM.name)
 		// leaderIndex = 1: west (left of south) bids/leads first; south is initial dealer.
 		_state.value = _state.value.copy(
 			players          = players,

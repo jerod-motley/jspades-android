@@ -5,6 +5,7 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import jmotley.com.jspades.data.AchievementItem
 import jmotley.com.jspades.data.AppConfig
+import jmotley.com.jspades.data.CompletedChallengeItem
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -12,6 +13,8 @@ import kotlinx.serialization.json.Json
 data class ProfileResponse(
     val verified: Boolean? = false,
     val stats: Map<String, Int>? = null,
+    val achievements: List<AchievementItem>? = null,
+    val challenges: List<CompletedChallengeItem>? = null,
     val updated_at: String? = null
 )
 
@@ -28,7 +31,8 @@ private data class UpdateProfileRequest(
     val sk: String,
     val userName: String,
     val stats: Map<String, Int>,
-    val achievements: List<AchievementItem>
+    val achievements: List<AchievementItem>,
+    val challenges: List<CompletedChallengeItem>
 )
 
 object ProfileApi {
@@ -54,7 +58,8 @@ object ProfileApi {
         email: String,
         userName: String,
         stats: Map<String, Int>,
-        achievements: List<AchievementItem>
+        achievements: List<AchievementItem>,
+        challenges: List<CompletedChallengeItem>
     ) {
         client.put("${AppConfig.BASE_API_URL}/profile") {
             contentType(ContentType.Application.Json)
@@ -63,7 +68,8 @@ object ProfileApi {
                 sk = email,
                 userName = userName,
                 stats = stats,
-                achievements = achievements
+                achievements = achievements,
+                challenges = challenges
             ))
         }
     }

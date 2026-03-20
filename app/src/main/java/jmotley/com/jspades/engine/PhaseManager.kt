@@ -779,10 +779,10 @@ class PhaseManager(
      * Score: compute and apply this hand's points and bags, check the win condition,
      * then advance to [GamePhase.Finished] (game over) or [GamePhase.EndHand] (continue).
      *
-     * Win conditions (target = 500, losing floor = −200):
-     *   - Any team/player reaches ≥ 500 AND leads all others → winner.
-     *   - Any team/player drops to ≤ −200 AND trails all others → eliminated, others win.
-     * Tie at exactly 500 → continue until the tie is broken.
+     * Win conditions (losing floor = −targetScore):
+     *   - Any team/player reaches ≥ targetScore AND leads all others → winner.
+     *   - Any team/player drops to ≤ −targetScore AND trails all others → eliminated, others win.
+     * Tie at exactly targetScore → continue until the tie is broken.
      */
     private suspend fun handleScore() {
         val s    = viewModel.state.value
@@ -817,17 +817,12 @@ class PhaseManager(
         }
         val high = totals.values.maxOrNull() ?: 0
         val low  = totals.values.minOrNull() ?: 0
-        viewModel.advancePhase(if (high >= u.targetScore || low <= LOSING_SCORE) GamePhase.Finished else GamePhase.EndHand)
+        viewModel.advancePhase(if (high >= u.targetScore || low <= -u.targetScore) GamePhase.Finished else GamePhase.EndHand)
         dispatch()
     }
 
     /** EndHand: no-op — UI shows EndHandView and waits for [GameViewModel.onNextHand]. */
     private suspend fun handleEndHand() { /* UI owns this phase */ }
-
-    // ── Scoring helpers ───────────────────────────────────────────────────────
-
-    /** A team/player that falls to this score (while behind) is eliminated. */
-    private val LOSING_SCORE = -200
 
     /**
      * Compute the point and bag deltas for a completed hand.

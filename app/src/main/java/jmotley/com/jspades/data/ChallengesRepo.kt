@@ -21,7 +21,7 @@ data class Challenge(
 )
 
 object ChallengesRepo {
-    const val SEED_VERSION = 4
+    const val SEED_VERSION = 5
     private val json = Json { ignoreUnknownKeys = true }
 
     private val _challengesFlow = MutableStateFlow<List<Challenge>>(emptyList())

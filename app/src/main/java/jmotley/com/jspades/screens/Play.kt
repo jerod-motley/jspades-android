@@ -208,22 +208,14 @@ fun PlayScreen(
 
         // ── Challenge result collector ────────────────────────────────────────────
         // Collects ChallengeResult events emitted by PhaseManager, finalizes in storage,
-        // shows a pass/fail banner for 1.5 s, then shows an interstitial.
+        // and shows a pass/fail banner for 1.5 s. No interstitial is shown here —
+        // the EndHand and Finished LaunchedEffects own the ad at hand/game end.
         LaunchedEffect(Unit) {
             viewModel.challengeResults.collect { cr ->
-                AchievementsRepo.finalizeChallenge(context, cr.sk, cr.success)
+                AchievementsRepo.finalizeChallenge(context, cr.sk, resolvedGameType.label, cr.success)
                 showChallengeResult = cr
                 delay(1500)
-                val activity = context as? Activity
-                if (activity != null) {
-                    InterstitialManager.showIfReady(activity) {
-                        InterstitialManager.preload(activity)
-                        showChallengeResult = null
-                    }
-                } else {
-                    delay(1500)
-                    showChallengeResult = null
-                }
+                showChallengeResult = null
             }
         }
 

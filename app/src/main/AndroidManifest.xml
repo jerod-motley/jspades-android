@@ -14,7 +14,11 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.JSpades">
 
-        <!-- AdMob App ID -->
+        <!-- AdMob App ID test
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-9978563261260279~9307044127" />-->
+            
         <meta-data
             android:name="com.google.android.gms.ads.APPLICATION_ID"
             android:value="ca-app-pub-9978563261260279~9307044127" />
