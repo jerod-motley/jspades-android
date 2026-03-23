@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import jmotley.com.jspades.data.GamePhase
 import jmotley.com.jspades.data.GameState
+import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.models.GameViewModel
 
 private val GOLD   = Color(0xFFFFD700)
@@ -88,10 +89,10 @@ fun EndHandView(
             Spacer(Modifier.height(4.dp))
 
             // ── Stats table ───────────────────────────────────────────────────
-            if (state.gameType.useTeams) {
-                TeamStatsTable(state, localPlayerId, dealHand)
-            } else {
-                SoloStatsTable(state, localPlayerId, dealHand)
+            when {
+                state.gameType == GameType.TEAM_CLASSIC -> ClassicTeamStatsTable(state, localPlayerId, dealHand)
+                state.gameType.useTeams                 -> TeamStatsTable(state, localPlayerId, dealHand)
+                else                                    -> SoloStatsTable(state, localPlayerId, dealHand)
             }
 
             Spacer(Modifier.height(8.dp))
@@ -150,6 +151,77 @@ fun EndHandView(
     }
 }
 
+// ── Classic team stats (individual bids/tricks, team scoring) ─────────────────
+
+@Composable
+private fun ClassicTeamStatsTable(
+    state: GameState,
+    localPlayerId: String,
+    dealHand: jmotley.com.jspades.data.Hand?
+) {
+    val human     = state.players.find { it.id == localPlayerId }!!
+    val partner   = state.players.find { it.team == human.team && it.id != localPlayerId }
+    val opponents = state.players.filter { it.team != human.team }
+    val ordered   = listOfNotNull(human, partner) + opponents
+
+    val colLabels = ordered.map { if (it.id == localPlayerId) "You" else it.displayName }
+    val colColors = ordered.map { if (it.id == localPlayerId) GOLD else Color.White }
+
+    // Headers
+    Row(Modifier.fillMaxWidth()) {
+        Spacer(Modifier.width(80.dp))
+        ordered.forEachIndexed { i, _ ->
+            Text(
+                text       = colLabels[i],
+                modifier   = Modifier.weight(1f),
+                textAlign  = TextAlign.Center,
+                color      = colColors[i],
+                fontWeight = FontWeight.Bold,
+                style      = MaterialTheme.typography.bodySmall
+            )
+        }
+    }
+
+    StatDivider()
+
+    // Individual bids
+    StatRow("Bid", *ordered.map { p ->
+        val phs = dealHand?.perPlayer?.get(p.id)
+        formatBidEnd(phs?.bid ?: 0, phs?.isBlind ?: false)
+    }.toTypedArray())
+
+    // Individual tricks won
+    StatRow("Won", *ordered.map { p ->
+        (dealHand?.perPlayer?.get(p.id)?.tricksWon ?: 0).toString()
+    }.toTypedArray())
+
+    StatDivider()
+
+    // Team points this hand (teammates share the same value)
+    StatRow("Points", *ordered.map { p ->
+        formatDelta(state.lastHandScore.points[p.team.toString()] ?: 0)
+    }.toTypedArray(), highlight = true)
+
+    val anyBags = ordered.any { p -> (state.lastHandScore.bags[p.team.toString()] ?: 0) != 0 }
+    if (anyBags) {
+        StatRow("Bags±", *ordered.map { p ->
+            formatDelta(state.lastHandScore.bags[p.team.toString()] ?: 0)
+        }.toTypedArray())
+    }
+
+    StatDivider()
+
+    // Team running total
+    StatRow(
+        "Total",
+        *ordered.map { p ->
+            ((state.score.points[p.team.toString()] ?: 0) + (state.score.bags[p.team.toString()] ?: 0)).toString()
+        }.toTypedArray(),
+        bold = true,
+        labelColor = GOLD
+    )
+}
+
 // ── Team stats ────────────────────────────────────────────────────────────────
 
 @Composable
@@ -170,12 +242,37 @@ private fun TeamStatsTable(
 
     StatDivider()
 
+    // Determine which teams had a nil+partner hand (playerBreakdown populated for those players)
+    val breakdown = state.lastHandScore.playerBreakdown
+    fun teamHasBreakdown(team: Int) =
+        state.players.filter { it.team == team }.any { breakdown.containsKey(it.id) }
+    val humanHasBreakdown = teamHasBreakdown(humanTeam)
+    val oppHasBreakdown   = teamHasBreakdown(oppTeam)
+    val anyBreakdown      = humanHasBreakdown || oppHasBreakdown
+
+    // Helpers to find nil player and partner for a given team from the breakdown
+    fun nilPlayerFor(team: Int) = state.players.filter { it.team == team }
+        .find { p -> breakdown.containsKey(p.id) && (dealHand?.perPlayer?.get(p.id)?.bid ?: -1) == 0 }
+    fun partnerFor(team: Int) = nilPlayerFor(team)?.let { nil ->
+        state.players.filter { it.team == team }.find { it.id != nil.id && breakdown.containsKey(it.id) }
+    }
+
     // Bid
-    val humanBid      = dealHand?.teamBids?.getOrNull(humanTeam) ?: 0
-    val oppBid        = dealHand?.teamBids?.getOrNull(oppTeam)   ?: 0
+    val humanBid       = dealHand?.teamBids?.getOrNull(humanTeam) ?: 0
+    val oppBid         = dealHand?.teamBids?.getOrNull(oppTeam)   ?: 0
     val humanTeamBlind = dealHand?.teamBlind?.getOrNull(humanTeam) ?: false
     val oppTeamBlind   = dealHand?.teamBlind?.getOrNull(oppTeam)   ?: false
-    StatRow("Bid", formatBidEnd(humanBid, humanTeamBlind), formatBidEnd(oppBid, oppTeamBlind))
+    val humanBidStr = if (humanHasBreakdown) {
+        val ptnrBid    = partnerFor(humanTeam)?.let { dealHand?.perPlayer?.get(it.id)?.bid } ?: humanBid
+        val nilIsBlind = nilPlayerFor(humanTeam)?.let { dealHand?.perPlayer?.get(it.id)?.isBlind } ?: false
+        if (nilIsBlind) "B Nil+$ptnrBid" else "Nil+$ptnrBid"
+    } else formatBidEnd(humanBid, humanTeamBlind)
+    val oppBidStr = if (oppHasBreakdown) {
+        val ptnrBid    = partnerFor(oppTeam)?.let { dealHand?.perPlayer?.get(it.id)?.bid } ?: oppBid
+        val nilIsBlind = nilPlayerFor(oppTeam)?.let { dealHand?.perPlayer?.get(it.id)?.isBlind } ?: false
+        if (nilIsBlind) "B Nil+$ptnrBid" else "Nil+$ptnrBid"
+    } else formatBidEnd(oppBid, oppTeamBlind)
+    StatRow("Bid", humanBidStr, oppBidStr)
 
     // Tricks
     val humanTricks = state.players.filter { it.team == humanTeam }.sumOf { p -> dealHand?.perPlayer?.get(p.id)?.tricksWon ?: 0 }
@@ -184,12 +281,28 @@ private fun TeamStatsTable(
 
     StatDivider()
 
-    // This hand
+    // This hand — show individual nil/partner rows when breakdown is available
     val humanPts  = state.lastHandScore.points[humanTeam.toString()] ?: 0
     val oppPts    = state.lastHandScore.points[oppTeam.toString()]   ?: 0
     val humanBags = state.lastHandScore.bags[humanTeam.toString()]   ?: 0
     val oppBags   = state.lastHandScore.bags[oppTeam.toString()]     ?: 0
-    StatRow("Points", formatDelta(humanPts), formatDelta(oppPts), highlight = true)
+
+    if (anyBreakdown) {
+        // Nil row: nil player's individual points for teams that have one; team total for others
+        val humanNilStr = nilPlayerFor(humanTeam)?.let { formatDelta(breakdown[it.id] ?: 0) }
+            ?: formatDelta(humanPts)
+        val oppNilStr   = nilPlayerFor(oppTeam)?.let { formatDelta(breakdown[it.id] ?: 0) }
+            ?: formatDelta(oppPts)
+        StatRow("Nil", humanNilStr, oppNilStr, highlight = true)
+
+        // Ptnr row: partner's individual points when breakdown exists; blank otherwise
+        val humanPtnrStr = partnerFor(humanTeam)?.let { formatDelta(breakdown[it.id] ?: 0) } ?: "—"
+        val oppPtnrStr   = partnerFor(oppTeam)?.let   { formatDelta(breakdown[it.id] ?: 0) } ?: "—"
+        StatRow("Ptnr", humanPtnrStr, oppPtnrStr, highlight = true)
+    } else {
+        StatRow("Points", formatDelta(humanPts), formatDelta(oppPts), highlight = true)
+    }
+
     if (humanBags != 0 || oppBags != 0) {
         StatRow("Bags±", formatDelta(humanBags), formatDelta(oppBags))
     }

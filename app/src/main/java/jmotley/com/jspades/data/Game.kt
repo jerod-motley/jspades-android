@@ -56,7 +56,9 @@ data class RuntimeFlags(
     val cuttingClubs: Boolean = false,
     val cuttingDiamonds: Boolean = false,
     /** Suit of the first card this player discarded (throwoff signal to partner). */
-    val suitFirstThrowOff: Suit? = null
+    val suitFirstThrowOff: Suit? = null,
+    val didBlindDecide: Boolean = false,
+    val didBlindExchange: Boolean = false,
 )
 
 /** Player includes team assignment and runtime flags. */
@@ -109,7 +111,14 @@ data class Trick(val plays: List<Play?> = listOf(null, null, null, null)) {
 /** Scoring representation. Team or player keyed by id. */
 data class Score(
     val points: Map<String, Int> = emptyMap(),
-    val bags: Map<String, Int> = emptyMap()
+    val bags: Map<String, Int> = emptyMap(),
+    /**
+     * Per-player point deltas for the most recently scored hand.
+     * Only populated when a team game hand contains a nil bidder paired with a non-nil partner.
+     * Keys = player ids; values = that player's individual signed point delta.
+     * Always empty in the running [GameState.score] total — only meaningful in [GameState.lastHandScore].
+     */
+    val playerBreakdown: Map<String, Int> = emptyMap()
 )
 
 // ── Deal mode ─────────────────────────────────────────────────────────────────
@@ -199,7 +208,7 @@ enum class GameType(
 }
 
 /** High-level phases used by the engine to drive UI and side-effects. */
-enum class GamePhase { Lobby, Deal, DealHuman, DeuceReveal, KittyReveal, Kitty, KittyHuman, Bid, BidHuman, BidReview, Trick, TrickHuman, TrickResolve, Score, EndHand, Finished }
+enum class GamePhase { Lobby, Deal, DealHuman, DeuceReveal, KittyReveal, Kitty, KittyHuman, BlindBid, BlindBidHuman, BlindExchange, BlindExchangeHuman, Bid, BidHuman, BidReview, Trick, TrickHuman, TrickResolve, Score, EndHand, Finished }
 
 /** Controls the score threshold required to win the game. */
 enum class GameLength { SHORT, MEDIUM, LONG, TEST }
@@ -289,6 +298,7 @@ data class GameState(
      * solo variants via the Settings screen.
      */
     val allowNilBid: Boolean = false,
+    val allowBlindExchange: Boolean = false,
     /**
      * Game length: controls the score threshold needed to win.
      * SHORT / MEDIUM / LONG targets:

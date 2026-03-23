@@ -1,7 +1,6 @@
 package jmotley.com.jspades.engine
 
 import jmotley.com.jspades.data.Card
-import jmotley.com.jspades.data.GamePhase
 import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.data.effectiveMinBid
@@ -92,6 +91,30 @@ object BidEngine {
     data class BidResult(val bid: Int, val isBlind: Boolean = false)
 
     /**
+     * Determines whether a CPU player should go blind this hand.
+     * Returns a [BidResult] with [isBlind]=true if they should, null if not.
+     * Eligible when 100+ points behind; goes blind 33% of the time when eligible.
+     * Double blind is allowed.
+     */
+    fun shouldCpuBidBlind(hand: List<Card>, player: Player, state: GameState): BidResult? {
+        val eligible = if (state.gameType.useTeams) {
+            teamScore(state, 1 - player.team) - teamScore(state, player.team) >= 100
+        } else {
+            val myScore = playerScore(state, player.id)
+            val topScore = state.players.filter { it.id != player.id }
+                .maxOfOrNull { p -> playerScore(state, p.id) } ?: 0
+            topScore - myScore >= 100
+        }
+        if (!eligible) return null
+        // 33% chance
+        if (kotlin.random.Random.nextInt(3) != 0) return null
+        return when (state.gameType) {
+            GameType.TEAM_CLASSIC, GameType.SOLO_FOUR_MAN -> BidResult(bid = 0, isBlind = true)
+            else -> BidResult(bid = 7, isBlind = true)
+        }
+    }
+
+    /**
      * Full CPU bid for [player] in [state], with all game-type adjustments applied.
      *
      * @param hand          The player's dealt hand.
@@ -105,87 +128,34 @@ object BidEngine {
     ): BidResult {
         val base = computeBaseBid(hand)
         return when (state.gameType) {
+            GameType.HOUSE_RULES ->
+                BidResult(base.coerceIn(0, 13))
 
-            // House Rules: blind bid of 7 when team is 100+ points behind.
-            GameType.HOUSE_RULES -> {
-                val currentHand   = state.phaseHands[GamePhase.Deal]?.lastOrNull()
-                val teammateBlind = currentHand?.perPlayer?.entries?.any { (id, phs) ->
-                    val p = state.players.find { it.id == id }
-                    p?.team == player.team && id != player.id && phs.isBlind
-                } ?: false
-                val deficit = teamScore(state, 1 - player.team) - teamScore(state, player.team)
-                if (!teammateBlind && deficit >= 100)
-                    BidResult(bid = 7, isBlind = true)
-                else
-                    BidResult(base.coerceIn(0, 13))
-            }
+            GameType.TEAM_CLASSIC ->
+                BidResult(base.coerceIn(0, 13))
 
-            // Classic: blind nil when base < 3, teammate hasn't gone blind,
-            // and the team is behind by 100–200 points.
-            GameType.TEAM_CLASSIC -> {
-                val currentHand   = state.phaseHands[GamePhase.Deal]?.lastOrNull()
-                val teammateBlind = currentHand?.perPlayer?.entries?.any { (id, phs) ->
-                    val p = state.players.find { it.id == id }
-                    p?.team == player.team && id != player.id && phs.isBlind
-                } ?: false
-                val deficit = teamScore(state, 1 - player.team) - teamScore(state, player.team)
-                if (base < 3 && !teammateBlind && deficit in 100..200)
-                    BidResult(bid = 0, isBlind = true)
-                else
-                    BidResult(base.coerceIn(0, 13))
-            }
-
-            // Kitty: kitty winner gets +1; PhaseManager caps the team total at 12 / floors at 5.
             GameType.TEAM_KITTY ->
                 BidResult((base + if (isKittyWinner) 1 else 0).coerceIn(0, 13))
 
-            // Solo (4-man): blind bid of 5 when player is 100+ points behind any opponent.
-            GameType.SOLO_FOUR_MAN -> {
-                val myScore  = playerScore(state, player.id)
-                val topScore = state.players.filter { it.id != player.id }
-                    .maxOfOrNull { p -> playerScore(state, p.id) } ?: 0
-                if (topScore - myScore >= 100)
-                    BidResult(bid = 5, isBlind = true)
-                else
-                    BidResult(base.coerceIn(0, 13))
-            }
+            GameType.SOLO_FOUR_MAN ->
+                BidResult(base.coerceIn(0, 13))
 
-            // Three Man: non-trump queens and jacks are walking cards; blind bid of 7 when 100+ behind.
-            // Max bid is 18 (cardsPerPlayer in 3-player game).
             GameType.SOLO_THREE_MAN -> {
-                val myScore  = playerScore(state, player.id)
-                val topScore = state.players.filter { it.id != player.id }
-                    .maxOfOrNull { p -> playerScore(state, p.id) } ?: 0
-                if (topScore - myScore >= 100) {
-                    BidResult(bid = 7, isBlind = true)
-                } else {
-                    val walking = hand.count {
-                        (it.rank == Rank.QUEEN || it.rank == Rank.JACK) && it.suit != Suit.SPADES
-                    }
-                    BidResult((base + walking / 2).coerceAtLeast(state.effectiveMinBid).coerceAtMost(18))
+                val walking = hand.count {
+                    (it.rank == Rank.QUEEN || it.rank == Rank.JACK) && it.suit != Suit.SPADES
                 }
+                BidResult((base + walking / 2).coerceAtLeast(state.effectiveMinBid).coerceAtMost(18))
             }
 
-            // Two Man: blind bid of 7 when player is 100+ points behind opponent.
-            // Otherwise floor at effectiveMinBid (board = 4).
-            GameType.SOLO_TWO_MAN -> {
-                val myScore  = playerScore(state, player.id)
-                val topScore = state.players.filter { it.id != player.id }
-                    .maxOfOrNull { p -> playerScore(state, p.id) } ?: 0
-                if (topScore - myScore >= 100)
-                    BidResult(bid = 7, isBlind = true)
-                else
-                    BidResult(base.coerceAtLeast(state.effectiveMinBid).coerceAtMost(13))
-            }
+            GameType.SOLO_TWO_MAN ->
+                BidResult(base.coerceAtLeast(state.effectiveMinBid).coerceAtMost(13))
         }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private fun teamScore(state: GameState, team: Int): Int =
-        state.score.points.entries
-            .filter { (id, _) -> state.players.find { it.id == id }?.team == team }
-            .sumOf { it.value }
+        (state.score.points[team.toString()] ?: 0) + (state.score.bags[team.toString()] ?: 0)
 
     private fun playerScore(state: GameState, playerId: String): Int =
         state.score.points[playerId] ?: 0

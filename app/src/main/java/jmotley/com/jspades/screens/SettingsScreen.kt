@@ -55,6 +55,7 @@ private const val KEY_MIN_BID_FIVE      = "min_bid_five"
 private const val KEY_ALLOW_NIL_BID     = "allow_nil_bid"
 private const val KEY_COUNT_OVERS       = "count_overs"
 private const val KEY_GAME_LENGTH       = "game_length"
+private const val KEY_BLIND_EXCHANGE    = "blind_nil_exchange"
 
 @Composable
 fun SettingsScreen(onNavigateBack: () -> Unit) {
@@ -67,6 +68,7 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
     var minBidFive      by remember { mutableStateOf(prefs.getBoolean(KEY_MIN_BID_FIVE, false)) }
     var allowNilBid     by remember { mutableStateOf(prefs.getBoolean(KEY_ALLOW_NIL_BID, false)) }
     var countOvers      by remember { mutableStateOf(prefs.getBoolean(KEY_COUNT_OVERS, true)) }
+    var blindExchange   by remember { mutableStateOf(prefs.getBoolean(KEY_BLIND_EXCHANGE, false)) }
     var gameLength      by remember { mutableStateOf(GameLength.valueOf(prefs.getString(KEY_GAME_LENGTH, GameLength.MEDIUM.name) ?: GameLength.MEDIUM.name)) }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -254,6 +256,50 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
                         onCheckedChange = { on: Boolean ->
                             countOvers = on
                             prefs.edit().putBoolean(KEY_COUNT_OVERS, on).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = SettAccentGold,
+                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                        )
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        SettingsCard {
+            val fontScale = LocalConfiguration.current.fontScale
+            if (fontScale >= 1.3f) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("Blind Nil Exchange", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = blindExchange,
+                        onCheckedChange = { on: Boolean ->
+                            blindExchange = on
+                            prefs.edit().putBoolean(KEY_BLIND_EXCHANGE, on).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = SettAccentGold,
+                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                        )
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Blind Nil Exchange", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = blindExchange,
+                        onCheckedChange = { on: Boolean ->
+                            blindExchange = on
+                            prefs.edit().putBoolean(KEY_BLIND_EXCHANGE, on).apply()
                         },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = SettAccentGold,

@@ -104,6 +104,10 @@ class PhaseManager(
             GamePhase.KittyReveal -> handleKittyReveal()
             GamePhase.Kitty       -> handleKitty()
             GamePhase.KittyHuman  -> { /* UI owns this phase — waits for kitty exchange */ }
+            GamePhase.BlindBid          -> handleBlindBid()
+            GamePhase.BlindBidHuman     -> { /* UI owns this phase — waits for submitHumanBlindBid() */ }
+            GamePhase.BlindExchange     -> handleBlindExchange()
+            GamePhase.BlindExchangeHuman -> { /* UI owns this phase — waits for submitHumanBlindExchange() */ }
             GamePhase.Trick       -> handleTrick()
             GamePhase.TrickHuman  -> { /* UI owns this phase — waits for playCard() */ }
             GamePhase.TrickResolve-> handleTrickResolve()
@@ -418,19 +422,146 @@ class PhaseManager(
 
     /**
      * DealHuman:
-     * - [DealMode.TWO_MAN_ALTERNATE]: UI-driven — [GameViewModel.applyDealPick] advances
-     *   to Bid once the human's hand is full; no action needed here.
-     * - All other modes: auto-advance after animations complete.
+     * - All modes: advance to BlindBid if blind decisions haven't been made yet.
+     *   For TWO_MAN_ALTERNATE, after blind decisions are made, the UI shows DealPickView.
+     * - Non-TWO_MAN_ALTERNATE: after all blind decisions are made, emit DealComplete.
      */
     private suspend fun handleDealHuman() {
-        if (viewModel.state.value.gameType.dealMode == DealMode.TWO_MAN_ALTERNATE) return
-        // Fire-and-forget: UI waits for the actual card animation to finish, then
-        // advances to Bid and calls execute(). cardCount drives the computed delay
-        // in the animation collector using the same constants as CardTile.
-        val cardCount = viewModel.state.value
-            .phaseHands[GamePhase.Deal]?.lastOrNull()
+        val s = viewModel.state.value
+        val allBlindDecided = s.players.all { it.runtimeFlags.didBlindDecide }
+
+        if (s.gameType.dealMode == DealMode.TWO_MAN_ALTERNATE) {
+            if (!allBlindDecided) {
+                viewModel.advancePhase(GamePhase.BlindBid)
+                dispatch()
+            }
+            // else: UI shows DealPickView; applyDealPick() advances to Bid when done
+            return
+        }
+
+        if (!allBlindDecided) {
+            viewModel.advancePhase(GamePhase.BlindBid)
+            dispatch()
+            return
+        }
+
+        // All blind decisions made — emit DealComplete to reveal cards
+        val cardCount = s.phaseHands[GamePhase.Deal]?.lastOrNull()
             ?.perPlayer?.values?.firstOrNull()?.hand?.size ?: 13
         viewModel.emitAnimation(AnimationEvent.DealComplete(cardCount))
+    }
+
+    /**
+     * BlindBid: each player (in clockwise order from leaderIndex) decides whether to bid blind.
+     * CPUs that are 100+ points behind decide randomly (33% chance).
+     * Human player: advance to BlindBidHuman if eligible; auto-skip if not.
+     * After all players have decided: emit DealComplete (or return to DealHuman for TWO_MAN_ALTERNATE).
+     */
+    private suspend fun handleBlindBid() {
+        val s = viewModel.state.value
+        val n = s.players.size
+
+        for (offset in 0 until n) {
+            val player = s.players[(s.leaderIndex + offset) % n]
+            if (player.runtimeFlags.didBlindDecide) continue
+
+            if (player.id == "south") {
+                // Check eligibility before showing UI
+                val eligible = if (s.gameType.useTeams) {
+                    val myScore  = (s.score.points[player.team.toString()] ?: 0) + (s.score.bags[player.team.toString()] ?: 0)
+                    val oppScore = (s.score.points[(1 - player.team).toString()] ?: 0) + (s.score.bags[(1 - player.team).toString()] ?: 0)
+                    oppScore - myScore >= 100
+                } else {
+                    val myScore  = s.score.points[player.id] ?: 0
+                    val topScore = s.players.filter { it.id != player.id }
+                        .maxOfOrNull { p -> s.score.points[p.id] ?: 0 } ?: 0
+                    topScore - myScore >= 100
+                }
+                if (eligible) {
+                    viewModel.advancePhase(GamePhase.BlindBidHuman)
+                    dispatch()
+                    return
+                } else {
+                    viewModel.markBlindDecision(player.id)
+                    continue
+                }
+            }
+
+            // CPU player
+            val hand = getPlayerHand(s, player.id)
+            val blindResult = BidEngine.shouldCpuBidBlind(hand, player, s)
+            if (blindResult != null) {
+                viewModel.submitBid(player.id, blindResult.bid, blindResult.isBlind)
+            }
+            viewModel.markBlindDecision(player.id)
+        }
+
+        // All players have decided — reveal cards
+        if (s.gameType.dealMode == DealMode.TWO_MAN_ALTERNATE) {
+            viewModel.advancePhase(GamePhase.DealHuman)
+            dispatch()
+        } else {
+            val cardCount = s.phaseHands[GamePhase.Deal]?.lastOrNull()
+                ?.perPlayer?.values?.firstOrNull()?.hand?.size ?: 13
+            viewModel.emitAnimation(AnimationEvent.DealComplete(cardCount))
+        }
+    }
+
+    /**
+     * BlindExchange: for TEAM_CLASSIC with allowBlindExchange enabled.
+     * Teams with at least one blind bidder exchange 2 cards.
+     * CPU-only teams: auto-compute and apply exchange.
+     * Human-involved teams: advance to BlindExchangeHuman and wait.
+     * After all teams exchanged (or no exchange needed): advance to Bid.
+     */
+    private suspend fun handleBlindExchange() {
+        val s = viewModel.state.value
+        if (!s.allowBlindExchange || s.gameType != GameType.TEAM_CLASSIC) {
+            viewModel.advancePhase(GamePhase.Bid)
+            dispatch()
+            return
+        }
+
+        val dealHand = s.phaseHands[GamePhase.Deal]?.lastOrNull()
+
+        for (teamId in listOf(0, 1)) {
+            val teamPlayers = s.players.filter { it.team == teamId }
+            if (teamPlayers.size != 2) continue
+
+            val p1 = teamPlayers[0]
+            val p2 = teamPlayers[1]
+            val p1Phs = dealHand?.perPlayer?.get(p1.id)
+            val p2Phs = dealHand?.perPlayer?.get(p2.id)
+
+            val anyBlind = (p1Phs?.isBlind == true) || (p2Phs?.isBlind == true)
+            if (!anyBlind) continue
+
+            // Skip if already exchanged
+            if (p1.runtimeFlags.didBlindExchange && p2.runtimeFlags.didBlindExchange) continue
+
+            val humanOnTeam = teamPlayers.any { it.id == "south" }
+            if (humanOnTeam) {
+                viewModel.advancePhase(GamePhase.BlindExchangeHuman)
+                dispatch()
+                return
+            }
+
+            // CPU-only team: auto-compute exchange
+            val p1Hand = p1Phs?.hand ?: emptyList()
+            val p2Hand = p2Phs?.hand ?: emptyList()
+            val p1IsBlind = p1Phs?.isBlind == true
+            val p2IsBlind = p2Phs?.isBlind == true
+
+            val cardsFrom1 = PlayEngine.selectBlindExchangeCards(p1Hand, p1IsBlind, p2IsBlind)
+            val cardsFrom2 = PlayEngine.selectBlindExchangeCards(p2Hand, p2IsBlind, p1IsBlind)
+
+            viewModel.applyBlindExchange(p1.id, p2.id, cardsFrom1, cardsFrom2)
+            viewModel.markBlindExchange(p1.id)
+            viewModel.markBlindExchange(p2.id)
+        }
+
+        viewModel.advancePhase(GamePhase.Bid)
+        dispatch()
     }
 
     private suspend fun handleDeuceReveal() {
@@ -831,19 +962,43 @@ class PhaseManager(
     private fun scoreHand(s: GameState, hand: Hand): Score {
         val pointsDelta = mutableMapOf<String, Int>()
         val bagsDelta   = mutableMapOf<String, Int>()
+        val breakdown   = mutableMapOf<String, Int>()
 
         if (s.gameType.useTeams) {
             for (teamId in listOf(0, 1)) {
-                val key        = teamId.toString()
-                val bid        = hand.teamBids.getOrNull(teamId) ?: 0
-                val isBlind    = hand.teamBlind.getOrNull(teamId) == true
-                val tricksWon  = s.players
-                    .filter { it.team == teamId }
-                    .sumOf { p -> hand.perPlayer[p.id]?.tricksWon ?: 0 }
+                val key         = teamId.toString()
+                val teamPlayers = s.players.filter { it.team == teamId }
                 val currentBags = s.score.bags[key] ?: 0
-                val (pts, bags) = scoreEntry(bid, tricksWon, isBlind, currentBags, s)
-                pointsDelta[key] = pts
-                bagsDelta[key]   = bags
+
+                // Nil+partner case: one player bid nil, partner has a positive bid.
+                // Only applies when nil bids are allowed (TEAM_CLASSIC) and the team has 2 players.
+                val nilPlayer = if (s.allowNilBid && teamPlayers.size == 2)
+                    teamPlayers.find { p -> hand.perPlayer[p.id]?.bid == 0 }
+                else null
+
+                if (nilPlayer != null) {
+                    val partner    = teamPlayers.first { it.id != nilPlayer.id }
+                    val nilPhs     = hand.perPlayer[nilPlayer.id] ?: PlayerHandState()
+                    val partnerPhs = hand.perPlayer[partner.id]   ?: PlayerHandState()
+                    // Team trick total: partner's bid is measured against the full team count.
+                    // Nil player's stolen tricks count toward the team total but score them -100.
+                    val teamTricks = teamPlayers.sumOf { p -> hand.perPlayer[p.id]?.tricksWon ?: 0 }
+
+                    val (nilPts, _)            = scoreEntry(0, nilPhs.tricksWon, nilPhs.isBlind, currentBags, s)
+                    val (partnerPts, partnerBags) = scoreEntry(partnerPhs.bid, teamTricks, partnerPhs.isBlind, currentBags, s)
+
+                    pointsDelta[key] = nilPts + partnerPts
+                    bagsDelta[key]   = partnerBags   // bags accrue only from partner's overs
+                    breakdown[nilPlayer.id] = nilPts
+                    breakdown[partner.id]   = partnerPts
+                } else {
+                    val bid       = hand.teamBids.getOrNull(teamId) ?: 0
+                    val isBlind   = hand.teamBlind.getOrNull(teamId) == true
+                    val tricksWon = teamPlayers.sumOf { p -> hand.perPlayer[p.id]?.tricksWon ?: 0 }
+                    val (pts, bags) = scoreEntry(bid, tricksWon, isBlind, currentBags, s)
+                    pointsDelta[key] = pts
+                    bagsDelta[key]   = bags
+                }
             }
         } else {
             for (player in s.players) {
@@ -855,7 +1010,7 @@ class PhaseManager(
             }
         }
 
-        return Score(points = pointsDelta, bags = bagsDelta)
+        return Score(points = pointsDelta, bags = bagsDelta, playerBreakdown = breakdown)
     }
 
     /**

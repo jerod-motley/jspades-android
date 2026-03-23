@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import jmotley.com.jspades.data.GamePhase
 import jmotley.com.jspades.data.GameState
+import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.data.Hand
 import jmotley.com.jspades.models.GameViewModel
 
@@ -56,7 +57,7 @@ fun GameInfoView(
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (state.gameType.useTeams) {
+        if (state.gameType.useTeams && state.gameType != GameType.TEAM_CLASSIC) {
             val humanTeam = state.players.find { it.id == localPlayerId }?.team ?: 0
             val oppTeam   = 1 - humanTeam
 
@@ -80,19 +81,22 @@ fun GameInfoView(
                 modifier  = Modifier.weight(1f)
             )
         } else {
+            // Solo games + TEAM_CLASSIC: one panel per player.
+            // TEAM_CLASSIC shows individual bids/tricks but team score.
             val ordered = buildList {
                 state.players.find { it.id == localPlayerId }?.let { add(it) }
                 state.players.filter { it.id != localPlayerId }.forEach { add(it) }
             }
             ordered.forEachIndexed { idx, player ->
-                val isHuman = player.id == localPlayerId
-                val phs     = dealHand?.perPlayer?.get(player.id)
+                val isHuman  = player.id == localPlayerId
+                val phs      = dealHand?.perPlayer?.get(player.id)
+                val scoreKey = if (state.gameType.useTeams) player.team.toString() else player.id
                 InfoPanel(
                     nameLabel = if (isHuman) "You" else player.displayName,
                     isHuman   = isHuman,
                     bid       = if (anyBidMade) phs?.bid else null,
                     tricksWon = phs?.tricksWon ?: 0,
-                    score     = totalScore(state, player.id),
+                    score     = totalScore(state, scoreKey),
                     modifier  = Modifier.weight(1f)
                 )
                 if (idx < ordered.lastIndex) {

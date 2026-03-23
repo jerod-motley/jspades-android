@@ -96,7 +96,7 @@ fun BidView(
         // BidReview in a team game: collapse to US / THEM totals.
         // Active bidding in a team game: vertical layout grouped by team.
         // Solo games: horizontal row of all players.
-        if (isReview && !isSolo) {
+        if (isReview && !isSolo && state.gameType != GameType.TEAM_CLASSIC) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 listOf(0, 1).forEach { teamId ->
                     val label = if (teamId == humanTeam) "US" else "THEM"
@@ -198,7 +198,11 @@ fun BidView(
             Spacer(Modifier.height(12.dp))
 
             Text(
-                text = if (!isSolo) "Your Team Bid" else "Your Bid",
+                text = when {
+                    state.gameType == GameType.TEAM_CLASSIC -> "Your Bid"
+                    !isSolo -> "Your Team Bid"
+                    else -> "Your Bid"
+                },
                 color = Color.White,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold

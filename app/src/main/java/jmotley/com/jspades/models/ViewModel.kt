@@ -109,6 +109,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			gameType == GameType.HOUSE_RULES || gameType == GameType.TEAM_KITTY         -> false
 			else  /* solo variants */                                                   -> prefs.getBoolean("allow_nil_bid", false)
 		}
+		val allowBlindExchange = when {
+			gameType == GameType.TEAM_CLASSIC -> prefs.getBoolean("blind_nil_exchange", false)
+			else -> false
+		}
 		val gameLength = if (AppConfig.TEST_MODE) GameLength.TEST
 		                 else GameLength.valueOf(prefs.getString("game_length", GameLength.MEDIUM.name) ?: GameLength.MEDIUM.name)
 		// leaderIndex = 1: west (left of south) bids/leads first; south is initial dealer.
@@ -124,6 +128,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			minBidFive           = minBidFive,
 			enableSandbagPenalty = enableSandbagPenalty,
 			allowNilBid          = allowNilBid,
+			allowBlindExchange   = allowBlindExchange,
 			gameLength           = gameLength
 		)
 		phaseManager.execute()
@@ -471,8 +476,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	 * Advances to [GamePhase.Bid] so [PhaseManager] can process any remaining
 	 * CPU bidders or move directly to the next phase.
 	 */
-	fun submitHumanBid(bid: Int, localPlayerId: String) {
-		submitBid(playerId = localPlayerId, bid = bid)
+	fun submitHumanBid(bid: Int, localPlayerId: String, isBlind: Boolean = false) {
+		submitBid(playerId = localPlayerId, bid = bid, isBlind = isBlind)
 		advancePhase(GamePhase.Bid)
 		phaseManager.execute()
 	}
@@ -480,6 +485,102 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	/** Human confirmed the bid review summary — advance to the post-bid phase. */
 	fun submitBidReview() {
 		phaseManager.executeBidConfirmed()
+	}
+
+	/** Mark [playerId] as having made their blind bid decision (regardless of outcome). */
+	fun markBlindDecision(playerId: String) {
+		val players = _state.value.players.map { p ->
+			if (p.id == playerId) p.copy(runtimeFlags = p.runtimeFlags.copy(didBlindDecide = true)) else p
+		}
+		_state.value = _state.value.copy(players = players)
+	}
+
+	/** Mark [playerId] as having completed their blind exchange. */
+	fun markBlindExchange(playerId: String) {
+		val players = _state.value.players.map { p ->
+			if (p.id == playerId) p.copy(runtimeFlags = p.runtimeFlags.copy(didBlindExchange = true)) else p
+		}
+		_state.value = _state.value.copy(players = players)
+	}
+
+	/**
+	 * Human blind bid decision. [goBlind]=true submits a blind bid; false declines.
+	 * Returns control to BlindBid phase for engine to continue.
+	 */
+	fun submitHumanBlindBid(goBlind: Boolean, localPlayerId: String) {
+		if (goBlind) {
+			val s = _state.value
+			val blindBid = when (s.gameType) {
+				GameType.TEAM_CLASSIC, GameType.SOLO_FOUR_MAN -> 0
+				else -> 7
+			}
+			submitBid(localPlayerId, blindBid, isBlind = true)
+		}
+		markBlindDecision(localPlayerId)
+		advancePhase(GamePhase.BlindBid)
+		phaseManager.execute()
+	}
+
+	/**
+	 * Apply a blind nil exchange between [fromId] and [toId].
+	 * [fromCards] are removed from [fromId]'s hand and added to [toId]'s hand, and vice versa.
+	 */
+	fun applyBlindExchange(fromId: String, toId: String, fromCards: List<Card>, toCards: List<Card>) {
+		val current = _state.value
+		val phaseHands = current.phaseHands.toMutableMap()
+		val dealHands = phaseHands[GamePhase.Deal]?.toMutableList() ?: return
+		val hand = dealHands.lastOrNull() ?: return
+		val perPlayer = hand.perPlayer.toMutableMap()
+
+		val fromPhs = perPlayer[fromId] ?: return
+		val toPhs = perPlayer[toId] ?: return
+
+		val fromCardUids = fromCards.map { it.uid }.toSet()
+		val toCardUids = toCards.map { it.uid }.toSet()
+
+		val newFromHand = (fromPhs.hand.filter { it.uid !in fromCardUids } + toCards)
+			.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
+		val newToHand = (toPhs.hand.filter { it.uid !in toCardUids } + fromCards)
+			.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
+
+		perPlayer[fromId] = fromPhs.copy(hand = newFromHand)
+		perPlayer[toId] = toPhs.copy(hand = newToHand)
+		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
+		phaseHands[GamePhase.Deal] = dealHands
+
+		// Update originalDealHands for HandView slot template
+		val updatedOriginal = current.originalDealHands + (fromId to newFromHand) + (toId to newToHand)
+		_state.value = current.copy(phaseHands = phaseHands, originalDealHands = updatedOriginal)
+	}
+
+	/**
+	 * Human submits their blind exchange cards (2 cards to send to partner).
+	 * If partner is CPU, computes partner's response automatically.
+	 */
+	fun submitHumanBlindExchange(selectedCards: List<Card>, localPlayerId: String) {
+		val s = _state.value
+		val humanPlayer = s.players.find { it.id == localPlayerId } ?: return
+		val partnerPlayer = s.players.firstOrNull { it.team == humanPlayer.team && it.id != localPlayerId } ?: return
+		val dealHand = s.phaseHands[GamePhase.Deal]?.lastOrNull() ?: return
+
+		val humanPhs = dealHand.perPlayer[localPlayerId] ?: return
+		val partnerPhs = dealHand.perPlayer[partnerPlayer.id] ?: return
+
+		val humanIsBlind = humanPhs.isBlind
+		val partnerIsBlind = partnerPhs.isBlind
+
+		val partnerHand = partnerPhs.hand
+		val partnerCards = jmotley.com.jspades.engine.PlayEngine.selectBlindExchangeCards(
+			partnerHand,
+			senderIsBlind = partnerIsBlind,
+			receiverIsBlind = humanIsBlind
+		)
+
+		applyBlindExchange(localPlayerId, partnerPlayer.id, selectedCards, partnerCards)
+		markBlindExchange(localPlayerId)
+		markBlindExchange(partnerPlayer.id)
+		advancePhase(GamePhase.BlindExchange)
+		phaseManager.execute()
 	}
 
 	// ── Human trick play ──────────────────────────────────────────────────────

@@ -43,6 +43,8 @@ import jmotley.com.jspades.engine.ChallengeResult
 import jmotley.com.jspades.models.GameViewModel
 import jmotley.com.jspades.data.DealMode
 import jmotley.com.jspades.views.BidView
+import jmotley.com.jspades.views.BlindBidView
+import jmotley.com.jspades.views.BlindExchangeView
 import jmotley.com.jspades.views.DealPickView
 import jmotley.com.jspades.views.DiamondView
 import jmotley.com.jspades.views.EndGameView
@@ -247,10 +249,15 @@ fun PlayScreen(
                         // Wait for the last card's slide-in: (cardCount-1)×50ms stagger + 320ms.
                         // Uses the same constants as CardTile so we track the real animation end.
                         delay(((event.cardCount - 1) * 50 + 320).toLong())
-                        if (state.gameType == GameType.TEAM_KITTY) {
-                            viewModel.advancePhase(GamePhase.DeuceReveal)
-                        } else {
-                            viewModel.advancePhase(GamePhase.Bid)
+                        val anyBlindBid = state.phaseHands[GamePhase.Deal]?.lastOrNull()
+                            ?.perPlayer?.values?.any { it.isBlind } ?: false
+                        when {
+                            state.gameType == GameType.TEAM_KITTY ->
+                                viewModel.advancePhase(GamePhase.DeuceReveal)
+                            state.allowBlindExchange && state.gameType == GameType.TEAM_CLASSIC && anyBlindBid ->
+                                viewModel.advancePhase(GamePhase.BlindExchange)
+                            else ->
+                                viewModel.advancePhase(GamePhase.Bid)
                         }
                     }
                     is AnimationEvent.DeuceRevealed -> {
@@ -356,6 +363,45 @@ fun PlayScreen(
                         Spacer(Modifier.height(10.dp))
                     }
                 }
+            }
+
+            // ── Blind bid (pre-deal decision) ─────────────────────────────────
+            // BlindBid: engine-driven, show hand (cards face-down still dealt — show hand frame)
+            GamePhase.BlindBid -> { /* engine processing — no special UI */ }
+
+            // BlindBidHuman: show the decision panel over the table
+            GamePhase.BlindBidHuman -> {
+                BlindBidView(
+                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 24.dp)
+                )
+            }
+
+            // BlindExchange: engine-driven CPU exchange
+            GamePhase.BlindExchange -> { /* engine processing */ }
+
+            // BlindExchangeHuman: show card selection UI over hand
+            GamePhase.BlindExchangeHuman -> {
+                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
+                    Spacer(Modifier.height(10.dp))
+                    GameInfoView(
+                        state = state, viewModel = viewModel,
+                        localPlayerId = localPlayerId
+                    )
+                    HandView(
+                        state = state, viewModel = viewModel,
+                        localPlayerId = localPlayerId
+                    )
+                    Spacer(Modifier.height(10.dp))
+                }
+                BlindExchangeView(
+                    state = state, viewModel = viewModel, localPlayerId = localPlayerId,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 16.dp)
+                )
             }
 
             // ── Bid ───────────────────────────────────────────────────────────

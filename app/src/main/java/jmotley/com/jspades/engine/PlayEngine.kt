@@ -59,6 +59,22 @@ object PlayEngine {
         }
     }
 
+    /**
+     * Select 2 cards for a blind nil exchange.
+     * Blind bidder sends their 2 highest-rated cards (to get rid of winners).
+     * Partner sends 2 lowest-rated cards (to give nil bidder weak cards).
+     * Double blind: each sends 1 highest + 1 lowest.
+     */
+    fun selectBlindExchangeCards(hand: List<Card>, senderIsBlind: Boolean, receiverIsBlind: Boolean): List<Card> {
+        if (hand.size < 2) return hand
+        val rated = hand.sortedByDescending { BidEngine.rateCard(it, hand) }
+        return when {
+            senderIsBlind && !receiverIsBlind -> rated.take(2)
+            !senderIsBlind && receiverIsBlind -> rated.takeLast(2)
+            else -> listOf(rated.first(), rated.last()) // double blind: 1 high + 1 low
+        }
+    }
+
     // ── Mode selection ─────────────────────────────────────────────────────
 
     private enum class Mode {
@@ -296,12 +312,16 @@ object PlayEngine {
         val isTeammateWin = winner?.playerId == teammate?.id
         val isLast        = state.currentTrick.plays.count { it != null } == state.players.size - 1
 
-        // Classic: if current winner is a nil bidder and not teammate, throw off (don't set them)
-        if (classic && isLast) {
+        // Classic: if current winner bid nil and hasn't taken any tricks, don't set them.
+        // Apply regardless of position (not just last) to consistently help nil bidders succeed.
+        if (classic) {
             val winnerPhs   = winner?.let { getHandState(state, it.playerId) }
             val winnerIsNil = winnerPhs?.bid == 0 && winnerPhs.tricksWon == 0
                     && !isTeammateWin
-            if (winnerIsNil) return throwOff(hand, state)
+            if (winnerIsNil) {
+                if (!hasLead) return throwOff(hand, state)  // void: don't cut
+                return hand.filter { followsSuit(it, lead) }.minBy { it.rank.ordinal }  // play lowest in suit
+            }
         }
 
         if (!hasLead) {
@@ -387,11 +407,15 @@ object PlayEngine {
             return hand.filter { followsSuit(it, lead) }.minBy { it.rank.ordinal }
         }
 
-        // Last player: if current winner bid nil and has no tricks yet, let them take it to break their nil
+        // If current winner bid nil and has no tricks yet, don't set them (let them win).
+        // Apply regardless of position so we consistently help nil bidders succeed.
+        val winnerPhs   = winner?.let { getHandState(state, it.playerId) }
+        val winnerIsNil = winnerPhs?.bid == 0 && winnerPhs.tricksWon == 0
+        if (winnerIsNil) {
+            if (!hasLead) return throwOff(hand, state)
+            return hand.filter { followsSuit(it, lead) }.minBy { it.rank.ordinal }
+        }
         if (isLast) {
-            val winnerPhs   = winner?.let { getHandState(state, it.playerId) }
-            val winnerIsNil = winnerPhs?.bid == 0 && winnerPhs.tricksWon == 0
-            if (winnerIsNil) return throwOff(hand, state)
             return hand.filter { followsSuit(it, lead) && it.rank.ordinal > (winnerCard?.rank?.ordinal ?: -1) }
                 .minByOrNull { it.rank.ordinal }
                 ?: hand.filter { followsSuit(it, lead) }.minBy { it.rank.ordinal }
