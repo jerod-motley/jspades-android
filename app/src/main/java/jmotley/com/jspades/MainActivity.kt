@@ -49,8 +49,8 @@ import androidx.compose.ui.zIndex
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import jmotley.com.jspades.ads.ConsentManager
-import jmotley.com.jspades.ads.InterstitialManager
+
+import jmotley.com.jspades.ads.AdManager
 import jmotley.com.jspades.data.AchievementsRepo
 import jmotley.com.jspades.data.Card
 import jmotley.com.jspades.data.Rank
@@ -79,11 +79,8 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        ConsentManager.requestConsent(this) {
-            com.google.android.gms.ads.MobileAds.initialize(this) {}
-            InterstitialManager.preload(this)
-            adsReady = true
-        }
+        AdManager.start(this)
+        adsReady = true
         enableEdgeToEdge()
         AchievementsRepo.init(this)
         setContent {

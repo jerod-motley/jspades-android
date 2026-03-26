@@ -14,6 +14,7 @@ import jmotley.com.jspades.data.PlayerHandState
 import jmotley.com.jspades.data.Rank
 import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.data.AnimationEvent
+import jmotley.com.jspades.data.toSnapshot
 import jmotley.com.jspades.data.ReplayEvent
 import jmotley.com.jspades.data.Score
 import jmotley.com.jspades.data.effectiveMinBid
@@ -175,6 +176,11 @@ class PhaseManager(
         // Log game type and dealt hands for debugging
         PlayLogger.logGameType(viewModel.state.value)
         PlayLogger.logDealtHands(viewModel.state.value)
+
+        // Capture hand-start checkpoint and reset per-hand cheat flags
+        viewModel.handStartSnapshot = viewModel.state.value.toSnapshot()
+        viewModel.usedUndoLastTrickThisHand = false
+        viewModel.usedAiHintThisHand = false
 
         viewModel.advancePhase(GamePhase.DealHuman)
         dispatch()
@@ -800,6 +806,13 @@ class PhaseManager(
         // South's card animation has time to land before the next CPU reacts.
         // plays[] is filled in sequence order, so plays[playedCount-1] = last play.
         val playedCount = s.currentTrick.plays.count { it != null }
+
+        // Shift trick checkpoints only at the start of a new trick (before anyone has played)
+        if (playedCount == 0) {
+            viewModel.previousTrickStartSnapshot = viewModel.currentTrickStartSnapshot
+            viewModel.currentTrickStartSnapshot = viewModel.state.value.toSnapshot()
+        }
+
         if (playedCount > 0 && s.currentTrick.plays[playedCount - 1]?.playerId == "south") {
             delay(1000)
         }
@@ -927,7 +940,23 @@ class PhaseManager(
 
         viewModel.finalizeHandReplay()
         if (hand != null) {
-            val delta = scoreHand(s, hand)
+            // Bag forgiveness: offer before scoring when human team is already at >= 8 bags.
+            // Only offered once per game, and never during challenge mode.
+            if (!viewModel.usedBagForgivenessThisGame && AchievementsRepo.getActiveChallenge(context) == null) {
+                val humanBagKey = s.players.firstOrNull { it.id == "south" }?.let { p ->
+                    if (s.gameType.useTeams) p.team.toString() else p.id
+                }
+                val currentBags = if (humanBagKey != null) s.score.bags[humanBagKey] ?: 0 else 0
+                if (currentBags >= 8) {
+                    viewModel.emitBagForgivenessOffer()
+                    if (viewModel.awaitBagForgivenessResponse()) {
+                        viewModel.applyBagForgiveness("south")
+                    }
+                }
+            }
+            // Score using the (possibly bag-reduced) state
+            val scoringState = viewModel.state.value
+            val delta = scoreHand(scoringState, hand)
             viewModel.applyScore(delta)
             // Log hand score delta and final totals
             PlayLogger.logHandScore(hand, delta, viewModel.state.value.score)

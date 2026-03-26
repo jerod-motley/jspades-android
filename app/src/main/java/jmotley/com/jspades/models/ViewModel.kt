@@ -4,13 +4,14 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import jmotley.com.jspades.data.AchievementIds
-import jmotley.com.jspades.data.AchievementsRepo
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import jmotley.com.jspades.data.*
+/*import jmotley.com.jspades.data.AchievementsRepo
 import jmotley.com.jspades.data.AnimationEvent
 import jmotley.com.jspades.data.Card
 import jmotley.com.jspades.data.GameState
@@ -29,7 +30,7 @@ import jmotley.com.jspades.data.localHand
 import jmotley.com.jspades.data.HandReplay
 import jmotley.com.jspades.data.GameLength
 import jmotley.com.jspades.data.ReplayEvent
-import jmotley.com.jspades.data.AppConfig
+import jmotley.com.jspades.data.AppConfig*/
 import jmotley.com.jspades.engine.PhaseManager
 import jmotley.com.jspades.logging.PlayLogger
 
@@ -700,6 +701,144 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			AchievementsRepo.mark(context, AchievementIds.QUITS)
 		}
 	}
+
+	// ── Ad checkpoints and rewarded cheat helpers ─────────────────────────────
+
+	// Set by PhaseManager at deal time and at each trick start.
+	var handStartSnapshot: GameSnapshot? = null
+	var currentTrickStartSnapshot: GameSnapshot? = null
+	var previousTrickStartSnapshot: GameSnapshot? = null
+
+	// Once-per-hand flags — reset at each new deal.
+	var usedUndoLastTrickThisHand: Boolean = false
+	var usedAiHintThisHand: Boolean = false
+
+	// Once-per-game flags — never reset mid-game (survive replay-last-hand).
+	var usedPeekThisGame: Boolean = false
+	var usedReplayLastHandThisGame: Boolean = false
+	var usedBagForgivenessThisGame: Boolean = false
+	var usedBidAdjustThisGame: Boolean = false
+
+	/** Rewind to the start of the previous trick. Once per hand. */
+	fun rewindToPreviousTrick() {
+		val snap = previousTrickStartSnapshot ?: return
+		if (usedUndoLastTrickThisHand) return
+		_state.value = _state.value.applySnapshot(snap)   // restores phase = Trick
+		usedUndoLastTrickThisHand = true
+		currentTrickStartSnapshot = null
+		previousTrickStartSnapshot = null
+		phaseManager.execute()
+	}
+
+	/** Replay the hand that just finished using the exact same deal. Once per game. */
+	fun replayLastHand() {
+		val snap = handStartSnapshot ?: return
+		if (usedReplayLastHandThisGame) return
+		_state.value = _state.value.applySnapshot(snap)
+		usedReplayLastHandThisGame = true
+		// Do NOT reset any other usage flags — cheats spent in the original play stay spent.
+		currentTrickStartSnapshot = null
+		previousTrickStartSnapshot = null
+		advancePhase(GamePhase.Bid)   // intentional override of restored phase
+		phaseManager.execute()
+	}
+
+	/**
+	 * Reveal the strongest trump (or highest card) from [playerId]'s current hand.
+	 * Returns null if already used or the player has no cards.
+	 * Once per game.
+	 */
+	fun peekCardForPlayer(playerId: String): Card? {
+		if (usedPeekThisGame) return null
+		val hand = _state.value.phaseHands[GamePhase.Deal]
+			?.lastOrNull()
+			?.perPlayer
+			?.get(playerId)
+			?.hand
+			?: return null
+		val card = hand.filter { it.suit == Suit.SPADES || it.rank == Rank.LITTLEJOKER || it.rank == Rank.BIGJOKER }
+			.maxByOrNull { it.rank.value }
+			?: hand.maxByOrNull { it.rank.value }
+			?: return null
+		usedPeekThisGame = true
+		return card
+	}
+
+	/**
+	 * Return a hint card for the current human turn.
+	 * Stub — returns null until HintEngine is implemented (Phase 13).
+	 * Once per hand.
+	 */
+	fun buildAiHint(style: jmotley.com.jspades.ads.HintStyle): Card? {
+		if (usedAiHintThisHand) return null
+		// TODO Phase 13: implement HintEngine.bestAggressivePlay / bestConservativePlay
+		return null
+	}
+
+	/**
+	 * Remove 3 bags from the human team's running total.
+	 * Only eligible when human team bags >= 8 and not yet used this game.
+	 */
+	fun applyBagForgiveness(localPlayerId: String) {
+		if (usedBagForgivenessThisGame) return
+		val humanTeam = _state.value.players.firstOrNull { it.id == localPlayerId }?.team ?: return
+		val teamKey = humanTeam.toString()
+		val currentBags = _state.value.score.bags[teamKey] ?: 0
+		if (currentBags < 8) return
+		val newBags = (currentBags - 3).coerceAtLeast(0)
+		_state.value = _state.value.copy(
+			score = _state.value.score.copy(
+				bags = _state.value.score.bags.toMutableMap().also { it[teamKey] = newBags }
+			)
+		)
+		usedBagForgivenessThisGame = true
+	}
+
+	/**
+	 * Adjust the human player's individual bid by +1 or -1.
+	 * Clamps to legal bid range [0..cardsPerPlayer].
+	 * Only available in the post-bid, pre-trick window. Once per game.
+	 */
+	fun adjustHumanBid(localPlayerId: String, direction: jmotley.com.jspades.ads.BidAdjustDirection) {
+		if (usedBidAdjustThisGame) return
+		val current = _state.value
+		val phaseHands = current.phaseHands.toMutableMap()
+		val dealHands = phaseHands[GamePhase.Deal]?.toMutableList() ?: return
+		val hand = dealHands.lastOrNull() ?: return
+		val perPlayer = hand.perPlayer.toMutableMap()
+		val phs = perPlayer[localPlayerId] ?: return
+		val delta = if (direction == jmotley.com.jspades.ads.BidAdjustDirection.PLUS_ONE) 1 else -1
+		val max = current.gameType.cardsPerPlayer
+		val newBid = (phs.bid + delta).coerceIn(current.effectiveMinBid, max)
+		perPlayer[localPlayerId] = phs.copy(bid = newBid)
+		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
+		phaseHands[GamePhase.Deal] = dealHands
+		_state.value = current.copy(phaseHands = phaseHands)
+		usedBidAdjustThisGame = true
+	}
+
+	// ── Bag forgiveness offer signal ───────────────────────────────────────────
+
+	/**
+	 * Emitted by PhaseManager during handleScore() when the human team reaches >= 8 bags
+	 * and the forgiveness offer has not yet been used.
+	 * UI collects this and shows the offer; response is sent back via [respondToBagForgivenessOffer].
+	 */
+	private val _bagForgivenessOffer = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+	val bagForgivenessOffer: kotlinx.coroutines.flow.SharedFlow<Unit> = _bagForgivenessOffer
+
+	private val _bagForgivenessResponse = kotlinx.coroutines.flow.MutableSharedFlow<Boolean>(extraBufferCapacity = 1)
+
+	suspend fun emitBagForgivenessOffer() = _bagForgivenessOffer.emit(Unit)
+
+	/** Called by UI after the player accepts or declines the forgiveness offer. */
+	fun respondToBagForgivenessOffer(accepted: Boolean) {
+		_bagForgivenessResponse.tryEmit(accepted)
+	}
+
+	/** Called by PhaseManager to suspend until UI responds to the bag forgiveness offer. */
+	suspend fun awaitBagForgivenessResponse(): Boolean =
+		_bagForgivenessResponse.first()
 
 	/**
 	 * Called by the "Play Again" button on EndGameView.

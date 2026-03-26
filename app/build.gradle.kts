@@ -27,6 +27,36 @@ val facebookAdsEnabledProp: String = (project.findProperty("facebookAdsEnabled")
     ?: readSimpleProp(rootProject.file("local.properties"), "facebookAdsEnabled")
     ?: "true"
 
+val unityAdsEnabledProp: String = (project.findProperty("unityAdsEnabled") as? String)
+    ?: readSimpleProp(rootProject.file("gradle.properties"), "unityAdsEnabled")
+    ?: readSimpleProp(rootProject.file("local.properties"), "unityAdsEnabled")
+    ?: "true"
+
+val unityGameIdProp: String = (project.findProperty("unityGameId") as? String)
+    ?: readSimpleProp(rootProject.file("gradle.properties"), "unityGameId")
+    ?: readSimpleProp(rootProject.file("local.properties"), "unityGameId")
+    ?: ""
+
+val levelPlayAppKeyProp: String = (project.findProperty("levelPlayAppKey") as? String)
+    ?: readSimpleProp(rootProject.file("gradle.properties"), "levelPlayAppKey")
+    ?: readSimpleProp(rootProject.file("local.properties"), "levelPlayAppKey")
+    ?: ""
+
+val levelPlayInterstitialAdUnitIdProp: String = (project.findProperty("levelPlayInterstitialAdUnitId") as? String)
+    ?: readSimpleProp(rootProject.file("gradle.properties"), "levelPlayInterstitialAdUnitId")
+    ?: readSimpleProp(rootProject.file("local.properties"), "levelPlayInterstitialAdUnitId")
+    ?: ""
+
+val levelPlayRewardedAdUnitIdProp: String = (project.findProperty("levelPlayRewardedAdUnitId") as? String)
+    ?: readSimpleProp(rootProject.file("gradle.properties"), "levelPlayRewardedAdUnitId")
+    ?: readSimpleProp(rootProject.file("local.properties"), "levelPlayRewardedAdUnitId")
+    ?: ""
+
+val levelPlayBannerAdUnitIdProp: String = (project.findProperty("levelPlayBannerAdUnitId") as? String)
+    ?: readSimpleProp(rootProject.file("gradle.properties"), "levelPlayBannerAdUnitId")
+    ?: readSimpleProp(rootProject.file("local.properties"), "levelPlayBannerAdUnitId")
+    ?: ""
+
 val webUrlProp: String = (project.findProperty("webUrl") as? String)
     ?: readSimpleProp(rootProject.file("gradle.properties"), "webUrl")
     ?: readSimpleProp(rootProject.file("local.properties"), "webUrl")
@@ -54,6 +84,12 @@ android {
         buildConfigField("String", "BASE_API_URL", "\"${resolvedBaseApi}\"")
         buildConfigField("Boolean", "GOOGLE_ADS_ENABLED", googleAdsEnabledProp)
         buildConfigField("Boolean", "FACEBOOK_ADS_ENABLED", facebookAdsEnabledProp)
+        buildConfigField("Boolean", "UNITY_ADS_ENABLED", unityAdsEnabledProp)
+        buildConfigField("String",  "UNITY_GAME_ID",      "\"${unityGameIdProp}\"")
+        buildConfigField("String",  "LEVEL_PLAY_APP_KEY",              "\"${levelPlayAppKeyProp}\"")
+        buildConfigField("String",  "LEVEL_PLAY_INTERSTITIAL_AD_UNIT", "\"${levelPlayInterstitialAdUnitIdProp}\"")
+        buildConfigField("String",  "LEVEL_PLAY_REWARDED_AD_UNIT",     "\"${levelPlayRewardedAdUnitIdProp}\"")
+        buildConfigField("String",  "LEVEL_PLAY_BANNER_AD_UNIT",       "\"${levelPlayBannerAdUnitIdProp}\"")
         buildConfigField("String", "WEB_URL", "\"${webUrlProp}\"")
     }
 
@@ -94,6 +130,10 @@ dependencies {
     implementation(libs.play.services.ads)
     implementation(libs.facebook.audience.network)
     implementation(libs.androidx.core.splashscreen)
+    implementation(libs.unity.ads)
+    implementation(libs.unity.mediation)
+    implementation(libs.ironsource.admob.adapter)
+    implementation(libs.ironsource.facebook.adapter)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

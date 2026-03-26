@@ -57,8 +57,13 @@ import jmotley.com.jspades.views.KittyWinnerReveal
 import jmotley.com.jspades.views.LobbyView
 import android.app.Activity
 import android.net.Uri
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.ui.viewinterop.AndroidView
-import jmotley.com.jspades.ads.InterstitialManager
+import jmotley.com.jspades.ads.AdManager
+import jmotley.com.jspades.ads.HintStyle
+import jmotley.com.jspades.ads.RewardedPlacement
+import android.widget.FrameLayout
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -104,6 +109,13 @@ fun PlayScreen(
     var showEndHandOverlay by remember { mutableStateOf(false) }
     var showEndGameOverlay by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val bannerContainer = remember { FrameLayout(context) }
+    // Cheat overlay state
+    var revealedCard by remember { mutableStateOf<jmotley.com.jspades.data.Card?>(null) }
+    var suggestedCard by remember { mutableStateOf<jmotley.com.jspades.data.Card?>(null) }
+    var showPeekDialog by remember { mutableStateOf(false) }
+    var showHintStyleDialog by remember { mutableStateOf(false) }
+    var showBagForgivenessDialog by remember { mutableStateOf(false) }
     val currentVideoAsset by viewModel.currentVideoAsset.collectAsState()
 
     // Always clear the active challenge when leaving the play screen, so a
@@ -165,6 +177,8 @@ fun PlayScreen(
         viewModel.bostonVideo.collect { asset -> viewModel.setCurrentVideoAsset(asset) }
     }
 
+    val isChallengeActive = AchievementsRepo.getActiveChallenge(context) != null
+
     Box(modifier = Modifier.fillMaxSize()) {
 
         // ── Background ────────────────────────────────────────────────────────────
@@ -175,10 +189,9 @@ fun PlayScreen(
             contentScale = ContentScale.Crop
         )
 
-        // ── Interstitial trigger ──────────────────────────────────────────────────
-        // Shows an interstitial on EndHand (after any in-flight video finishes) and
-        // on Finished. The end-phase overlay is gated so it only renders after the
-        // ad closes (or is skipped immediately when no ad is cached).
+        // ── Ad trigger (interstitial + banner) ───────────────────────────────────
+        // Interstitial: every-other-hand cadence managed internally by AdManager.
+        // Banner: hidden during trick phases, shown at end-hand/score.
         LaunchedEffect(state.phase) {
             val activity = context as? Activity ?: return@LaunchedEffect
             when (state.phase) {
@@ -188,18 +201,22 @@ fun PlayScreen(
                     while (viewModel.currentVideoAsset.value != null && waited < 10_000L) {
                         delay(100); waited += 100
                     }
-                    InterstitialManager.showIfReady(activity) {
-                        InterstitialManager.preload(activity)
+                    AdManager.maybeShowInterstitial(activity) {
                         showEndHandOverlay = true
                     }
+                    AdManager.showBanner(bannerContainer)
                 }
                 GamePhase.Finished -> {
                     showEndGameOverlay = false
-                    InterstitialManager.showIfReady(activity) {
-                        InterstitialManager.preload(activity)
+                    AdManager.maybeShowInterstitial(activity) {
                         showEndGameOverlay = true
                     }
+                    AdManager.showBanner(bannerContainer)
                 }
+                GamePhase.Trick,
+                GamePhase.TrickHuman,
+                GamePhase.TrickResolve -> AdManager.hideBanner()
+                GamePhase.Score -> AdManager.showBanner(bannerContainer)
                 else -> {
                     // Leaving EndHand/Finished — clear overlays so they don't flash on re-entry
                     showEndHandOverlay  = false
@@ -219,6 +236,42 @@ fun PlayScreen(
                 delay(1500)
                 showChallengeResult = null
             }
+        }
+
+        // ── Bag forgiveness offer collector ──────────────────────────────────────
+        // PhaseManager emits this during handleScore() when the human team has >= 8 bags.
+        // Showing the dialog here; the user's response is relayed back so the engine can resume.
+        LaunchedEffect(Unit) {
+            viewModel.bagForgivenessOffer.collect {
+                // Auto-decline in challenge mode — cheats are disabled
+                if (isChallengeActive) {
+                    viewModel.respondToBagForgivenessOffer(false)
+                } else {
+                    showBagForgivenessDialog = true
+                }
+            }
+        }
+        if (showBagForgivenessDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showBagForgivenessDialog = false
+                    viewModel.respondToBagForgivenessOffer(false)
+                },
+                title = { Text("Bag Forgiveness") },
+                text  = { Text("Watch an ad to erase 3 bags and avoid the −100 penalty?") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showBagForgivenessDialog = false
+                        viewModel.respondToBagForgivenessOffer(true)
+                    }) { Text("Watch Ad") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showBagForgivenessDialog = false
+                        viewModel.respondToBagForgivenessOffer(false)
+                    }) { Text("No Thanks") }
+                }
+            )
         }
 
         // ── Animation event collector ─────────────────────────────────────────────
@@ -485,6 +538,40 @@ fun PlayScreen(
                 )
                 Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
                     Spacer(Modifier.height(10.dp))
+                    // ── Cheat controls (single-player only, disabled in challenges) ──
+                    if (!state.gameType.useTeams && !isChallengeActive) {
+                        val activity = context as? Activity
+                        val canUndo = viewModel.previousTrickStartSnapshot != null && !viewModel.usedUndoLastTrickThisHand
+                        val canPeek = !viewModel.usedPeekThisGame
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            if (canUndo) {
+                                TextButton(onClick = {
+                                    if (activity != null) {
+                                        AdManager.showRewarded(
+                                            activity = activity,
+                                            placement = RewardedPlacement.UNDO_LAST_TRICK,
+                                            onReward = { viewModel.rewindToPreviousTrick() }
+                                        )
+                                    }
+                                }) { Text("↩ Undo", color = Color(0xFFFFD700), fontSize = 12.sp) }
+                            }
+                            if (canPeek) {
+                                TextButton(onClick = { showPeekDialog = true }) {
+                                    Text("👁 Peek", color = Color(0xFFFFD700), fontSize = 12.sp)
+                                }
+                            }
+                            if (!viewModel.usedAiHintThisHand) {
+                                TextButton(onClick = { showHintStyleDialog = true }) {
+                                    Text("💡 Hint", color = Color(0xFFFFD700), fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
                     if (showTapMessage) {
                         Box(
                             modifier = Modifier
@@ -528,12 +615,24 @@ fun PlayScreen(
             GamePhase.EndHand -> {
                 if (showEndHandOverlay) {
                     EndHandView(
-                        state          = state,
-                        viewModel      = viewModel,
-                        localPlayerId  = localPlayerId,
-                        onNavigateBack = onNavigateBack,
-                        onReplayHand   = if (state.lastHandReplay != null) {{ showReplay = true }} else null,
-                        modifier       = Modifier.fillMaxSize()
+                        state                  = state,
+                        viewModel              = viewModel,
+                        localPlayerId          = localPlayerId,
+                        onNavigateBack         = onNavigateBack,
+                        onReplayHand           = if (state.lastHandReplay != null) {{ showReplay = true }} else null,
+                        canReplayLastHand      = !state.gameType.useTeams && !viewModel.usedReplayLastHandThisGame && !isChallengeActive,
+                        onReplayLastHandAccepted = {
+                            val activity = context as? Activity
+                            if (activity != null) {
+                                AdManager.showRewarded(
+                                    activity  = activity,
+                                    placement = RewardedPlacement.REPLAY_LAST_HAND,
+                                    onReward  = { viewModel.replayLastHand() },
+                                    onClosed  = { showEndHandOverlay = false }
+                                )
+                            }
+                        },
+                        modifier               = Modifier.fillMaxSize()
                     )
                 }
             }
@@ -574,6 +673,114 @@ fun PlayScreen(
             }
         }
 
+        // ── Peek player selection dialog ──────────────────────────────────────
+        if (showPeekDialog) {
+            val opponents = state.players.filter { it.id != localPlayerId }
+            AlertDialog(
+                onDismissRequest = { showPeekDialog = false },
+                title = { Text("Peek at whose hand?") },
+                text = {
+                    Column {
+                        opponents.forEach { player ->
+                            TextButton(onClick = {
+                                showPeekDialog = false
+                                val activity = context as? Activity ?: return@TextButton
+                                AdManager.showRewarded(
+                                    activity = activity,
+                                    placement = RewardedPlacement.PEEK_ONE_CARD,
+                                    onReward = { revealedCard = viewModel.peekCardForPlayer(player.id) }
+                                )
+                            }) { Text(player.name) }
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { showPeekDialog = false }) { Text("Cancel") }
+                }
+            )
+        }
+
+        // ── Hint style selection dialog ────────────────────────────────────────
+        if (showHintStyleDialog) {
+            AlertDialog(
+                onDismissRequest = { showHintStyleDialog = false },
+                title = { Text("Choose hint style") },
+                text = {
+                    Column {
+                        TextButton(onClick = {
+                            showHintStyleDialog = false
+                            val activity = context as? Activity ?: return@TextButton
+                            AdManager.showRewarded(
+                                activity = activity,
+                                placement = RewardedPlacement.AI_HINT,
+                                onReward = { suggestedCard = viewModel.buildAiHint(HintStyle.AGGRESSIVE) }
+                            )
+                        }) { Text("Aggressive (go for tricks)") }
+                        TextButton(onClick = {
+                            showHintStyleDialog = false
+                            val activity = context as? Activity ?: return@TextButton
+                            AdManager.showRewarded(
+                                activity = activity,
+                                placement = RewardedPlacement.AI_HINT,
+                                onReward = { suggestedCard = viewModel.buildAiHint(HintStyle.CONSERVATIVE) }
+                            )
+                        }) { Text("Conservative (avoid bags)") }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { showHintStyleDialog = false }) { Text("Cancel") }
+                }
+            )
+        }
+
+        // ── Revealed card overlay (peek result) ───────────────────────────────
+        val peekCard = revealedCard
+        if (peekCard != null) {
+            LaunchedEffect(peekCard) {
+                delay(4000L)
+                revealedCard = null
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xCC1A1A3A), RoundedCornerShape(8.dp))
+                    .padding(16.dp)
+                    .align(Alignment.Center),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Peeked: ${peekCard.rank.name} of ${peekCard.suit.name}",
+                    color = Color(0xFFFFD700),
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
+        }
+
+        // ── Suggested card overlay (AI hint result) ────────────────────────────
+        val hintCard = suggestedCard
+        if (hintCard != null) {
+            LaunchedEffect(hintCard) {
+                delay(6000L)
+                suggestedCard = null
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xCC1A3A1A), RoundedCornerShape(8.dp))
+                    .padding(16.dp)
+                    .align(Alignment.Center),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Hint: play ${hintCard.rank.name} of ${hintCard.suit.name}",
+                    color = Color(0xFF90EE90),
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
+        }
+
         // ── Replay overlay (shown over EndHand) ───────────────────────────────
         val replay = state.lastHandReplay
         if (showReplay && replay != null) {
@@ -592,6 +799,17 @@ fun PlayScreen(
                 onComplete = { viewModel.setCurrentVideoAsset(null) }
             )
         }
+
+        // ── Banner ad container ───────────────────────────────────────────────
+        // AdManager attaches/detaches the native banner view into this FrameLayout.
+        // Visibility is controlled via AdManager.showBanner() / hideBanner() based on phase.
+        AndroidView(
+            factory = { bannerContainer },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .navigationBarsPadding()
+        )
     }
 }
 

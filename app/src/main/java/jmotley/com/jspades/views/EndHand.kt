@@ -59,6 +59,8 @@ fun EndHandView(
     localPlayerId: String,
     onNavigateBack: () -> Unit,
     onReplayHand: (() -> Unit)? = null,
+    canReplayLastHand: Boolean = false,
+    onReplayLastHandAccepted: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val dealHand = state.phaseHands[GamePhase.Deal]?.lastOrNull()
@@ -125,6 +127,14 @@ fun EndHandView(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("▶ Replay Hand", color = Color.White)
+                    }
+                }
+                if (canReplayLastHand && onReplayLastHandAccepted != null) {
+                    OutlinedButton(
+                        onClick  = { onReplayLastHandAccepted() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("📺 Watch Ad → Replay This Hand", color = Color(0xFFFFD700))
                     }
                 }
             }
