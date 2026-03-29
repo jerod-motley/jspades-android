@@ -538,8 +538,8 @@ fun PlayScreen(
                 )
                 Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
                     Spacer(Modifier.height(10.dp))
-                    // ── Cheat controls (single-player only, disabled in challenges) ──
-                    if (!state.gameType.useTeams && !isChallengeActive) {
+                    // ── Cheat controls (disabled in challenges) ──
+                    if (!isChallengeActive) {
                         val activity = context as? Activity
                         val canUndo = viewModel.previousTrickStartSnapshot != null && !viewModel.usedUndoLastTrickThisHand
                         val canPeek = !viewModel.usedPeekThisGame
@@ -620,7 +620,7 @@ fun PlayScreen(
                         localPlayerId          = localPlayerId,
                         onNavigateBack         = onNavigateBack,
                         onReplayHand           = if (state.lastHandReplay != null) {{ showReplay = true }} else null,
-                        canReplayLastHand      = !state.gameType.useTeams && !viewModel.usedReplayLastHandThisGame && !isChallengeActive,
+                        canReplayLastHand      = !viewModel.usedReplayLastHandThisGame && !isChallengeActive,
                         onReplayLastHandAccepted = {
                             val activity = context as? Activity
                             if (activity != null) {

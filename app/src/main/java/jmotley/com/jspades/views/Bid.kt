@@ -269,7 +269,7 @@ fun BidView(
             // Bid adjust offer: single-player only, once per game, disabled in challenge mode
             val ctx = LocalContext.current
             val challengeActive = jmotley.com.jspades.data.AchievementsRepo.getActiveChallenge(ctx) != null
-            if (isSolo && !viewModel.usedBidAdjustThisGame && !challengeActive) {
+            if (!viewModel.usedBidAdjustThisGame && !challengeActive) {
                 val activity = ctx as? Activity
                 Spacer(Modifier.height(8.dp))
                 Row(
