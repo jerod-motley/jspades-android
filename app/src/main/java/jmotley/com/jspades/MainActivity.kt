@@ -26,6 +26,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,8 +80,7 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        AdManager.start(this)
-        adsReady = true
+        AdManager.start(this) { adsReady = true }
         enableEdgeToEdge()
         AchievementsRepo.init(this)
         setContent {
@@ -91,7 +91,10 @@ class MainActivity : ComponentActivity() {
                     contentWindowInsets = WindowInsets.safeDrawing.only(
                         WindowInsetsSides.Top + WindowInsetsSides.Horizontal
                     ),
-                    bottomBar = { if (adsReady) AdBannerView() }
+                    bottomBar = {
+                        val bannerVisible by AdManager.bannerVisible.collectAsState()
+                        if (adsReady && bannerVisible) AdBannerView()
+                    }
                 ) { innerPadding ->
                     NavHost(
                         navController = navController,
@@ -162,48 +165,35 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        AdManager.onActivityResume(this)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        AdManager.onActivityPause(this)
+    }
 }
 
 // ── Ad composables ────────────────────────────────────────────────────────────
 
 @Composable
 private fun AdBannerView() {
+    if (!BuildConfig.GOOGLE_ADS_ENABLED) return
     Column(modifier = Modifier.navigationBarsPadding()) {
-        if (BuildConfig.GOOGLE_ADS_ENABLED) {
-            var showFacebook by remember { mutableStateOf(false) }
-            if (!showFacebook) {
-                AndroidView(factory = { ctx ->
-                    com.google.android.gms.ads.AdView(ctx).apply {
-                        val dm = ctx.resources.displayMetrics
-                        val widthDp = (dm.widthPixels / dm.density).toInt()
-                        setAdSize(com.google.android.gms.ads.AdSize
-                            .getCurrentOrientationAnchoredAdaptiveBannerAdSize(ctx, widthDp))
-                        adUnitId = "ca-app-pub-9978563261260279/1783777324" //"ca-app-pub-3940256099942544/6300978111" // Google test ID
-                        adListener = object : com.google.android.gms.ads.AdListener() {
-                            override fun onAdFailedToLoad(error: com.google.android.gms.ads.LoadAdError) {
-                                showFacebook = true
-                            }
-                        }
-                        loadAd(com.google.android.gms.ads.AdRequest.Builder().build())
-                    }
-                })
-            } else if (BuildConfig.FACEBOOK_ADS_ENABLED) {
-                FbBannerView()
+        AndroidView(factory = { ctx ->
+            com.google.android.gms.ads.AdView(ctx).apply {
+                val dm = ctx.resources.displayMetrics
+                val widthDp = (dm.widthPixels / dm.density).toInt()
+                setAdSize(com.google.android.gms.ads.AdSize
+                    .getCurrentOrientationAnchoredAdaptiveBannerAdSize(ctx, widthDp))
+                adUnitId = BuildConfig.ADMOB_BANNER_AD_UNIT_ID
+                loadAd(com.google.android.gms.ads.AdRequest.Builder().build())
             }
-        } else if (BuildConfig.FACEBOOK_ADS_ENABLED) {
-            FbBannerView()
-        }
+        })
     }
-}
-
-@Composable
-private fun FbBannerView() {
-    AndroidView(factory = { ctx ->
-        val placementId = ctx.getString(R.string.fb_banner_placement)
-        com.facebook.ads.AdView(ctx, placementId, com.facebook.ads.AdSize.BANNER_HEIGHT_50).apply {
-            loadAd()
-        }
-    })
 }
 
 // ── POC animation demo (unused in production flow) ────────────────────────────

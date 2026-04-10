@@ -33,6 +33,7 @@ import jmotley.com.jspades.data.ReplayEvent
 import jmotley.com.jspades.data.AppConfig*/
 import jmotley.com.jspades.engine.PhaseManager
 import jmotley.com.jspades.logging.PlayLogger
+import android.util.Log
 
 class GameViewModel(application: Application) : AndroidViewModel(application) {
 	private val context: Context get() = getApplication<Application>().applicationContext
@@ -711,18 +712,19 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
 	// Once-per-hand flags — reset at each new deal.
 	var usedUndoLastTrickThisHand: Boolean = false
-	var usedAiHintThisHand: Boolean = false
 
 	// Once-per-game flags — never reset mid-game (survive replay-last-hand).
 	var usedPeekThisGame: Boolean = false
 	var usedReplayLastHandThisGame: Boolean = false
 	var usedBagForgivenessThisGame: Boolean = false
 	var usedBidAdjustThisGame: Boolean = false
+	var usedExtraBookThisGame: Boolean = false
 
 	/** Rewind to the start of the previous trick. Once per hand. */
 	fun rewindToPreviousTrick() {
 		val snap = previousTrickStartSnapshot ?: return
 		if (usedUndoLastTrickThisHand) return
+		Log.i("REWARDDEBUG", "rewindToPreviousTrick invoked — applying previousTrickStartSnapshot")
 		_state.value = _state.value.applySnapshot(snap)   // restores phase = Trick
 		usedUndoLastTrickThisHand = true
 		currentTrickStartSnapshot = null
@@ -734,6 +736,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	fun replayLastHand() {
 		val snap = handStartSnapshot ?: return
 		if (usedReplayLastHandThisGame) return
+		Log.i("REWARDDEBUG", "replayLastHand invoked — restoring handStartSnapshot handIndex=snap.handIndex//remove due to chatgpt bug")
 		_state.value = _state.value.applySnapshot(snap)
 		usedReplayLastHandThisGame = true
 		// Do NOT reset any other usage flags — cheats spent in the original play stay spent.
@@ -749,7 +752,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	 * Once per game.
 	 */
 	fun peekCardForPlayer(playerId: String): Card? {
-		if (usedPeekThisGame) return null
+		if (usedPeekThisGame) {
+			Log.w("REWARDDEBUG", "peekCardForPlayer denied — already used this game player=$playerId")
+			return null
+		}
 		val hand = _state.value.phaseHands[GamePhase.Deal]
 			?.lastOrNull()
 			?.perPlayer
@@ -761,18 +767,31 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			?: hand.maxByOrNull { it.rank.value }
 			?: return null
 		usedPeekThisGame = true
+		Log.i("REWARDDEBUG", "peekCardForPlayer granted player=$playerId card=${card.uid}")
 		return card
 	}
 
 	/**
-	 * Return a hint card for the current human turn.
-	 * Stub — returns null until HintEngine is implemented (Phase 13).
-	 * Once per hand.
+	 * Grant the human player an extra trick (book) in the current hand.
+	 * Increments tricksWon by 1 in the current PlayerHandState. Once per game.
 	 */
-	fun buildAiHint(style: jmotley.com.jspades.ads.HintStyle): Card? {
-		if (usedAiHintThisHand) return null
-		// TODO Phase 13: implement HintEngine.bestAggressivePlay / bestConservativePlay
-		return null
+	fun grantExtraBook(localPlayerId: String) {
+		if (usedExtraBookThisGame) {
+			Log.w("REWARDDEBUG", "grantExtraBook denied — already used this game player=$localPlayerId")
+			return
+		}
+		val current = _state.value
+		val phaseHands = current.phaseHands.toMutableMap()
+		val dealHands = phaseHands[GamePhase.Deal]?.toMutableList() ?: return
+		val hand = dealHands.lastOrNull() ?: return
+		val perPlayer = hand.perPlayer.toMutableMap()
+		val phs = perPlayer[localPlayerId] ?: return
+		perPlayer[localPlayerId] = phs.copy(tricksWon = phs.tricksWon + 1)
+		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
+		phaseHands[GamePhase.Deal] = dealHands
+		_state.value = current.copy(phaseHands = phaseHands)
+		usedExtraBookThisGame = true
+		Log.i("REWARDDEBUG", "grantExtraBook applied player=$localPlayerId newTricksWon=${phs.tricksWon + 1}")
 	}
 
 	/**
@@ -780,7 +799,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	 * Only eligible when human team bags >= 8 and not yet used this game.
 	 */
 	fun applyBagForgiveness(localPlayerId: String) {
-		if (usedBagForgivenessThisGame) return
+		if (usedBagForgivenessThisGame) {
+			Log.w("REWARDDEBUG", "applyBagForgiveness denied — already used this game player=$localPlayerId")
+			return
+		}
 		val humanTeam = _state.value.players.firstOrNull { it.id == localPlayerId }?.team ?: return
 		val teamKey = humanTeam.toString()
 		val currentBags = _state.value.score.bags[teamKey] ?: 0
@@ -792,6 +814,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			)
 		)
 		usedBagForgivenessThisGame = true
+		Log.i("REWARDDEBUG", "applyBagForgiveness applied player=$localPlayerId team=$teamKey before=$currentBags after=$newBags")
 	}
 
 	/**
@@ -800,7 +823,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	 * Only available in the post-bid, pre-trick window. Once per game.
 	 */
 	fun adjustHumanBid(localPlayerId: String, direction: jmotley.com.jspades.ads.BidAdjustDirection) {
-		if (usedBidAdjustThisGame) return
+		if (usedBidAdjustThisGame) {
+			Log.w("REWARDDEBUG", "adjustHumanBid denied — already used this game player=$localPlayerId")
+			return
+		}
 		val current = _state.value
 		val phaseHands = current.phaseHands.toMutableMap()
 		val dealHands = phaseHands[GamePhase.Deal]?.toMutableList() ?: return
@@ -815,6 +841,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		phaseHands[GamePhase.Deal] = dealHands
 		_state.value = current.copy(phaseHands = phaseHands)
 		usedBidAdjustThisGame = true
+		Log.i("REWARDDEBUG", "adjustHumanBid applied player=$localPlayerId direction=$direction newBid=$newBid")
 	}
 
 	// ── Bag forgiveness offer signal ───────────────────────────────────────────

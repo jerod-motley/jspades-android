@@ -27,11 +27,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import android.app.Activity
-import androidx.compose.ui.platform.LocalContext
-import jmotley.com.jspades.ads.AdManager
-import jmotley.com.jspades.ads.BidAdjustDirection
-import jmotley.com.jspades.ads.RewardedPlacement
 import jmotley.com.jspades.data.GamePhase
 import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.GameType
@@ -266,38 +261,6 @@ fun BidView(
 
         // ── OK button after all bids are in (BidReview) ───────────────────────
         if (isReview) {
-            // Bid adjust offer: single-player only, once per game, disabled in challenge mode
-            val ctx = LocalContext.current
-            val challengeActive = jmotley.com.jspades.data.AchievementsRepo.getActiveChallenge(ctx) != null
-            if (!viewModel.usedBidAdjustThisGame && !challengeActive) {
-                val activity = ctx as? Activity
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Adjust bid:", color = Color(0xFFAAAAAA), style = MaterialTheme.typography.bodySmall)
-                    BidAdjustButton(label = "−1") {
-                        if (activity != null) {
-                            AdManager.showRewarded(
-                                activity = activity,
-                                placement = RewardedPlacement.BID_ADJUST,
-                                onReward = { viewModel.adjustHumanBid(localPlayerId, BidAdjustDirection.MINUS_ONE) }
-                            )
-                        }
-                    }
-                    BidAdjustButton(label = "+1") {
-                        if (activity != null) {
-                            AdManager.showRewarded(
-                                activity = activity,
-                                placement = RewardedPlacement.BID_ADJUST,
-                                onReward = { viewModel.adjustHumanBid(localPlayerId, BidAdjustDirection.PLUS_ONE) }
-                            )
-                        }
-                    }
-                }
-            }
             Spacer(Modifier.height(16.dp))
             Box(
                 modifier = Modifier

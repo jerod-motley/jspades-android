@@ -1,8 +1,11 @@
 package jmotley.com.jspades.ads
 
 import android.app.Activity
+import android.util.Log
+import java.util.UUID
 import android.content.Context
 import android.view.ViewGroup
+import jmotley.com.jspades.BuildConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -35,21 +38,28 @@ object AdManager {
     private var active: AdProvider? = null
     private val levelPlay by lazy { LevelPlayProvider() }
     private val admob by lazy { AdMobProvider() }
+    private val sessionId: String = UUID.randomUUID().toString()
 
     // ── Startup ───────────────────────────────────────────────────────────────
 
     /**
      * Call once in MainActivity.onCreate(). Handles consent, then initializes providers
      * and preloads session inventory. Safe to call multiple times — no-ops after first.
+     * [onReady] fires on the main thread once consent is resolved and providers are initialized.
      */
-    fun start(context: Context) {
-        if (active != null) return
+    fun start(context: Context, onReady: () -> Unit = {}) {
+        if (active != null) { onReady(); return }
+        Log.i("REWARDDEBUG", "AdManager.start requesting consent session=$sessionId")
         ConsentManager.requestConsent(context as? Activity ?: return) {
+            Log.i("REWARDDEBUG", "consent obtained — initializing providers session=$sessionId")
             levelPlay.initialize(context)
             admob.initialize(context)
             active = levelPlay
             _sessionAdMode.value = AdMode.LevelPlay
-            preloadForSession()
+            Log.i("REWARDDEBUG", "active provider set to LevelPlay session=$sessionId")
+            // Preload AdMob fallback inventory once here; LevelPlay preloads after its own init.
+            preloadAdMobFallback()
+            onReady()
         }
     }
 
@@ -59,12 +69,21 @@ object AdManager {
         RewardedPlacement.entries.forEach { provider.preloadRewarded(it) }
     }
 
+    internal fun preloadAdMobFallback() {
+        if (active !== admob) {
+            admob.preloadInterstitial()
+            RewardedPlacement.entries.forEach { admob.preloadRewarded(it) }
+        }
+    }
+
     fun preloadRewarded(placement: RewardedPlacement) {
         active?.preloadRewarded(placement)
+        if (active !== admob) admob.preloadRewarded(placement)
     }
 
     fun preloadInterstitial() {
         active?.preloadInterstitial()
+        if (active !== admob) admob.preloadInterstitial()
     }
 
     // ── Interstitial ──────────────────────────────────────────────────────────
@@ -107,23 +126,64 @@ object AdManager {
         onReward: () -> Unit,
         onClosed: () -> Unit = {},
     ) {
-        val provider = active ?: run { onClosed(); return }
-        if (!provider.canShowRewarded(placement)) {
-            // Try AdMob directly if Unity can't serve this placement
+        if (BuildConfig.REWARDED_TEST_MODE) {
+            Log.i("REWARDDEBUG", "REWARDED_TEST_MODE: skipping ad, granting reward placement=$placement")
+            onReward()
+            onClosed()
+            return
+        }
+
+        val provider = active ?: run {
+            Log.w("REWARDDEBUG", "showRewarded no active provider — granting reward placement=$placement session=$sessionId")
+            onReward(); onClosed(); return
+        }
+
+        Log.i("REWARDDEBUG", "showRewarded request placement=$placement provider=${provider.javaClass.simpleName} session=$sessionId")
+
+        val canShow = provider.canShowRewarded(placement)
+        Log.d("REWARDDEBUG", "canShowRewarded=$canShow placement=$placement provider=${provider.javaClass.simpleName} session=$sessionId")
+        if (!canShow) {
+            Log.w("REWARDDEBUG", "provider ${provider.javaClass.simpleName} cannot show placement=$placement; attempting AdMob fallback session=$sessionId")
+            // Try AdMob directly if LevelPlay can't serve this placement
             if (provider !== admob && admob.canShowRewarded(placement)) {
-                admob.showRewarded(activity, placement, onReward, onClosed)
+                Log.i("REWARDDEBUG", "falling back to AdMob for placement=$placement session=$sessionId")
+                admob.showRewarded(activity, placement, {
+                    Log.i("REWARDDEBUG", "onReward (AdMob) placement=$placement session=$sessionId")
+                    onReward()
+                }, {
+                    Log.i("REWARDDEBUG", "onClosed (AdMob) placement=$placement session=$sessionId")
+                    admob.preloadRewarded(placement)
+                    onClosed()
+                })
             } else {
-                onClosed()
+                Log.w("REWARDDEBUG", "no provider available — granting reward placement=$placement session=$sessionId")
+                onReward(); onClosed()
             }
             return
         }
-        provider.showRewarded(activity, placement, onReward, onClosed)
+
+        provider.showRewarded(activity, placement, {
+            Log.i("REWARDDEBUG", "onReward placement=$placement provider=${provider.javaClass.simpleName} session=$sessionId")
+            onReward()
+        }, {
+            Log.i("REWARDDEBUG", "onClosed placement=$placement provider=${provider.javaClass.simpleName} session=$sessionId")
+            provider.preloadRewarded(placement)
+            onClosed()
+        })
     }
 
     // ── Banner ────────────────────────────────────────────────────────────────
 
     fun showBanner(container: ViewGroup) {
-        active?.showBanner(container)
+        if (_bannerVisible.value) return
+        val provider = active ?: return
+        provider.showBanner(container) {
+            // LevelPlay returned no fill — fall back to AdMob
+            if (provider !== admob) {
+                Log.w("REWARDDEBUG", "LevelPlay banner failed — falling back to AdMob")
+                admob.showBanner(container)
+            }
+        }
         _bannerVisible.value = true
     }
 
@@ -132,6 +192,11 @@ object AdManager {
         _bannerVisible.value = false
     }
 
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    fun onActivityResume(activity: Activity) { active?.onResume(activity) }
+    fun onActivityPause(activity: Activity)  { active?.onPause(activity) }
+
     // ── Fallback ──────────────────────────────────────────────────────────────
 
     /**
@@ -139,7 +204,7 @@ object AdManager {
      * Switches the session to direct AdMob for continuity.
      */
     internal fun failOverToAdMob(reason: String) {
-        android.util.Log.w("AdManager", "Falling over to AdMob: $reason")
+        Log.w("REWARDDEBUG", "failOverToAdMob: $reason session=$sessionId")
         active = admob
         _sessionAdMode.value = AdMode.AdMobFallback
         preloadForSession()

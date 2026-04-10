@@ -21,6 +21,8 @@ internal interface AdProvider {
         onClosed: () -> Unit,
     )
     fun showInterstitial(activity: Activity, onClosed: () -> Unit)
-    fun showBanner(container: ViewGroup)
+    fun showBanner(container: ViewGroup, onFailed: () -> Unit = {})
     fun hideBanner()
+    fun onResume(activity: Activity) {}
+    fun onPause(activity: Activity) {}
 }
