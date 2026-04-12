@@ -12,12 +12,9 @@ navigation = "2.8.0"
 ktor = "2.3.12"
 kotlinxSerialization = "1.7.3"
 playServicesAds = "25.0.0"
-audienceNetwork = "6.21.0"
 coreSplashscreen = "1.0.1"
-unityAds = "4.17.0"
 unityMediation = "9.2.0"
 ironSourceAdmobAdapter = "5.3.0"
-ironSourceFacebookAdapter = "5.1.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -41,12 +38,9 @@ ktor-client-content-negotiation = { group = "io.ktor", name = "ktor-client-conte
 ktor-serialization-kotlinx-json = { group = "io.ktor", name = "ktor-serialization-kotlinx-json", version.ref = "ktor" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 play-services-ads = { module = "com.google.android.gms:play-services-ads", version.ref = "playServicesAds" }
-facebook-audience-network = { module = "com.facebook.android:audience-network-sdk", version.ref = "audienceNetwork" }
 androidx-core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "coreSplashscreen" }
-unity-ads = { module = "com.unity3d.ads:unity-ads", version.ref = "unityAds" }
 unity-mediation = { module = "com.unity3d.ads-mediation:mediation-sdk", version.ref = "unityMediation" }
 ironsource-admob-adapter = { module = "com.unity3d.ads-mediation:admob-adapter", version.ref = "ironSourceAdmobAdapter" }
-ironsource-facebook-adapter = { module = "com.unity3d.ads-mediation:facebook-adapter", version.ref = "ironSourceFacebookAdapter" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

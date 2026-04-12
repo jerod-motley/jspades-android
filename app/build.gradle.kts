@@ -142,8 +142,8 @@ android {
         applicationId = "jmotley.com.jspades"
         minSdk = 29
         targetSdk = 36
-        versionCode = 101
-        versionName = "2.0.8"
+        versionCode = 102
+        versionName = "2.0.9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "BASE_API_URL",
@@ -212,12 +212,9 @@ dependencies {
     implementation(libs.ktor.serialization.kotlinx.json)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.play.services.ads)
-    implementation(libs.facebook.audience.network)
     implementation(libs.androidx.core.splashscreen)
-    implementation(libs.unity.ads)
     implementation(libs.unity.mediation)
     implementation(libs.ironsource.admob.adapter)
-    implementation(libs.ironsource.facebook.adapter)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

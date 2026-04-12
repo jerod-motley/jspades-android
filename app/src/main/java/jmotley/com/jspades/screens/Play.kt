@@ -67,6 +67,11 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Color as ComposeColor
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -113,6 +118,10 @@ fun PlayScreen(
     var showEndGameOverlay by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val bannerContainer = remember { FrameLayout(context) }
+    var bannerHeightDp by remember { mutableStateOf(0.dp) }
+    val bannerVisible by AdManager.bannerVisible.collectAsState()
+    val density = LocalDensity.current
+    val effectiveBannerPadding: Dp = if (bannerVisible) bannerHeightDp else 0.dp
     // Cheat overlay state
     var revealedCard by remember { mutableStateOf<jmotley.com.jspades.data.Card?>(null) }
     var showPeekDialog by remember { mutableStateOf(false) }
@@ -340,9 +349,18 @@ fun PlayScreen(
         // ── Rewards icon — persistent entry point for all reward ads ─────────────
         // Hidden in challenge mode. Will become context-aware (icon changes per opportunity).
         if (!isChallengeActive) {
+            val rewardPrefs = remember { context.getSharedPreferences("reward_prefs", android.content.Context.MODE_PRIVATE) }
+            var rewardTapCount by remember { mutableStateOf(rewardPrefs.getInt("reward_tap_count", 0)) }
             RewardsIconButton(
                 isActivated = showRewardsDialog,
-                onAnimationComplete = { showRewardsDialog = true },
+                showHalo = rewardTapCount < 3,
+                onAnimationComplete = {
+                    if (rewardTapCount < 3) {
+                        rewardTapCount += 1
+                        rewardPrefs.edit().putInt("reward_tap_count", rewardTapCount).apply()
+                    }
+                    showRewardsDialog = true
+                },
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(top = 4.dp, start = 4.dp)
@@ -396,7 +414,7 @@ fun PlayScreen(
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
-                    Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
+                    Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = effectiveBannerPadding)) {
                         Spacer(Modifier.height(10.dp))
                         GameInfoView(
                             state = state, viewModel = viewModel,
@@ -430,7 +448,7 @@ fun PlayScreen(
 
             // BlindExchangeHuman: show card selection UI over hand
             GamePhase.BlindExchangeHuman -> {
-                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
+                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = effectiveBannerPadding)) {
                     Spacer(Modifier.height(10.dp))
                     GameInfoView(
                         state = state, viewModel = viewModel,
@@ -456,7 +474,7 @@ fun PlayScreen(
             GamePhase.Bid,
             GamePhase.BidHuman,
             GamePhase.BidReview -> {
-                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
+                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = effectiveBannerPadding)) {
                     Spacer(Modifier.height(10.dp))
                     GameInfoView(
                         state = state, viewModel = viewModel,
@@ -529,7 +547,7 @@ fun PlayScreen(
                     frozenPlays = frozenPlays,
                     modifier = Modifier.align(Alignment.TopCenter).padding(top = 32.dp)
                 )
-                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
+                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = effectiveBannerPadding)) {
                     Spacer(Modifier.height(10.dp))
                     if (showTapMessage) {
                         Box(
@@ -640,7 +658,7 @@ fun PlayScreen(
                 viewModel.previousTrickStartSnapshot != null && !viewModel.usedUndoLastTrickThisHand
             val canPeek = phase == GamePhase.TrickHuman && !viewModel.usedPeekThisGame
             val canExtraBook = phase == GamePhase.TrickHuman && !viewModel.usedExtraBookThisGame
-            val canBidAdjust = phase == GamePhase.BidReview && !viewModel.usedBidAdjustThisGame
+            val canBidAdjust = phase == GamePhase.TrickHuman && !viewModel.usedBidAdjustThisGame
             val hasAny = canUndo || canPeek || canExtraBook || canBidAdjust
             AlertDialog(
                 onDismissRequest = { showRewardsDialog = false },
@@ -783,6 +801,9 @@ fun PlayScreen(
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .navigationBarsPadding()
+                .onGloballyPositioned { coords ->
+                    bannerHeightDp = with(density) { coords.size.height.toDp() }
+                }
         )
     }
 }
@@ -796,12 +817,14 @@ fun PlayScreen(
 @Composable
 private fun RewardsIconButton(
     isActivated: Boolean,
+    showHalo: Boolean,
     onAnimationComplete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showOpen by remember { mutableStateOf(false) }
     var animating by remember { mutableStateOf(false) }
     val scale = remember { Animatable(1f) }
+    val haloAlpha = remember { Animatable(0f) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
 
     LaunchedEffect(isActivated) {
@@ -820,11 +843,34 @@ private fun RewardsIconButton(
         }
     }
 
+    LaunchedEffect(showHalo) {
+        if (showHalo) {
+            haloAlpha.animateTo(
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(700),
+                    repeatMode = RepeatMode.Reverse
+                )
+            )
+        } else {
+            haloAlpha.snapTo(0f)
+        }
+    }
+
     Image(
         painter = painterResource(if (showOpen) R.drawable.rewardopen else R.drawable.reward),
         contentDescription = null,
         modifier = modifier
             .size(44.dp)
+            .drawBehind {
+                if (showHalo) {
+                    drawCircle(
+                        color = ComposeColor(1f, 0.9f, 0f, haloAlpha.value * 0.75f),
+                        radius = size.minDimension / 2f + 6.dp.toPx(),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.dp.toPx())
+                    )
+                }
+            }
             .scale(scale.value)
             .clickable(enabled = !animating) {
                 animating = true

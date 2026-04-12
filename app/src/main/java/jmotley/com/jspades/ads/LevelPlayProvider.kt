@@ -80,12 +80,14 @@ internal class LevelPlayProvider : AdProvider {
             override fun onInitSuccess(configuration: com.unity3d.mediation.LevelPlayConfiguration) {
                 initialized = true
                 Log.i("REWARDDEBUG", "LevelPlay.init success appKey=$appKey")
+                Log.i("ADLOADING", "LevelPlay.init success appKey=$appKey")
                 setupInterstitialAd()
                 setupRewardedAds()
                 AdManager.preloadForSession()
             }
             override fun onInitFailed(error: LevelPlayInitError) {
                 Log.w("REWARDDEBUG", "LevelPlay.init failed: ${error.errorMessage}")
+                Log.w("ADLOADING", "LevelPlay.init failed: ${error.errorMessage}")
                 AdManager.failOverToAdMob("LevelPlay init failed: ${error.errorMessage}")
             }
         })
@@ -99,20 +101,25 @@ internal class LevelPlayProvider : AdProvider {
         ad.setListener(object : LevelPlayInterstitialAdListener {
             override fun onAdLoaded(adInfo: LevelPlayAdInfo) {
                 Log.d("REWARDDEBUG", "LevelPlay interstitial loaded: ${adInfo.adUnitId}")
+                    Log.i("ADLOADING", "LevelPlay interstitial loaded: ${adInfo.adUnitId}")
             }
             override fun onAdLoadFailed(error: LevelPlayAdError) {
                 Log.w("REWARDDEBUG", "LevelPlay interstitial load failed: ${error.errorMessage}")
+                    Log.w("ADLOADING", "LevelPlay interstitial load failed: ${error.errorMessage}")
             }
             override fun onAdDisplayed(adInfo: LevelPlayAdInfo) {
                 Log.d("REWARDDEBUG", "LevelPlay interstitial displayed: ${adInfo.adUnitId}")
+                    Log.d("ADLOADING", "LevelPlay interstitial displayed: ${adInfo.adUnitId}")
             }
             override fun onAdDisplayFailed(error: LevelPlayAdError, adInfo: LevelPlayAdInfo) {
                 Log.w("REWARDDEBUG", "LevelPlay interstitial display failed: ${error.errorMessage}")
+                    Log.w("ADLOADING", "LevelPlay interstitial display failed: ${error.errorMessage}")
                 pendingInterstitialOnClosed?.invoke()
                 pendingInterstitialOnClosed = null
             }
             override fun onAdClosed(adInfo: LevelPlayAdInfo) {
                 Log.d("REWARDDEBUG", "LevelPlay interstitial closed: ${adInfo.adUnitId}")
+                    Log.d("ADLOADING", "LevelPlay interstitial closed: ${adInfo.adUnitId}")
                 pendingInterstitialOnClosed?.invoke()
                 pendingInterstitialOnClosed = null
             }
@@ -143,26 +150,32 @@ internal class LevelPlayProvider : AdProvider {
             ad.setListener(object : LevelPlayRewardedAdListener {
                 override fun onAdLoaded(adInfo: LevelPlayAdInfo) {
                     Log.d("REWARDDEBUG", "LevelPlay rewarded loaded: ${adInfo.adUnitId} placement=$placement")
+                    Log.i("ADLOADING", "LevelPlay rewarded loaded: ${adInfo.adUnitId} placement=$placement")
                 }
                 override fun onAdLoadFailed(error: LevelPlayAdError) {
                     Log.w("REWARDDEBUG", "LevelPlay rewarded load failed: placement=$placement err=${error.errorMessage}")
+                    Log.w("ADLOADING", "LevelPlay rewarded load failed: placement=$placement err=${error.errorMessage}")
                 }
                 override fun onAdDisplayed(adInfo: LevelPlayAdInfo) {
                     Log.d("REWARDDEBUG", "LevelPlay rewarded displayed: ${adInfo.adUnitId} placement=$placement")
+                    Log.d("ADLOADING", "LevelPlay rewarded displayed: ${adInfo.adUnitId} placement=$placement")
                 }
                 override fun onAdRewarded(reward: LevelPlayReward, adInfo: LevelPlayAdInfo) {
                     Log.i("REWARDDEBUG", "LevelPlay rewarded granted: ${adInfo.adUnitId} placement=$placement reward=${reward.amount}")
+                    Log.i("ADLOADING", "LevelPlay rewarded granted: ${adInfo.adUnitId} placement=$placement reward=${reward.amount}")
                     pendingRewardedOnReward?.invoke()
                     pendingRewardedOnReward = null
                 }
                 override fun onAdDisplayFailed(error: LevelPlayAdError, adInfo: LevelPlayAdInfo) {
                     Log.w("REWARDDEBUG", "LevelPlay rewarded display failed: placement=$placement err=${error.errorMessage}")
+                    Log.w("ADLOADING", "LevelPlay rewarded display failed: placement=$placement err=${error.errorMessage}")
                     pendingRewardedOnReward = null
                     pendingRewardedOnClosed?.invoke()
                     pendingRewardedOnClosed = null
                 }
                 override fun onAdClosed(adInfo: LevelPlayAdInfo) {
                     Log.d("REWARDDEBUG", "LevelPlay rewarded closed: ${adInfo.adUnitId} placement=$placement")
+                    Log.d("ADLOADING", "LevelPlay rewarded closed: ${adInfo.adUnitId} placement=$placement")
                     pendingRewardedOnReward = null
                     pendingRewardedOnClosed?.invoke()
                     pendingRewardedOnClosed = null
@@ -183,9 +196,11 @@ internal class LevelPlayProvider : AdProvider {
         }
         if (ad.isAdReady) {
             Log.d("REWARDDEBUG", "LevelPlay preloadRewarded skipped — ad already ready placement=$placement")
+            Log.d("ADLOADING", "LevelPlay preloadRewarded skipped — ad already ready placement=$placement")
             return
         }
         Log.d("REWARDDEBUG", "LevelPlay preloadRewarded calling loadAd placement=$placement")
+        Log.d("ADLOADING", "LevelPlay preloadRewarded calling loadAd placement=$placement")
         ad.loadAd()
     }
 
@@ -204,6 +219,7 @@ internal class LevelPlayProvider : AdProvider {
         }
         val placementName = REWARDED_PLACEMENT_NAMES[placement]
         Log.i("REWARDDEBUG", "LevelPlay.showRewarded requested placement=$placement placementName=$placementName")
+        Log.i("ADLOADING", "LevelPlay.showRewarded requested placement=$placement placementName=$placementName")
         pendingRewardedOnReward = onReward
         pendingRewardedOnClosed = onClosed
         if (placementName != null) ad.showAd(activity, placementName) else ad.showAd(activity)
@@ -221,9 +237,11 @@ internal class LevelPlayProvider : AdProvider {
         banner.setBannerListener(object : LevelPlayBannerAdViewListener {
             override fun onAdLoaded(adInfo: LevelPlayAdInfo) {
                 Log.d("REWARDDEBUG", "LevelPlay banner loaded: ${adInfo.adUnitId}")
+                Log.i("ADLOADING", "LevelPlay banner loaded: ${adInfo.adUnitId}")
             }
             override fun onAdLoadFailed(error: LevelPlayAdError) {
                 Log.w("REWARDDEBUG", "LevelPlay banner load failed: ${error.errorMessage} — trying AdMob fallback")
+                Log.w("ADLOADING", "LevelPlay banner load failed: ${error.errorMessage} — trying AdMob fallback")
                 onFailed()
             }
         })

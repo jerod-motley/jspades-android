@@ -56,6 +56,7 @@ internal class AdMobProvider : AdProvider {
         appContext = context.applicationContext
         MobileAds.initialize(context)
         Log.i("REWARDDEBUG", "AdMobProvider.initialize called")
+        Log.i("ADLOADING", "AdMobProvider.initialize called")
     }
 
     // ── Interstitial ──────────────────────────────────────────────────────────
@@ -74,6 +75,7 @@ internal class AdMobProvider : AdProvider {
     private fun loadAdMobInterstitial() {
         val ctx = appContext ?: run { isLoadingInterstitial = false; return }
         Log.d("REWARDDEBUG", "AdMob interstitial loading unit=$ADMOB_INTERSTITIAL_ID")
+        Log.d("ADLOADING", "AdMob interstitial loading unit=$ADMOB_INTERSTITIAL_ID")
         InterstitialAd.load(
             ctx,
             ADMOB_INTERSTITIAL_ID,
@@ -81,11 +83,13 @@ internal class AdMobProvider : AdProvider {
             object : InterstitialAdLoadCallback() {
                 override fun onAdLoaded(ad: InterstitialAd) {
                     Log.d("REWARDDEBUG", "AdMob interstitial loaded unit=$ADMOB_INTERSTITIAL_ID")
+                    Log.i("ADLOADING", "AdMob interstitial loaded unit=$ADMOB_INTERSTITIAL_ID")
                     admobInterstitial = ad
                     isLoadingInterstitial = false
                 }
                 override fun onAdFailedToLoad(error: LoadAdError) {
                     Log.w("REWARDDEBUG", "AdMob interstitial failed to load unit=$ADMOB_INTERSTITIAL_ID err=${error.message}")
+                    Log.w("ADLOADING", "AdMob interstitial failed to load unit=$ADMOB_INTERSTITIAL_ID err=${error.message}")
                     isLoadingInterstitial = false
                 }
             }
@@ -98,14 +102,17 @@ internal class AdMobProvider : AdProvider {
         val ad = admobInterstitial
         if (ad != null) {
             Log.i("REWARDDEBUG", "AdMob interstitial showing")
+            Log.i("ADLOADING", "AdMob interstitial showing")
             ad.fullScreenContentCallback = object : FullScreenContentCallback() {
                 override fun onAdDismissedFullScreenContent() {
                     Log.d("REWARDDEBUG", "AdMob interstitial dismissed")
+                    Log.d("ADLOADING", "AdMob interstitial dismissed")
                     admobInterstitial = null
                     onClosed()
                 }
                 override fun onAdFailedToShowFullScreenContent(error: AdError) {
                     Log.w("REWARDDEBUG", "AdMob interstitial failed to show err=${error.message}")
+                    Log.w("ADLOADING", "AdMob interstitial failed to show err=${error.message}")
                     admobInterstitial = null
                     onClosed()
                 }
@@ -115,6 +122,7 @@ internal class AdMobProvider : AdProvider {
         }
         // Not preloaded — attempt load+show inline
         Log.w("REWARDDEBUG", "AdMob interstitial not preloaded — loading inline")
+        Log.w("ADLOADING", "AdMob interstitial not preloaded — loading inline")
         if (BuildConfig.GOOGLE_ADS_ENABLED && ADMOB_INTERSTITIAL_ID.isNotBlank()) {
             InterstitialAd.load(
                 activity,
@@ -123,11 +131,13 @@ internal class AdMobProvider : AdProvider {
                 object : InterstitialAdLoadCallback() {
                     override fun onAdLoaded(ad: InterstitialAd) {
                         Log.d("REWARDDEBUG", "AdMob interstitial inline load succeeded")
+                        Log.i("ADLOADING", "AdMob interstitial inline load succeeded")
                         admobInterstitial = ad
                         showInterstitial(activity, onClosed)
                     }
                     override fun onAdFailedToLoad(error: LoadAdError) {
                         Log.w("REWARDDEBUG", "AdMob interstitial inline load failed err=${error.message}")
+                        Log.w("ADLOADING", "AdMob interstitial inline load failed err=${error.message}")
                         onClosed()
                     }
                 }
@@ -143,9 +153,11 @@ internal class AdMobProvider : AdProvider {
         val ctx = appContext ?: return
         val unitId = toAdMobRewardedUnitId(placement) ?: run {
             Log.d("REWARDDEBUG", "AdMob preloadRewarded skipped — no unit ID configured for placement=$placement")
+            Log.d("ADLOADING", "AdMob preloadRewarded skipped — no unit ID configured for placement=$placement")
             return
         }
         if (admobRewarded.containsKey(placement)) return
+        Log.d("ADLOADING", "AdMob preloadRewarded loading placement=$placement unit=$unitId")
         RewardedAd.load(
             ctx,
             unitId,
@@ -153,10 +165,12 @@ internal class AdMobProvider : AdProvider {
             object : RewardedAdLoadCallback() {
                 override fun onAdLoaded(ad: RewardedAd) {
                     Log.d("REWARDDEBUG", "AdMob rewarded loaded for placement=$placement unit=$unitId")
+                    Log.i("ADLOADING", "AdMob rewarded loaded for placement=$placement unit=$unitId")
                     admobRewarded[placement] = ad
                 }
                 override fun onAdFailedToLoad(error: LoadAdError) {
                     Log.w("REWARDDEBUG", "AdMob rewarded failed to load for placement=$placement unit=$unitId err=${error.message}")
+                    Log.w("ADLOADING", "AdMob rewarded failed to load for placement=$placement unit=$unitId err=${error.message}")
                     admobRewarded.remove(placement)
                 }
             }
@@ -175,18 +189,22 @@ internal class AdMobProvider : AdProvider {
         val ad = admobRewarded.remove(placement)
         if (ad == null) { onClosed(); return }
         Log.i("REWARDDEBUG", "AdMob.showRewarded showing placement=$placement")
+        Log.i("ADLOADING", "AdMob.showRewarded showing placement=$placement")
         ad.fullScreenContentCallback = object : FullScreenContentCallback() {
             override fun onAdDismissedFullScreenContent() {
                 Log.d("REWARDDEBUG", "AdMob rewarded dismissed placement=$placement")
+                Log.d("ADLOADING", "AdMob rewarded dismissed placement=$placement")
                 onClosed()
             }
             override fun onAdFailedToShowFullScreenContent(error: AdError) {
                 Log.w("REWARDDEBUG", "AdMob rewarded failed to show placement=$placement err=${error.message}")
+                Log.w("ADLOADING", "AdMob rewarded failed to show placement=$placement err=${error.message}")
                 onClosed()
             }
         }
         ad.show(activity) {
             Log.i("REWARDDEBUG", "AdMob rewarded granted placement=$placement")
+            Log.i("ADLOADING", "AdMob rewarded granted placement=$placement")
             onReward()
         }
     }
@@ -208,14 +226,17 @@ internal class AdMobProvider : AdProvider {
         av.adListener = object : com.google.android.gms.ads.AdListener() {
             override fun onAdLoaded() {
                 Log.d("REWARDDEBUG", "AdMob banner loaded unit=$ADMOB_BANNER_ID")
+                Log.i("ADLOADING", "AdMob banner loaded unit=$ADMOB_BANNER_ID")
             }
             override fun onAdFailedToLoad(error: com.google.android.gms.ads.LoadAdError) {
                 Log.w("REWARDDEBUG", "AdMob banner failed to load unit=$ADMOB_BANNER_ID err=${error.message}")
+                Log.w("ADLOADING", "AdMob banner failed to load unit=$ADMOB_BANNER_ID err=${error.message}")
             }
         }
         container.removeAllViews()
         container.addView(av)
         Log.d("REWARDDEBUG", "AdMob banner loading unit=$ADMOB_BANNER_ID")
+        Log.d("ADLOADING", "AdMob banner loading unit=$ADMOB_BANNER_ID")
         av.loadAd(AdRequest.Builder().build())
         adView = av
     }
