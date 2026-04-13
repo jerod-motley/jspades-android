@@ -655,7 +655,7 @@ fun PlayScreen(
             val activity = context as? Activity
             val phase = state.phase
             val canUndo = phase == GamePhase.TrickHuman &&
-                viewModel.previousTrickStartSnapshot != null && !viewModel.usedUndoLastTrickThisHand
+                viewModel.previousTrickStartSnapshot != null && !viewModel.usedUndoLastTrickThisGame
             val canPeek = phase == GamePhase.TrickHuman && !viewModel.usedPeekThisGame
             val canExtraBook = phase == GamePhase.TrickHuman && !viewModel.usedExtraBookThisGame
             val canBidAdjust = phase == GamePhase.TrickHuman && !viewModel.usedBidAdjustThisGame

@@ -710,23 +710,21 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	var currentTrickStartSnapshot: GameSnapshot? = null
 	var previousTrickStartSnapshot: GameSnapshot? = null
 
-	// Once-per-hand flags — reset at each new deal.
-	var usedUndoLastTrickThisHand: Boolean = false
-
 	// Once-per-game flags — never reset mid-game (survive replay-last-hand).
+	var usedUndoLastTrickThisGame: Boolean = false
 	var usedPeekThisGame: Boolean = false
 	var usedReplayLastHandThisGame: Boolean = false
 	var usedBagForgivenessThisGame: Boolean = false
 	var usedBidAdjustThisGame: Boolean = false
 	var usedExtraBookThisGame: Boolean = false
 
-	/** Rewind to the start of the previous trick. Once per hand. */
+	/** Rewind to the start of the previous trick. Once per game. */
 	fun rewindToPreviousTrick() {
 		val snap = previousTrickStartSnapshot ?: return
-		if (usedUndoLastTrickThisHand) return
+		if (usedUndoLastTrickThisGame) return
 		Log.i("REWARDDEBUG", "rewindToPreviousTrick invoked — applying previousTrickStartSnapshot")
 		_state.value = _state.value.applySnapshot(snap)   // restores phase = Trick
-		usedUndoLastTrickThisHand = true
+		usedUndoLastTrickThisGame = true
 		currentTrickStartSnapshot = null
 		previousTrickStartSnapshot = null
 		phaseManager.execute()

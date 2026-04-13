@@ -179,7 +179,6 @@ class PhaseManager(
 
         // Capture hand-start checkpoint and reset per-hand cheat flags
         viewModel.handStartSnapshot = viewModel.state.value.toSnapshot()
-        viewModel.usedUndoLastTrickThisHand = false
 
         viewModel.advancePhase(GamePhase.DealHuman)
         dispatch()
