@@ -591,13 +591,27 @@ fun PlayScreen(
 
             GamePhase.EndHand -> {
                 if (showEndHandOverlay) {
+                    val humanWasSet = run {
+                        val hand = state.phaseHands[GamePhase.Deal]?.lastOrNull()
+                        if (hand == null) false
+                        else if (state.gameType.useTeams) {
+                            val humanTeam  = state.players.find { it.id == localPlayerId }?.team ?: 0
+                            val teamBid    = hand.teamBids.getOrNull(humanTeam) ?: 0
+                            val teamTricks = state.players.filter { it.team == humanTeam }
+                                .sumOf { hand.perPlayer[it.id]?.tricksWon ?: 0 }
+                            teamBid > 0 && teamTricks < teamBid
+                        } else {
+                            val phs = hand.perPlayer[localPlayerId]
+                            phs != null && phs.bid > 0 && phs.tricksWon < phs.bid
+                        }
+                    }
                     EndHandView(
                         state                  = state,
                         viewModel              = viewModel,
                         localPlayerId          = localPlayerId,
                         onNavigateBack         = onNavigateBack,
                         onReplayHand           = if (state.lastHandReplay != null) {{ showReplay = true }} else null,
-                        canReplayLastHand      = !viewModel.usedReplayLastHandThisGame && !isChallengeActive,
+                        canReplayLastHand      = !viewModel.usedReplayLastHandThisGame && !isChallengeActive && humanWasSet,
                         onReplayLastHandAccepted = {
                             val activity = context as? Activity
                             if (activity != null) {
