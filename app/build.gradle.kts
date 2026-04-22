@@ -142,8 +142,8 @@ android {
         applicationId = "jmotley.com.jspades"
         minSdk = 29
         targetSdk = 36
-        versionCode = 103
-        versionName = "2.1.0"
+        versionCode = 104
+        versionName = "2.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "BASE_API_URL",
@@ -215,6 +215,8 @@ dependencies {
     implementation(libs.androidx.core.splashscreen)
     implementation(libs.unity.mediation)
     implementation(libs.ironsource.admob.adapter)
+    implementation(libs.ironsource.facebook.adapter)
+    implementation(libs.meta.audience.network)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

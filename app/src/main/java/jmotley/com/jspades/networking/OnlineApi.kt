@@ -14,6 +14,13 @@ import java.util.UUID
 // ── Data models ────────────────────────────────────────────────────────────────
 
 @Serializable
+data class Announcement(
+    val sk: String = "",
+    val announcement: String = "",
+    val createdate: String = ""
+)
+
+@Serializable
 data class Suggestion(
     val sk: String = "",
     val description: String = "",
@@ -104,6 +111,15 @@ object OnlineApi {
             header("Idempotency-Key", idempotencyKey())
             setBody(message)
         }
+    }
+
+    // ── Announcements ─────────────────────────────────────────────────────────
+
+    suspend fun getAnnouncements(): List<Announcement> {
+        val body = client.get("${AppConfig.BASE_API_URL}/announcements") {
+            parameter("pk", AppConfig.PARTITION_KEY)
+        }.bodyAsText()
+        return parseList(body)
     }
 
     // ── Renege Jokes ───────────────────────────────────────────────────────────

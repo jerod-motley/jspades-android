@@ -15,6 +15,8 @@ playServicesAds = "25.0.0"
 coreSplashscreen = "1.0.1"
 unityMediation = "9.2.0"
 ironSourceAdmobAdapter = "5.3.0"
+ironSourceFacebookAdapter = "5.1.0"
+metaAudienceNetwork = "6.21.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -41,6 +43,8 @@ play-services-ads = { module = "com.google.android.gms:play-services-ads", versi
 androidx-core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "coreSplashscreen" }
 unity-mediation = { module = "com.unity3d.ads-mediation:mediation-sdk", version.ref = "unityMediation" }
 ironsource-admob-adapter = { module = "com.unity3d.ads-mediation:admob-adapter", version.ref = "ironSourceAdmobAdapter" }
+ironsource-facebook-adapter = { module = "com.unity3d.ads-mediation:facebook-adapter", version.ref = "ironSourceFacebookAdapter" }
+meta-audience-network = { module = "com.facebook.android:audience-network-sdk", version.ref = "metaAudienceNetwork" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
