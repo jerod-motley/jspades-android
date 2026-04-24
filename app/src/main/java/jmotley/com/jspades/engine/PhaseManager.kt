@@ -1110,6 +1110,7 @@ class PhaseManager(
             )
             runCatching { PlayLogApi.post(payload) }
         }
+        AchievementsRepo.sendIfVerified(context)
     }
 
     // ── Video trigger detection ───────────────────────────────────────────────
