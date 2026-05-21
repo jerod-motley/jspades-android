@@ -14,7 +14,7 @@ enum class Suit { CLUBS, DIAMONDS, HEARTS, SPADES }
 
 enum class Rank(val value: Int) {
     TWO(2), THREE(3), FOUR(4), FIVE(5), SIX(6), SEVEN(7), EIGHT(8), NINE(9), TEN(10),
-    JACK(11), QUEEN(12), KING(13), ACE(14), DEUCE(15), LITTLEJOKER(16), BIGJOKER(17)
+    JACK(11), QUEEN(12), KING(13), ACE(14), DEUCE(15), WILDDEUCE(18), LITTLEJOKER(16), BIGJOKER(17)
 }
 
 data class Card(
@@ -34,13 +34,16 @@ data class Card(
      * Suit index mapping: CLUBS=1, DIAMONDS=2, HEARTS=3, SPADES=4
      */
     fun assetFileName(): String {
-        val suitIndex = if (rank == Rank.LITTLEJOKER || rank == Rank.BIGJOKER) {
-            Suit.SPADES.ordinal + 1
-        } else {
-            suit.ordinal + 1
+        val suitIndex = when (rank) {
+            Rank.LITTLEJOKER, Rank.BIGJOKER -> Suit.SPADES.ordinal + 1
+            // WILDDEUCE is the 2♦-as-joker rank; display as the 2♦ image regardless of internal suit.
+            Rank.WILDDEUCE -> Suit.DIAMONDS.ordinal + 1
+            else -> suit.ordinal + 1
         }
-        // DEUCE is the 2♠-as-3rd-joker rank; it shares the 2♠ card image.
-        val displayValue = if (rank == Rank.DEUCE) Rank.TWO.value else rank.value
+        val displayValue = when (rank) {
+            Rank.DEUCE, Rank.WILDDEUCE -> Rank.TWO.value
+            else -> rank.value
+        }
         return "c${displayValue}_$suitIndex.png"
     }
 }
@@ -252,6 +255,13 @@ data class GameState(
      * Defaults off; toggled from the settings screen.
      */
     val twoOfSpadesJoker: Boolean = false,
+    /**
+     * Optional rule: the 2♦ acts as the fourth joker (ranked above 2♠, below Little Joker).
+     * When true, 2♠ is also elevated (same as [twoOfSpadesJoker]), giving the trump chain:
+     * Big Joker > Little Joker > 2♦ > 2♠ > A♠ > K♠ > …
+     * The 2♦'s internal suit is changed to SPADES for hand sorting; the card image stays as 2♦.
+     */
+    val twoOfDiamondsJoker: Boolean = false,
     val enableDoubleBidBonus: Boolean = false,
     /**
      * Optional rule: spades cannot be led until they have been "broken"

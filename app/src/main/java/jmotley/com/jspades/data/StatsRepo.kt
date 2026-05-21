@@ -39,6 +39,16 @@ object StatsRepo {
 
     fun increment(ctx: Context, update: Stats.() -> Stats) {
         save(ctx, update(load(ctx)))
+        saveDeltas(ctx, update(loadDeltas(ctx)))
+    }
+
+    fun loadDeltas(ctx: Context): Stats {
+        val raw = prefs(ctx).getString("stats_deltas_json", null) ?: return Stats()
+        return runCatching { json.decodeFromString<Stats>(raw) }.getOrDefault(Stats())
+    }
+
+    private fun saveDeltas(ctx: Context, deltas: Stats) {
+        prefs(ctx).edit().putString("stats_deltas_json", json.encodeToString(deltas)).apply()
     }
 
     fun toServerMap(stats: Stats): Map<String, Int> = mapOf(
@@ -55,6 +65,22 @@ object StatsRepo {
         "times_did_not_meet_bid"  to stats.timesDidNotMeetBid,
         "times_set_opponents"     to stats.timesSetOpponents,
         "times_been_set"          to stats.timesBeenSet
+    )
+
+    fun deltasToServerMap(deltas: Stats): Map<String, Int> = mapOf(
+        "new_games_played"            to deltas.gamesPlayed,
+        "new_games_won"               to deltas.gamesWon,
+        "new_games_lost"              to deltas.gamesLost,
+        "new_played_house_rules"      to deltas.playedHouseRules,
+        "new_played_kitty"            to deltas.playedKitty,
+        "new_played_classic"          to deltas.playedClassic,
+        "new_played_two_man"          to deltas.playedTwoMan,
+        "new_played_three_man"        to deltas.playedThreeMan,
+        "new_played_four_man"         to deltas.playedFourMan,
+        "new_times_met_bid"           to deltas.timesMetBid,
+        "new_times_did_not_meet_bid"  to deltas.timesDidNotMeetBid,
+        "new_times_set_opponents"     to deltas.timesSetOpponents,
+        "new_times_been_set"          to deltas.timesBeenSet
     )
 
     fun applyServerStats(ctx: Context, serverMap: Map<String, Int>) {

@@ -103,6 +103,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		val players = defaultPlayers(ids, names, gameType)
 		val prefs = context.getSharedPreferences("jspades_prefs", Context.MODE_PRIVATE)
 		val twoOfSpadesJoker      = prefs.getBoolean("two_of_spades_joker", false)
+		val twoOfDiamondsJoker    = prefs.getBoolean("two_of_diamonds_joker", false)
 		val spadesMustBreak       = prefs.getBoolean("spades_must_break", false)
 		val minBidFive            = prefs.getBoolean("min_bid_five", false)
 		val enableSandbagPenalty  = prefs.getBoolean("count_overs", true)
@@ -126,6 +127,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			handLeaderIndex  = 1,
 			currentTrick     = Trick(plays = List(gameType.playerCount) { null }),
 			twoOfSpadesJoker     = twoOfSpadesJoker,
+			twoOfDiamondsJoker   = twoOfDiamondsJoker,
 			spadesMustBreak      = spadesMustBreak,
 			minBidFive           = minBidFive,
 			enableSandbagPenalty = enableSandbagPenalty,
@@ -679,7 +681,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 				players          = current.players,
 				gameType         = current.gameType,
 				events           = current.replayEvents,
-				twoOfSpadesJoker = current.twoOfSpadesJoker
+				twoOfSpadesJoker    = current.twoOfSpadesJoker,
+				twoOfDiamondsJoker  = current.twoOfDiamondsJoker
 			),
 			replayEvents = emptyList()
 		)
@@ -880,9 +883,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			phase            = GamePhase.Deal,
 			leaderIndex      = 1,
 			handLeaderIndex  = 1,
-			twoOfSpadesJoker = current.twoOfSpadesJoker,
-			spadesMustBreak  = current.spadesMustBreak,
-			minBidFive       = current.minBidFive
+			twoOfSpadesJoker   = current.twoOfSpadesJoker,
+			twoOfDiamondsJoker = current.twoOfDiamondsJoker,
+			spadesMustBreak    = current.spadesMustBreak,
+			minBidFive         = current.minBidFive
 		)
 		frustratedVideoFiredThisHand = false
 		setCurrentVideoAsset(null)

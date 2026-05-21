@@ -72,7 +72,8 @@ class ProfileViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             _state.update { it.copy(phase = ProfilePhase.CHECKING, errorMessage = null) }
             runCatching {
-                ProfileApi.register(s.email.trim(), s.username.trim())
+                val success = ProfileApi.register(s.email.trim(), s.username.trim())
+                if (!success) throw Exception("Registration failed")
                 ctx.getSharedPreferences("app_prefs", Context.MODE_PRIVATE).edit()
                     .putString("player_email", s.email.trim())
                     .putString("player_username", s.username.trim())

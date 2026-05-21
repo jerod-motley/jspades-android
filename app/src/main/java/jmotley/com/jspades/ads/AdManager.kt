@@ -12,10 +12,16 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * Public singleton ad facade. The only ads type referenced outside the ads package.
  *
- * Owns session-level provider selection and the every-other-hand interstitial toggle.
+ * Owns session-level provider selection and the every-N-hands interstitial counter
+ * (persisted in app_prefs so the cadence survives app restarts).
  * All Unity SDK types, placement IDs, and mediation details stay inside the providers.
  */
 object AdManager {
+
+    private const val INTERSTITIAL_EVERY_N = 3
+    private const val PREF_HAND_COUNTER = "interstitial_hand_counter"
+    private const val SKIPS_PER_REWARD = 2
+    private const val PREF_INTERSTITIAL_SKIPS = "interstitial_skips_remaining"
 
     enum class AdMode { LevelPlay, AdMobFallback }
 
@@ -29,13 +35,10 @@ object AdManager {
 
     // ── Internal state ────────────────────────────────────────────────────────
 
-    // Read-and-flip boolean: false → skip, flip to true → true → show, flip to false → …
-    // Starts at false so the first hand end shows no ad, the second does.
-    private var showInterstitialNext: Boolean = false
-
     // active is null until start() is called — do not initialize here so provider
     // constructors don't run before consent is obtained.
     private var active: AdProvider? = null
+    private var appContext: Context? = null
     private val levelPlay by lazy { LevelPlayProvider() }
     private val admob by lazy { AdMobProvider() }
     private val sessionId: String = UUID.randomUUID().toString()
@@ -49,6 +52,7 @@ object AdManager {
      */
     fun start(context: Context, onReady: () -> Unit = {}) {
         if (active != null) { onReady(); return }
+        appContext = context.applicationContext
         Log.i("REWARDDEBUG", "AdManager.start requesting consent session=$sessionId")
         ConsentManager.requestConsent(context as? Activity ?: return) {
             Log.i("REWARDDEBUG", "consent obtained — initializing providers session=$sessionId")
@@ -89,14 +93,22 @@ object AdManager {
     // ── Interstitial ──────────────────────────────────────────────────────────
 
     /**
-     * Call at every hand end. The every-other-hand cadence is managed internally —
-     * callers never pass a flag. [onClosed] is always invoked exactly once.
+     * Call at every hand/game end. Shows an interstitial every [INTERSTITIAL_EVERY_N] calls;
+     * the counter persists across sessions in app_prefs. [onClosed] is always invoked exactly once.
      */
     fun maybeShowInterstitial(activity: Activity, onClosed: () -> Unit = {}) {
-        val shouldShow = showInterstitialNext
-        showInterstitialNext = !showInterstitialNext
+        val prefs = appContext?.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        val counter = prefs?.getInt(PREF_HAND_COUNTER, 0) ?: 0
+        val nextCount = counter + 1
+        val shouldShow = nextCount >= INTERSTITIAL_EVERY_N
+        prefs?.edit()?.putInt(PREF_HAND_COUNTER, if (shouldShow) 0 else nextCount)?.apply()
         val provider = active
         if (!shouldShow) { onClosed(); return }
+        val skips = prefs?.getInt(PREF_INTERSTITIAL_SKIPS, 0) ?: 0
+        if (skips > 0) {
+            prefs?.edit()?.putInt(PREF_INTERSTITIAL_SKIPS, skips - 1)?.apply()
+            onClosed(); return
+        }
         if (provider?.canShowInterstitial() == true) {
             provider.showInterstitial(activity) {
                 preloadInterstitial()
@@ -111,6 +123,12 @@ object AdManager {
         } else {
             onClosed()
         }
+    }
+
+    private fun grantInterstitialSkips() {
+        val prefs = appContext?.getSharedPreferences("app_prefs", Context.MODE_PRIVATE) ?: return
+        val current = prefs.getInt(PREF_INTERSTITIAL_SKIPS, 0)
+        prefs.edit().putInt(PREF_INTERSTITIAL_SKIPS, current + SKIPS_PER_REWARD).apply()
     }
 
     // ── Rewarded ──────────────────────────────────────────────────────────────
@@ -149,6 +167,7 @@ object AdManager {
                 Log.i("REWARDDEBUG", "falling back to AdMob for placement=$placement session=$sessionId")
                 admob.showRewarded(activity, placement, {
                     Log.i("REWARDDEBUG", "onReward (AdMob) placement=$placement session=$sessionId")
+                    grantInterstitialSkips()
                     onReward()
                 }, {
                     Log.i("REWARDDEBUG", "onClosed (AdMob) placement=$placement session=$sessionId")
@@ -164,6 +183,7 @@ object AdManager {
 
         provider.showRewarded(activity, placement, {
             Log.i("REWARDDEBUG", "onReward placement=$placement provider=${provider.javaClass.simpleName} session=$sessionId")
+            grantInterstitialSkips()
             onReward()
         }, {
             Log.i("REWARDDEBUG", "onClosed placement=$placement provider=${provider.javaClass.simpleName} session=$sessionId")

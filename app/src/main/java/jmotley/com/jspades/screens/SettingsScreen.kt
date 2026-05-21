@@ -49,7 +49,8 @@ private val SettTextPrimary = Color.White
 private val SettTextSecond  = Color.White
 
 private const val PREFS                 = "jspades_prefs"
-private const val KEY_TWO_SPADES_JOKER  = "two_of_spades_joker"
+private const val KEY_TWO_SPADES_JOKER    = "two_of_spades_joker"
+private const val KEY_TWO_DIAMONDS_JOKER  = "two_of_diamonds_joker"
 private const val KEY_SPADES_MUST_BREAK = "spades_must_break"
 private const val KEY_MIN_BID_FIVE      = "min_bid_five"
 private const val KEY_ALLOW_NIL_BID     = "allow_nil_bid"
@@ -63,7 +64,8 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
     val context = LocalContext.current
     val prefs   = remember { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
 
-    var twoSpadesJoker  by remember { mutableStateOf(prefs.getBoolean(KEY_TWO_SPADES_JOKER, false)) }
+    var twoSpadesJoker    by remember { mutableStateOf(prefs.getBoolean(KEY_TWO_SPADES_JOKER, false)) }
+    var twoDiamondsJoker  by remember { mutableStateOf(prefs.getBoolean(KEY_TWO_DIAMONDS_JOKER, false)) }
     var spadesMustBreak by remember { mutableStateOf(prefs.getBoolean(KEY_SPADES_MUST_BREAK, false)) }
     var minBidFive      by remember { mutableStateOf(prefs.getBoolean(KEY_MIN_BID_FIVE, false)) }
     var allowNilBid     by remember { mutableStateOf(prefs.getBoolean(KEY_ALLOW_NIL_BID, false)) }
@@ -124,6 +126,50 @@ fun SettingsScreen(onNavigateBack: () -> Unit) {
                         onCheckedChange = { on: Boolean ->
                             twoSpadesJoker = on
                             prefs.edit().putBoolean(KEY_TWO_SPADES_JOKER, on).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = SettAccentGold,
+                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                        )
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        SettingsCard {
+            val fontScale = LocalConfiguration.current.fontScale
+            if (fontScale >= 1.3f) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("2♦ as 4th Joker", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = twoDiamondsJoker,
+                        onCheckedChange = { on: Boolean ->
+                            twoDiamondsJoker = on
+                            prefs.edit().putBoolean(KEY_TWO_DIAMONDS_JOKER, on).apply()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = SettAccentGold,
+                            checkedTrackColor = SettAccentGold.copy(alpha = 0.4f)
+                        )
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("2♦ as 4th Joker", color = SettTextPrimary, style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = twoDiamondsJoker,
+                        onCheckedChange = { on: Boolean ->
+                            twoDiamondsJoker = on
+                            prefs.edit().putBoolean(KEY_TWO_DIAMONDS_JOKER, on).apply()
                         },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = SettAccentGold,

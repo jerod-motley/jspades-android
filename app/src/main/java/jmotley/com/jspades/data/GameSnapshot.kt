@@ -34,6 +34,7 @@ data class GameSnapshot(
 
     // Rules flags (don't change mid-game but must survive restore)
     val twoOfSpadesJoker: Boolean,
+    val twoOfDiamondsJoker: Boolean,
     val spadesMustBreak: Boolean,
     val enableSandbagPenalty: Boolean,
     val enableDoubleBidBonus: Boolean,
@@ -61,6 +62,7 @@ fun GameState.toSnapshot(): GameSnapshot = GameSnapshot(
     kittyWinnerId       = kittyWinnerId,
     score               = score,
     twoOfSpadesJoker    = twoOfSpadesJoker,
+    twoOfDiamondsJoker  = twoOfDiamondsJoker,
     spadesMustBreak     = spadesMustBreak,
     enableSandbagPenalty  = enableSandbagPenalty,
     enableDoubleBidBonus  = enableDoubleBidBonus,
@@ -93,6 +95,7 @@ fun GameState.applySnapshot(snap: GameSnapshot): GameState = copy(
     kittyWinnerId       = snap.kittyWinnerId,
     score               = snap.score,
     twoOfSpadesJoker    = snap.twoOfSpadesJoker,
+    twoOfDiamondsJoker  = snap.twoOfDiamondsJoker,
     spadesMustBreak     = snap.spadesMustBreak,
     enableSandbagPenalty  = snap.enableSandbagPenalty,
     enableDoubleBidBonus  = snap.enableDoubleBidBonus,

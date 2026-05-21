@@ -358,13 +358,15 @@ object AchievementsRepo {
         if (!registered || email.isBlank()) return
         val username = appPrefs.getString("player_username", "") ?: ""
         val stats = StatsRepo.load(ctx)
+        val deltas = StatsRepo.loadDeltas(ctx)
+        val statsMap = StatsRepo.toServerMap(stats) + StatsRepo.deltasToServerMap(deltas)
         val achievements = loadAchievements(ctx)
         val challenges = loadCompletedChallenges(ctx)
         runCatching {
-            jmotley.com.jspades.networking.ProfileApi.updateProfile(
-                email, username, StatsRepo.toServerMap(stats), achievements, challenges
+            val success = jmotley.com.jspades.networking.ProfileApi.updateProfile(
+                email, username, statsMap, achievements, challenges, add = true
             )
-            StatsRepo.clearPendingDeltas(ctx)
+            if (success) StatsRepo.clearPendingDeltas(ctx)
         }
     }
 

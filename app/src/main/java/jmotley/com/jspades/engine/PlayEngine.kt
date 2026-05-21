@@ -610,7 +610,7 @@ object PlayEngine {
     // ── State derivation ───────────────────────────────────────────────────
 
     private val TRUMP_CHAIN = listOf(
-        Rank.BIGJOKER, Rank.LITTLEJOKER, Rank.DEUCE,
+        Rank.BIGJOKER, Rank.LITTLEJOKER, Rank.WILDDEUCE, Rank.DEUCE,
         Rank.ACE, Rank.KING, Rank.QUEEN, Rank.JACK,
         Rank.TEN, Rank.NINE, Rank.EIGHT, Rank.SEVEN,
         Rank.SIX, Rank.FIVE, Rank.FOUR, Rank.THREE, Rank.TWO

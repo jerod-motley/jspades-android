@@ -32,18 +32,20 @@ private data class UpdateProfileRequest(
     val userName: String,
     val stats: Map<String, Int>,
     val achievements: List<AchievementItem>,
-    val challenges: List<CompletedChallengeItem>
+    val challenges: List<CompletedChallengeItem>,
+    val add: Boolean = false
 )
 
 object ProfileApi {
     private val json = Json { ignoreUnknownKeys = true }
     private val client get() = NetworkClient.client
 
-    suspend fun register(email: String, userName: String) {
-        client.post("${AppConfig.BASE_API_URL}/profile") {
+    suspend fun register(email: String, userName: String): Boolean {
+        val response = client.post("${AppConfig.BASE_API_URL}/profile") {
             contentType(ContentType.Application.Json)
             setBody(RegisterRequest(pk = AppConfig.PARTITION_KEY, sk = email, userName = userName))
         }
+        return response.status.isSuccess()
     }
 
     suspend fun fetch(email: String): ProfileResponse {
@@ -59,9 +61,10 @@ object ProfileApi {
         userName: String,
         stats: Map<String, Int>,
         achievements: List<AchievementItem>,
-        challenges: List<CompletedChallengeItem>
-    ) {
-        client.put("${AppConfig.BASE_API_URL}/profile") {
+        challenges: List<CompletedChallengeItem>,
+        add: Boolean = false
+    ): Boolean {
+        val response = client.put("${AppConfig.BASE_API_URL}/profile") {
             contentType(ContentType.Application.Json)
             setBody(UpdateProfileRequest(
                 pk = AppConfig.PARTITION_KEY,
@@ -69,8 +72,10 @@ object ProfileApi {
                 userName = userName,
                 stats = stats,
                 achievements = achievements,
-                challenges = challenges
+                challenges = challenges,
+                add = add
             ))
         }
+        return response.status.isSuccess()
     }
 }

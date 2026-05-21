@@ -153,10 +153,17 @@ class PhaseManager(
         if (gt.removeTwoOfHearts) deck.removeIf { it.suit == Suit.HEARTS && it.rank == Rank.TWO }
         if (gt.removeTwoOfClubs)  deck.removeIf { it.suit == Suit.CLUBS  && it.rank == Rank.TWO }
 
-        // 3b. Promote 2♠ to DEUCE rank (3rd joker) if the setting is on
-        if (state.twoOfSpadesJoker) {
+        // 3b. Promote 2♠ to DEUCE rank (3rd/4th joker). Implied by twoOfDiamondsJoker as well.
+        if (state.twoOfSpadesJoker || state.twoOfDiamondsJoker) {
             val idx = deck.indexOfFirst { it.suit == Suit.SPADES && it.rank == Rank.TWO }
             if (idx >= 0) deck[idx] = Card(suit = Suit.SPADES, rank = Rank.DEUCE)
+        }
+
+        // 3c. Promote 2♦ to WILDDEUCE rank (3rd joker, above 2♠). Internal suit becomes SPADES
+        // so the card sorts into the trump group; assetFileName() still returns the 2♦ image.
+        if (state.twoOfDiamondsJoker) {
+            val idx = deck.indexOfFirst { it.suit == Suit.DIAMONDS && it.rank == Rank.TWO }
+            if (idx >= 0) deck[idx] = Card(suit = Suit.SPADES, rank = Rank.WILDDEUCE)
         }
 
         // 4. Shuffle
