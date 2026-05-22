@@ -61,7 +61,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.ui.viewinterop.AndroidView
 import jmotley.com.jspades.ads.AdManager
 import jmotley.com.jspades.ads.RewardedPlacement
-import android.widget.FrameLayout
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.infiniteRepeatable
@@ -69,9 +68,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color as ComposeColor
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -117,11 +113,6 @@ fun PlayScreen(
     var showEndHandOverlay by remember { mutableStateOf(false) }
     var showEndGameOverlay by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    val bannerContainer = remember { FrameLayout(context) }
-    var bannerHeightDp by remember { mutableStateOf(0.dp) }
-    val bannerVisible by AdManager.bannerVisible.collectAsState()
-    val density = LocalDensity.current
-    val effectiveBannerPadding: Dp = if (bannerVisible) bannerHeightDp else 0.dp
     // Cheat overlay state
     var revealedCard by remember { mutableStateOf<jmotley.com.jspades.data.Card?>(null) }
     var showPeekDialog by remember { mutableStateOf(false) }
@@ -217,14 +208,14 @@ fun PlayScreen(
                     AdManager.maybeShowInterstitial(activity) {
                         showEndHandOverlay = true
                     }
-                    AdManager.showBanner(bannerContainer)
+                    AdManager.showBanner()
                 }
                 GamePhase.Finished -> {
                     showEndGameOverlay = false
                     AdManager.maybeShowInterstitial(activity) {
                         showEndGameOverlay = true
                     }
-                    AdManager.showBanner(bannerContainer)
+                    AdManager.showBanner()
                 }
                 GamePhase.Lobby,
                 GamePhase.Deal,
@@ -232,7 +223,7 @@ fun PlayScreen(
                 GamePhase.BidHuman,
                 GamePhase.BidReview,
                 GamePhase.Kitty,
-                GamePhase.Score -> AdManager.showBanner(bannerContainer)
+                GamePhase.Score -> AdManager.showBanner()
                 GamePhase.Trick,
                 GamePhase.TrickHuman,
                 GamePhase.TrickResolve -> AdManager.hideBanner()
@@ -414,7 +405,7 @@ fun PlayScreen(
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
-                    Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = effectiveBannerPadding)) {
+                    Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
                         Spacer(Modifier.height(10.dp))
                         GameInfoView(
                             state = state, viewModel = viewModel,
@@ -448,7 +439,7 @@ fun PlayScreen(
 
             // BlindExchangeHuman: show card selection UI over hand
             GamePhase.BlindExchangeHuman -> {
-                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = effectiveBannerPadding)) {
+                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
                     Spacer(Modifier.height(10.dp))
                     GameInfoView(
                         state = state, viewModel = viewModel,
@@ -474,7 +465,7 @@ fun PlayScreen(
             GamePhase.Bid,
             GamePhase.BidHuman,
             GamePhase.BidReview -> {
-                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = effectiveBannerPadding)) {
+                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
                     Spacer(Modifier.height(10.dp))
                     GameInfoView(
                         state = state, viewModel = viewModel,
@@ -547,7 +538,7 @@ fun PlayScreen(
                     frozenPlays = frozenPlays,
                     modifier = Modifier.align(Alignment.TopCenter).padding(top = 32.dp)
                 )
-                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = effectiveBannerPadding)) {
+                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
                     Spacer(Modifier.height(10.dp))
                     if (showTapMessage) {
                         Box(
@@ -806,19 +797,6 @@ fun PlayScreen(
             )
         }
 
-        // ── Banner ad container ───────────────────────────────────────────────
-        // AdManager attaches/detaches the native banner view into this FrameLayout.
-        // Visibility is controlled via AdManager.showBanner() / hideBanner() based on phase.
-        AndroidView(
-            factory = { bannerContainer },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .onGloballyPositioned { coords ->
-                    bannerHeightDp = with(density) { coords.size.height.toDp() }
-                }
-        )
     }
 }
 

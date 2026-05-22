@@ -4,7 +4,6 @@ import android.app.Activity
 import android.util.Log
 import java.util.UUID
 import android.content.Context
-import android.view.ViewGroup
 import jmotley.com.jspades.BuildConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -194,21 +193,11 @@ object AdManager {
 
     // ── Banner ────────────────────────────────────────────────────────────────
 
-    fun showBanner(container: ViewGroup) {
-        if (_bannerVisible.value) return
-        val provider = active ?: return
-        provider.showBanner(container) {
-            // LevelPlay returned no fill — fall back to AdMob
-            if (provider !== admob) {
-                Log.w("REWARDDEBUG", "LevelPlay banner failed — falling back to AdMob")
-                admob.showBanner(container)
-            }
-        }
+    fun showBanner() {
         _bannerVisible.value = true
     }
 
     fun hideBanner() {
-        active?.hideBanner()
         _bannerVisible.value = false
     }
 

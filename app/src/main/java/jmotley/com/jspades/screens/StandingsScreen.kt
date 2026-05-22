@@ -78,12 +78,12 @@ fun StandingsScreen(onNavigateBack: () -> Unit) {
             )
         }
 
+    }
         TextButton(
             onClick = onNavigateBack,
-            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 4.dp)
         ) {
             Text("Back", color = StdTextSecondary, style = MaterialTheme.typography.bodyLarge)
         }
-    }
     }
 }

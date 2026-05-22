@@ -34,11 +34,17 @@ data class Card(
      * Suit index mapping: CLUBS=1, DIAMONDS=2, HEARTS=3, SPADES=4
      */
     fun assetFileName(): String {
+        // Image files use the convention: 1=Hearts, 2=Clubs, 3=Diamonds, 4=Spades.
+        // This does NOT match Suit.ordinal order, so each suit is mapped explicitly.
         val suitIndex = when (rank) {
-            Rank.LITTLEJOKER, Rank.BIGJOKER -> Suit.SPADES.ordinal + 1
-            // WILDDEUCE is the 2♦-as-joker rank; display as the 2♦ image regardless of internal suit.
-            Rank.WILDDEUCE -> Suit.DIAMONDS.ordinal + 1
-            else -> suit.ordinal + 1
+            Rank.LITTLEJOKER, Rank.BIGJOKER -> 4
+            Rank.WILDDEUCE -> 3  // 2♦ joker → diamonds image
+            else -> when (suit) {
+                Suit.HEARTS   -> 1
+                Suit.CLUBS    -> 2
+                Suit.DIAMONDS -> 3
+                Suit.SPADES   -> 4
+            }
         }
         val displayValue = when (rank) {
             Rank.DEUCE, Rank.WILDDEUCE -> Rank.TWO.value

@@ -70,12 +70,12 @@ fun RenegeJokesScreen(
                 item { Spacer(Modifier.height(8.dp)) }
             }
 
-            TextButton(
-                onClick = onNavigateBack,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
-            ) {
-                Text("Back", color = RjTextSecondary, fontSize = 16.sp)
-            }
+        }
+        TextButton(
+            onClick = onNavigateBack,
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 4.dp)
+        ) {
+            Text("Back", color = RjTextSecondary, fontSize = 16.sp)
         }
     }
 }

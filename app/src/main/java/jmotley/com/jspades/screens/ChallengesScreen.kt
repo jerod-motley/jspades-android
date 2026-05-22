@@ -129,16 +129,13 @@ fun ChallengesScreen(
                 }
             }
 
-            item {
-                Spacer(Modifier.height(8.dp))
-                TextButton(
-                    onClick = onNavigateBack,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Back", color = TextSecondary, fontSize = 16.sp)
-                }
-                Spacer(Modifier.height(24.dp))
-            }
+            item { Spacer(Modifier.height(24.dp)) }
+        }
+        TextButton(
+            onClick = onNavigateBack,
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 4.dp)
+        ) {
+            Text("Back", color = TextSecondary, fontSize = 16.sp)
         }
     }
 

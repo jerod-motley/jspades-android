@@ -103,58 +103,62 @@ private fun RegistrationForm(
     onSubmit: () -> Unit,
     onBack: () -> Unit
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text("Profile", fontFamily = font, style = MaterialTheme.typography.displaySmall, color = AccentGold)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "Create a free account to sync your stats and achievements.",
-            color = TextSecondary,
-            textAlign = TextAlign.Center,
-            style = MaterialTheme.typography.bodyMedium
-        )
-        Spacer(Modifier.height(32.dp))
-
-        OutlinedTextField(
-            value = username,
-            onValueChange = onUsernameChange,
-            label = { Text("Username", color = TextSecondary) },
-            singleLine = true,
-            colors = outlinedTextFieldColors(),
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(Modifier.height(16.dp))
-        OutlinedTextField(
-            value = email,
-            onValueChange = onEmailChange,
-            label = { Text("Email", color = TextSecondary) },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-            colors = outlinedTextFieldColors(),
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        if (errorMessage != null) {
-            Spacer(Modifier.height(12.dp))
-            Text(errorMessage, color = Color.Red, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
-        }
-
-        Spacer(Modifier.height(24.dp))
-        Button(
-            onClick = onSubmit,
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = AccentGold),
-            shape = RoundedCornerShape(8.dp)
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            Text("Register", color = Color.Black, style = MaterialTheme.typography.titleMedium)
+            Text("Profile", fontFamily = font, style = MaterialTheme.typography.displaySmall, color = AccentGold)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Create a free account to sync your stats and achievements.",
+                color = TextSecondary,
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(Modifier.height(32.dp))
+
+            OutlinedTextField(
+                value = username,
+                onValueChange = onUsernameChange,
+                label = { Text("Username", color = TextSecondary) },
+                singleLine = true,
+                colors = outlinedTextFieldColors(),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(16.dp))
+            OutlinedTextField(
+                value = email,
+                onValueChange = onEmailChange,
+                label = { Text("Email", color = TextSecondary) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                colors = outlinedTextFieldColors(),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            if (errorMessage != null) {
+                Spacer(Modifier.height(12.dp))
+                Text(errorMessage, color = Color.Red, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
+            }
+
+            Spacer(Modifier.height(24.dp))
+            Button(
+                onClick = onSubmit,
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = AccentGold),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("Register", color = Color.Black, style = MaterialTheme.typography.titleMedium)
+            }
         }
-        Spacer(Modifier.height(12.dp))
-        TextButton(onClick = onBack) {
+        TextButton(
+            onClick = onBack,
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 4.dp)
+        ) {
             Text("Back", color = TextSecondary)
         }
     }
@@ -198,34 +202,38 @@ private fun NotVerifiedView(
     onRecheck: () -> Unit,
     onBack: () -> Unit
 ) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text("Not Verified Yet", fontFamily = font, style = MaterialTheme.typography.headlineMedium, color = AccentGold, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(16.dp))
-        Text(
-            "Your email hasn't been verified. Check your inbox and click the verification link.",
-            color = TextSecondary,
-            textAlign = TextAlign.Center,
-            style = MaterialTheme.typography.bodyMedium
-        )
-        if (errorMessage != null) {
-            Spacer(Modifier.height(12.dp))
-            Text(errorMessage, color = Color.Red, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
-        }
-        Spacer(Modifier.height(32.dp))
-        Button(
-            onClick = onRecheck,
-            colors = ButtonDefaults.buttonColors(containerColor = AccentGold),
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-            shape = RoundedCornerShape(8.dp)
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            Text("Recheck", color = Color.Black, style = MaterialTheme.typography.titleMedium)
+            Text("Not Verified Yet", fontFamily = font, style = MaterialTheme.typography.headlineMedium, color = AccentGold, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(16.dp))
+            Text(
+                "Your email hasn't been verified. Check your inbox and click the verification link.",
+                color = TextSecondary,
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            if (errorMessage != null) {
+                Spacer(Modifier.height(12.dp))
+                Text(errorMessage, color = Color.Red, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
+            }
+            Spacer(Modifier.height(32.dp))
+            Button(
+                onClick = onRecheck,
+                colors = ButtonDefaults.buttonColors(containerColor = AccentGold),
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("Recheck", color = Color.Black, style = MaterialTheme.typography.titleMedium)
+            }
         }
-        Spacer(Modifier.height(12.dp))
-        TextButton(onClick = onBack) {
+        TextButton(
+            onClick = onBack,
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 4.dp)
+        ) {
             Text("Back", color = TextSecondary)
         }
     }
@@ -239,15 +247,13 @@ private fun RegisteredView(
     font: FontFamily,
     onBack: () -> Unit
 ) {
+    Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
             Spacer(Modifier.height(16.dp))
-            TextButton(onClick = onBack) {
-                Text("Back", color = TextSecondary, style = MaterialTheme.typography.bodyLarge)
-            }
             Text(username.ifBlank { "Player" }, fontFamily = font, style = MaterialTheme.typography.displaySmall, color = AccentGold,
                 modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
             Spacer(Modifier.height(4.dp))
@@ -319,13 +325,14 @@ private fun RegisteredView(
             )
         }
 
-        item {
-            Spacer(Modifier.height(8.dp))
-            TextButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
-                Text("Back", color = TextSecondary, style = MaterialTheme.typography.bodyLarge)
-            }
-            Spacer(Modifier.height(24.dp))
-        }
+        item { Spacer(Modifier.height(24.dp)) }
+    }
+    TextButton(
+        onClick = onBack,
+        modifier = Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 4.dp)
+    ) {
+        Text("Back", color = TextSecondary, style = MaterialTheme.typography.bodyLarge)
+    }
     }
 }
 
