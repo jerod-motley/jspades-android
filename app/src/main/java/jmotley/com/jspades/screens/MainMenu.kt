@@ -49,6 +49,7 @@ fun MainMenuScreen(
     onNavigateToRenegeJokes: () -> Unit = {},
     onNavigateToStandings: () -> Unit = {},
     onNavigateToSettings: () -> Unit = {},
+    onNavigateToOnlineLobby: () -> Unit = {},
     vm: MainMenuViewModel = viewModel()
 ) {
     var currentMenu by remember { mutableStateOf(SubMenu.None) }
@@ -82,6 +83,7 @@ fun MainMenuScreen(
                         "Team Play"      -> currentMenu = SubMenu.TeamPlay
                         "Solo Play"      -> currentMenu = SubMenu.Solo
                         "Challenge Mode" -> currentMenu = SubMenu.Challenge
+                        "Multiplayer"    -> onNavigateToOnlineLobby()
                         "Online"         -> currentMenu = SubMenu.Online
                         "Profile"        -> onNavigateToProfile()
                         "Standings"      -> onNavigateToStandings()
@@ -142,6 +144,7 @@ private fun MainButtons(font: FontFamily, onTap: (String) -> Unit) {
         "Team Play",
         "Solo Play",
         "Challenge Mode",
+        "Multiplayer",
         "Online",
         "Profile",
         "Standings",

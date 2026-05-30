@@ -59,6 +59,7 @@ import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.screens.ChallengesScreen
 import jmotley.com.jspades.screens.MainMenuScreen
 import jmotley.com.jspades.screens.MessagesScreen
+import jmotley.com.jspades.screens.OnlineLobbyScreen
 import jmotley.com.jspades.screens.PlayScreen
 import jmotley.com.jspades.screens.ProfileScreen
 import jmotley.com.jspades.screens.RenegeJokesScreen
@@ -116,7 +117,8 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToSuggestions  = { navController.navigate("suggestions") },
                                 onNavigateToRenegeJokes  = { navController.navigate("renegejokes") },
                                 onNavigateToStandings    = { navController.navigate("standings") },
-                                onNavigateToSettings     = { navController.navigate("settings") }
+                                onNavigateToSettings     = { navController.navigate("settings") },
+                                onNavigateToOnlineLobby  = { navController.navigate("online_lobby") }
                             )
                         }
                         composable("play/{gameType}") { backStackEntry ->
@@ -159,6 +161,9 @@ class MainActivity : ComponentActivity() {
                         }
                         composable("settings") {
                             SettingsScreen(onNavigateBack = { navController.popBackStack() })
+                        }
+                        composable("online_lobby") {
+                            OnlineLobbyScreen(onNavigateBack = { navController.popBackStack() })
                         }
                     }
                 }

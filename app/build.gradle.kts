@@ -175,6 +175,7 @@ android {
         buildConfigField("String",  "ADMOB_BANNER_AD_UNIT_ID",        "\"${admobBannerAdUnitIdProp}\"")
         buildConfigField("String",  "ADMOB_INTERSTITIAL_AD_UNIT_ID",  "\"${admobInterstitialAdUnitIdProp}\"")
         buildConfigField("String", "WEB_URL", "\"${webUrlProp}\"")
+        buildConfigField("String", "GAME_SOCKET_URL", "\"wss://jvvg6azz47.execute-api.us-east-1.amazonaws.com/prod\"")
     }
 
     buildTypes {
@@ -208,6 +209,8 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.ktor.client.android)
+    implementation(libs.ktor.client.okhttp)
+    implementation(libs.ktor.client.websockets)
     implementation(libs.ktor.client.content.negotiation)
     implementation(libs.ktor.serialization.kotlinx.json)
     implementation(libs.kotlinx.serialization.json)
