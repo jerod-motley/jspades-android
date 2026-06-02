@@ -54,6 +54,24 @@ data class Card(
     }
 }
 
+/**
+ * Parse a WebSocket card token (Android format "rank_suit") into a [Card].
+ * rank: 0-12 = cards TWO-ACE, 14 = LittleJoker, 15 = BigJoker
+ * suit: 0=HEARTS, 1=CLUBS, 2=DIAMONDS, 3=SPADES
+ * Returns null if the token is malformed or unknown.
+ */
+fun cardFromToken(token: String): Card? {
+    val under = token.indexOf('_')
+    if (under < 0) return null
+    val wsRank = token.substring(0, under).toIntOrNull() ?: return null
+    val wsSuit = token.substring(under + 1).toIntOrNull() ?: return null
+    if (wsRank == 14 && wsSuit == 3) return Card(Suit.SPADES, Rank.LITTLEJOKER)
+    if (wsRank == 15 && wsSuit == 3) return Card(Suit.SPADES, Rank.BIGJOKER)
+    val rank = Rank.entries.find { it.value == wsRank + 2 } ?: return null
+    val suit = when (wsSuit) { 0 -> Suit.HEARTS; 1 -> Suit.CLUBS; 2 -> Suit.DIAMONDS; 3 -> Suit.SPADES; else -> return null }
+    return Card(suit, rank)
+}
+
 /** Player and runtime flags. */
 data class RuntimeFlags(
     val didBid: Boolean = false,
@@ -315,6 +333,13 @@ data class GameState(
      */
     val allowNilBid: Boolean = false,
     val allowBlindExchange: Boolean = false,
+    /** True for WebSocket multiplayer games — suppresses single-player-only features like rewarded ads. */
+    val isMultiplayer: Boolean = false,
+    /**
+     * Canonical player IDs ("west", "north", "east") of remote human players.
+     * PhaseManager waits for their playerBid WebSocket message instead of auto-bidding.
+     */
+    val remoteHumanIds: Set<String> = emptySet(),
     /**
      * Game length: controls the score threshold needed to win.
      * SHORT / MEDIUM / LONG targets:

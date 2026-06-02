@@ -83,7 +83,6 @@ fun MainMenuScreen(
                         "Team Play"      -> currentMenu = SubMenu.TeamPlay
                         "Solo Play"      -> currentMenu = SubMenu.Solo
                         "Challenge Mode" -> currentMenu = SubMenu.Challenge
-                        "Multiplayer"    -> onNavigateToOnlineLobby()
                         "Online"         -> currentMenu = SubMenu.Online
                         "Profile"        -> onNavigateToProfile()
                         "Standings"      -> onNavigateToStandings()
@@ -112,10 +111,12 @@ fun MainMenuScreen(
                     else onNavigateToChallenges(tapped)
                 }
                 SubMenu.Online -> SubButtons(
-                    labels = listOf("Messages", "Suggestions", "Renege Jokes", "Return"),
+                    labels = listOf("Host Game", "Join Game", "Messages", "Suggestions", "Renege Jokes", "Return"),
                     font = jennasue
                 ) { tapped ->
                     when (tapped) {
+                        "Host Game"    -> onNavigateToOnlineLobby()
+                        "Join Game"    -> onNavigateToOnlineLobby()
                         "Messages"     -> onNavigateToMessages()
                         "Suggestions"  -> onNavigateToSuggestions()
                         "Renege Jokes" -> onNavigateToRenegeJokes()
@@ -144,7 +145,6 @@ private fun MainButtons(font: FontFamily, onTap: (String) -> Unit) {
         "Team Play",
         "Solo Play",
         "Challenge Mode",
-        "Multiplayer",
         "Online",
         "Profile",
         "Standings",

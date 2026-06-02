@@ -134,6 +134,27 @@ class PhaseManager(
         val gt    = state.gameType
         val ids   = state.players.map { it.id }
 
+        // MP path: use the server-dealt hands broadcast by the host.
+        // Skip deal animation phases entirely — DealComplete is emitted before the PlayScreen
+        // animation collector subscribes (race condition), so go straight to Bid.
+        val mpHands = viewModel.pendingMpHands
+        if (mpHands != null) {
+            viewModel.pendingMpHands = null
+            val perPlayer = ids.associateWith { id ->
+                PlayerHandState(hand = (mpHands[id] ?: emptyList())
+                    .sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal })))
+            }
+            viewModel.applyDeal(Hand(playerOrder = ids, perPlayer = perPlayer))
+            PlayLogger.logGameType(viewModel.state.value)
+            PlayLogger.logDealtHands(viewModel.state.value)
+            viewModel.handStartSnapshot = viewModel.state.value.toSnapshot()
+            // Mark all players as blind-decided so handleBid doesn't wait on blind round.
+            ids.forEach { viewModel.markBlindDecision(it) }
+            viewModel.advancePhase(GamePhase.Bid)
+            dispatch()
+            return
+        }
+
         // 1. Build base deck: TWO–ACE × all 4 suits
         val standardRanks = listOf(
             Rank.TWO, Rank.THREE, Rank.FOUR, Rank.FIVE, Rank.SIX, Rank.SEVEN,
@@ -674,27 +695,37 @@ class PhaseManager(
                 }
                 // fall through to next team
             } else {
-                // Find the next unbidd CPU player on this team
-                val nextCpu = teamPlayers.firstOrNull { !it.runtimeFlags.didBid && it.id != "south" }
-                if (nextCpu != null) {
-                    val hand   = getPlayerHand(s, nextCpu.id)
-                    val result = BidEngine.computeCpuBid(hand, nextCpu, s)
+                // Find the next unbid non-south player on this team.
+                // Remote human partners wait for a playerBid WebSocket message;
+                // CPU players are auto-bid by the engine as before.
+                val nextUnbid = teamPlayers.firstOrNull { !it.runtimeFlags.didBid && it.id != "south" }
+                if (nextUnbid != null) {
+                    if (s.remoteHumanIds.contains(nextUnbid.id)) {
+                        // Remote human — suspend until their bid arrives via WebSocket
+                        val bid = viewModel.awaitRemoteBid(nextUnbid.id)
+                        viewModel.submitBid(nextUnbid.id, bid, false)
+                        viewModel.emitAnimation(AnimationEvent.BidPlaced(nextUnbid.id, bid))
+                        return
+                    }
+
+                    // CPU — auto-bid
+                    val hand   = getPlayerHand(s, nextUnbid.id)
+                    val result = BidEngine.computeCpuBid(hand, nextUnbid, s)
 
                     if (result.isBlind) {
                         // Team goes blind: commit combined bid of 7, auto-fill all teammates
-                        viewModel.submitBid(nextCpu.id, 0, false)
-                        teamPlayers.filter { it.id != nextCpu.id }.forEach { p ->
+                        viewModel.submitBid(nextUnbid.id, 0, false)
+                        teamPlayers.filter { it.id != nextUnbid.id }.forEach { p ->
                             viewModel.submitBid(p.id, 0, false)
                         }
                         viewModel.setTeamBid(teamId, 7)
                         viewModel.setTeamBlind(teamId, true)
-                        viewModel.emitAnimation(AnimationEvent.BidPlaced(nextCpu.id, 7))
+                        viewModel.emitAnimation(AnimationEvent.BidPlaced(nextUnbid.id, 7))
                         return
                     }
 
-                    viewModel.submitBid(nextCpu.id, result.bid, result.isBlind)
-                    // Fire-and-forget: one CPU bid per execute() call
-                    viewModel.emitAnimation(AnimationEvent.BidPlaced(nextCpu.id, result.bid))
+                    viewModel.submitBid(nextUnbid.id, result.bid, result.isBlind)
+                    viewModel.emitAnimation(AnimationEvent.BidPlaced(nextUnbid.id, result.bid))
                     return
                 }
 
@@ -751,7 +782,16 @@ class PhaseManager(
 
     /** Advance from bidding to Trick — kitty is always resolved before bidding. */
     private suspend fun advanceAfterBidding() {
-        viewModel.advancePhase(GamePhase.Trick)
+        // Apply the MP first-lead index if the host provided one, so the correct player
+        // leads the first trick even when some seats are empty (firstLead skips open seats).
+        val firstLead = viewModel.mpFirstLeadIndex
+        if (firstLead >= 0) {
+            viewModel.mpFirstLeadIndex = -1   // consume
+            viewModel.advancePhase(GamePhase.Trick)
+            viewModel.setLeaderIndex(firstLead)
+        } else {
+            viewModel.advancePhase(GamePhase.Trick)
+        }
         dispatch()
     }
 

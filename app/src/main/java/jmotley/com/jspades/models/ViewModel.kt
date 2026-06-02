@@ -38,7 +38,12 @@ import android.util.Log
 class GameViewModel(application: Application) : AndroidViewModel(application) {
 	private val context: Context get() = getApplication<Application>().applicationContext
 
-	private val _state = MutableStateFlow(GameState())
+	// If an MP game config is waiting (set by OnlineLobbyViewModel before navigation),
+	// mark isMultiplayer on the initial state so the very first composition is correct
+	// and the rewarded-ad icon never renders even for a single frame.
+	private val _state = MutableStateFlow(
+		if (MPStateHolder.peek() != null) GameState(isMultiplayer = true) else GameState()
+	)
 	val state: StateFlow<GameState> = _state
 
 	/**
@@ -94,11 +99,52 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	// ── Lobby ─────────────────────────────────────────────────────────────────
 
 	/**
+	 * Pre-dealt hands from the MP server, keyed by canonical player ID ("south" etc.).
+	 * When non-null, PhaseManager.handleDeal() uses these instead of shuffling locally.
+	 * Cleared by PhaseManager after consumption.
+	 */
+	var pendingMpHands: Map<String, List<Card>>? = null
+
+	/** True for WebSocket multiplayer games. Readable directly from [state].isMultiplayer. */
+	val isMultiplayer: Boolean get() = _state.value.isMultiplayer
+
+	/**
+	 * Canonical index (0=south…3=east) of who leads the first trick in an MP game.
+	 * -1 = not set; PhaseManager will use its own default (leaderIndex from bidding).
+	 * Consumed and cleared by advanceAfterBidding().
+	 */
+	var mpFirstLeadIndex: Int = -1
+
+	/** Incoming individual bids from remote human players, keyed by canonical player ID. */
+	private val _remoteBids = MutableStateFlow<Map<String, Int>>(emptyMap())
+
+	/** Called by Play.kt when a playerBid WebSocket message arrives for a remote human. */
+	fun onRemoteBidReceived(playerId: String, bidAmount: Int) {
+		_remoteBids.value = _remoteBids.value + (playerId to bidAmount)
+	}
+
+	/**
+	 * Suspends until a bid arrives from [playerId] via WebSocket, then returns it.
+	 * [first(predicate)] on a StateFlow checks the current value immediately, so if the
+	 * bid already arrived it returns without suspending.
+	 */
+	suspend fun awaitRemoteBid(playerId: String): Int {
+		val bids = _remoteBids.first { it.containsKey(playerId) }
+		_remoteBids.value = _remoteBids.value - playerId
+		return bids[playerId]!!
+	}
+
+	/**
 	 * Called by LobbyView once all seats are filled.
 	 * Registers players and hands control to PhaseManager to deal and advance.
 	 * [gameType] drives deck construction, player count, and team assignment.
+	 * [dealtHands] — when provided (MP games), skips local shuffle and uses these cards.
+	 * [mpFirstLeadIndex] — canonical trick-lead index from the deal (-1 = engine default).
 	 */
-	fun onLobbyComplete(ids: List<String>, names: List<String>, gameType: GameType) {
+	fun onLobbyComplete(ids: List<String>, names: List<String>, gameType: GameType,
+	                    dealtHands: Map<String, List<String>>? = null,
+	                    mpFirstLeadIndex: Int = -1,
+	                    remoteHumanIds: Set<String> = emptySet()) {
 		require(ids.size == gameType.playerCount && names.size == gameType.playerCount)
 		val players = defaultPlayers(ids, names, gameType)
 		val prefs = context.getSharedPreferences("jspades_prefs", Context.MODE_PRIVATE)
@@ -135,6 +181,13 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			allowBlindExchange   = allowBlindExchange,
 			gameLength           = gameLength
 		)
+		if (dealtHands != null) {
+			_state.value = _state.value.copy(isMultiplayer = true, remoteHumanIds = remoteHumanIds)
+			pendingMpHands = dealtHands.mapValues { (_, tokens) ->
+				tokens.mapNotNull { cardFromToken(it) }
+			}
+			if (mpFirstLeadIndex >= 0) this.mpFirstLeadIndex = mpFirstLeadIndex
+		}
 		phaseManager.execute()
 	}
 
@@ -143,6 +196,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	/** Advance to a new phase. */
 	fun advancePhase(phase: GamePhase) {
 		_state.value = _state.value.copy(phase = phase)
+	}
+
+	/** Override the current leader index (used by MP to apply firstLead from the deal). */
+	fun setLeaderIndex(index: Int) {
+		_state.value = _state.value.copy(leaderIndex = index, handLeaderIndex = index)
 	}
 
 	/**
@@ -223,6 +281,23 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	 * House Rules human bid: the human enters the team total after seeing their
 	 * CPU partner's individual bid. Stores the team bid and hands control to the engine.
 	 */
+	/**
+	 * Applied on guest devices when [allBids] arrives from the host.
+	 * Overrides the locally-computed team bids with the host's authoritative values,
+	 * marks every player as bid-complete, and skips directly to trick play.
+	 */
+	fun applyRemoteAllBids(team0Bid: Int, team1Bid: Int) {
+		val s = _state.value
+		if (s.phase !in setOf(GamePhase.Bid, GamePhase.BidHuman, GamePhase.BidReview)) return
+		setTeamBid(0, team0Bid)
+		setTeamBid(1, team1Bid)
+		val players = _state.value.players.map { p ->
+			p.copy(runtimeFlags = p.runtimeFlags.copy(didBid = true))
+		}
+		_state.value = _state.value.copy(players = players, phase = GamePhase.BidReview)
+		phaseManager.executeBidConfirmed()
+	}
+
 	fun submitHumanTeamBid(teamId: Int, bid: Int, localPlayerId: String) {
 		setTeamBid(teamId, bid)
 		val players = _state.value.players.map { p ->

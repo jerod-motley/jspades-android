@@ -163,7 +163,12 @@ class MainActivity : ComponentActivity() {
                             SettingsScreen(onNavigateBack = { navController.popBackStack() })
                         }
                         composable("online_lobby") {
-                            OnlineLobbyScreen(onNavigateBack = { navController.popBackStack() })
+                            OnlineLobbyScreen(
+                                onNavigateBack = { navController.popBackStack() },
+                                onNavigateToPlay = {
+                                    navController.navigate("play/${URLEncoder.encode("House Rules", "utf-8")}")
+                                }
+                            )
                         }
                     }
                 }

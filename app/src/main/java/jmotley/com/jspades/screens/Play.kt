@@ -42,6 +42,8 @@ import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.engine.ChallengeResult
 import jmotley.com.jspades.models.GameViewModel
 import jmotley.com.jspades.data.DealMode
+import jmotley.com.jspades.data.MPSession
+import jmotley.com.jspades.data.MPStateHolder
 import jmotley.com.jspades.views.BidView
 import jmotley.com.jspades.views.BlindBidView
 import jmotley.com.jspades.views.BlindExchangeView
@@ -69,6 +71,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color as ComposeColor
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -173,6 +176,55 @@ fun PlayScreen(
         }
     }
 
+    // ── Multiplayer bypass — skip LobbyView and start immediately ────────────
+    // MPStateHolder is set by OnlineLobbyViewModel just before navigating here.
+    // Consume it once so the config doesn't bleed into subsequent local games.
+    LaunchedEffect(Unit) {
+        val mpConfig = MPStateHolder.consume() ?: return@LaunchedEffect
+        val mpFirstLeadIndex = (mpConfig.firstLeadRoomSeat - mpConfig.localSeatIndex + 4) % 4
+        viewModel.onLobbyComplete(
+            ids              = mpConfig.playerIds,
+            names            = mpConfig.playerNames,
+            gameType         = GameType.HOUSE_RULES,
+            dealtHands       = mpConfig.dealtHands,
+            mpFirstLeadIndex = mpFirstLeadIndex,
+            remoteHumanIds   = mpConfig.remoteHumanIds
+        )
+    }
+
+    // ── Multiplayer session reference ─────────────────────────────────────────
+    val mpSession = remember { MPSession.session }
+
+    // ── Remote player bid events → unblock PhaseManager ─────────────────────
+    // Forward incoming playerBid messages to the ViewModel so awaitRemoteBid() unblocks.
+    // Also applies allBids (guest only) once BidHuman is reached.
+    if (mpSession != null) {
+        LaunchedEffect(mpSession) {
+            // Collect remote individual bids (used by host's awaitRemoteBid in PhaseManager)
+            launch {
+                mpSession.pendingPlayerBids.collect { bids ->
+                    bids.forEach { (canonicalId, amount) ->
+                        viewModel.onRemoteBidReceived(canonicalId, amount)
+                        mpSession.consumePlayerBid(canonicalId)
+                    }
+                }
+            }
+            // Guest only: apply allBids from the host, but only after BidHuman is shown
+            if (!MPSession.isHost) {
+                mpSession.pendingAllBids.collect { allBids ->
+                    allBids ?: return@collect
+                    // Wait for BidHuman so the CPU animation chain completes first.
+                    // Firing during Bid phase would skip the human's bid UI entirely.
+                    viewModel.state.first {
+                        it.phase == GamePhase.BidHuman || it.phase == GamePhase.BidReview
+                    }
+                    viewModel.applyRemoteAllBids(allBids.team0Bid, allBids.team1Bid)
+                    mpSession.clearPendingAllBids()
+                }
+            }
+        }
+    }
+
     // ── Video event collector ─────────────────────────────────────────────────
     // Merges all three video flows into a single currentVideoAsset state.
     LaunchedEffect("video") {
@@ -192,6 +244,27 @@ fun PlayScreen(
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop
         )
+
+        // ── MP: broadcast this player's individual bid when BidHuman completes ──
+        // When phase transitions away from BidHuman, the local player just bid.
+        // Send playerBid so remote PhaseManagers can unblock awaitRemoteBid().
+        if (state.isMultiplayer && state.phase == GamePhase.Bid) {
+            LaunchedEffect(GamePhase.Bid) {
+                val hand = state.phaseHands[GamePhase.Deal]?.lastOrNull() ?: return@LaunchedEffect
+                val southBid = hand.perPlayer["south"]?.bid ?: return@LaunchedEffect
+                if (southBid > 0) MPSession.session?.sendPlayerBid(southBid)
+            }
+        }
+
+        // ── MP host: broadcast allBids when bidding round is complete ────────────
+        if (state.isMultiplayer && MPSession.isHost && state.phase == GamePhase.BidReview) {
+            LaunchedEffect(GamePhase.BidReview) {
+                val hand = state.phaseHands[GamePhase.Deal]?.lastOrNull()
+                val t0 = hand?.teamBids?.getOrNull(0) ?: 0
+                val t1 = hand?.teamBids?.getOrNull(1) ?: 0
+                if (t0 > 0 || t1 > 0) MPSession.session?.sendAllBids(t0, t1)
+            }
+        }
 
         // ── Ad trigger (interstitial + banner) ───────────────────────────────────
         // Interstitial: every-other-hand cadence managed internally by AdManager.
@@ -338,8 +411,8 @@ fun PlayScreen(
         }
 
         // ── Rewards icon — persistent entry point for all reward ads ─────────────
-        // Hidden in challenge mode. Will become context-aware (icon changes per opportunity).
-        if (!isChallengeActive) {
+        // Hidden in challenge mode and multiplayer games.
+        if (!isChallengeActive && !state.isMultiplayer) {
             val rewardPrefs = remember { context.getSharedPreferences("reward_prefs", android.content.Context.MODE_PRIVATE) }
             var rewardTapCount by remember { mutableStateOf(rewardPrefs.getInt("reward_tap_count", 0)) }
             RewardsIconButton(
