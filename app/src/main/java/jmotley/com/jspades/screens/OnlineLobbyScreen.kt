@@ -54,6 +54,7 @@ private val DividerColor = Color(0x44FFFFFF)
 
 @Composable
 fun OnlineLobbyScreen(
+    startMode: String = "host",
     onNavigateBack: () -> Unit,
     onNavigateToPlay: () -> Unit = {},
     vm: OnlineLobbyViewModel = viewModel()
@@ -62,6 +63,13 @@ fun OnlineLobbyScreen(
 
     LaunchedEffect(Unit) {
         vm.navigateToPlay.collect { onNavigateToPlay() }
+    }
+
+    LaunchedEffect(startMode) {
+        when (startMode) {
+            "host" -> vm.chooseHost()
+            "join" -> vm.chooseJoin()
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -74,12 +82,10 @@ fun OnlineLobbyScreen(
         )
 
         when (val state = uiState) {
-            is LobbyUiState.RoleChoice -> RoleChoiceView(
-                displayName = vm.displayName,
-                onHost = vm::chooseHost,
-                onJoin = vm::chooseJoin,
-                onBack = onNavigateBack
-            )
+            is LobbyUiState.RoleChoice -> {
+                // startMode auto-triggers chooseHost/chooseJoin via LaunchedEffect.
+                // Show nothing while the ViewModel transitions to Connecting.
+            }
             is LobbyUiState.JoinEntry -> JoinEntryView(
                 state = state,
                 onCodeChange = vm::updateJoinCode,

@@ -118,7 +118,7 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToRenegeJokes  = { navController.navigate("renegejokes") },
                                 onNavigateToStandings    = { navController.navigate("standings") },
                                 onNavigateToSettings     = { navController.navigate("settings") },
-                                onNavigateToOnlineLobby  = { navController.navigate("online_lobby") }
+                                onNavigateToOnlineLobby  = { mode -> navController.navigate("online_lobby/$mode") }
                             )
                         }
                         composable("play/{gameType}") { backStackEntry ->
@@ -162,8 +162,10 @@ class MainActivity : ComponentActivity() {
                         composable("settings") {
                             SettingsScreen(onNavigateBack = { navController.popBackStack() })
                         }
-                        composable("online_lobby") {
+                        composable("online_lobby/{mode}") { backStackEntry ->
+                            val mode = backStackEntry.arguments?.getString("mode") ?: "host"
                             OnlineLobbyScreen(
+                                startMode = mode,
                                 onNavigateBack = { navController.popBackStack() },
                                 onNavigateToPlay = {
                                     navController.navigate("play/${URLEncoder.encode("House Rules", "utf-8")}")

@@ -878,9 +878,19 @@ class PhaseManager(
             return
         }
 
+        // Remote player — suspend until their playCard WSS message arrives
+        if (s.remotePlayerIds.contains(nextPlayer)) {
+            val card = viewModel.awaitRemotePlay(nextPlayer)
+            viewModel.playCard(nextPlayer, card)
+            viewModel.removeCardFromHand(nextPlayer, card)
+            val trickComplete = viewModel.state.value.currentTrick.plays.count { it != null } == n
+            if (trickComplete) viewModel.advancePhase(GamePhase.TrickResolve)
+            viewModel.emitAnimation(AnimationEvent.CardPlayed(nextPlayer, card))
+            return
+        }
+
         val card = PlayEngine.selectCard(nextPlayer, s)
-        viewModel.playCard(nextPlayer, card)
-        viewModel.removeCardFromHand(nextPlayer, card)
+        viewModel.cpuPlay(nextPlayer, card)
 
         val trickComplete = viewModel.state.value.currentTrick.plays.count { it != null } == n
         if (trickComplete) {

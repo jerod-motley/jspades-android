@@ -14,6 +14,7 @@ import jmotley.com.jspades.networking.SocketState
 import jmotley.com.jspades.data.MPGameConfig
 import jmotley.com.jspades.data.MPSession
 import jmotley.com.jspades.data.MPStateHolder
+import android.util.Log
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -142,13 +143,21 @@ class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     .map { canonicalIds[it] }
                     .toSet()
+                // Guests await ALL non-south plays from the host (CPU + human).
+                // The host only awaits guest human plays.
+                val remotePlayerIds: Set<String> = if (MPSession.isHost) {
+                    remoteHumanIds
+                } else {
+                    canonicalIds.drop(1).toSet()  // west, north, east
+                }
                 val config = MPGameConfig(
                     playerNames       = rotated,
                     localSeatIndex    = seatIndex,
                     roomId            = lobby.roomId,
                     dealtHands        = rotatedHands,
                     firstLeadRoomSeat = firstLeadRoomSeat,
-                    remoteHumanIds    = remoteHumanIds
+                    remoteHumanIds    = remoteHumanIds,
+                    remotePlayerIds   = remotePlayerIds
                 )
                 MPStateHolder.set(config)
                 session.consumePendingDeal()

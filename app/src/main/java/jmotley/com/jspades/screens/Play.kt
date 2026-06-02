@@ -188,7 +188,9 @@ fun PlayScreen(
             gameType         = GameType.HOUSE_RULES,
             dealtHands       = mpConfig.dealtHands,
             mpFirstLeadIndex = mpFirstLeadIndex,
-            remoteHumanIds   = mpConfig.remoteHumanIds
+            remoteHumanIds   = mpConfig.remoteHumanIds,
+            remotePlayerIds  = mpConfig.remotePlayerIds,
+            localSeatIndex   = mpConfig.localSeatIndex
         )
     }
 
@@ -206,6 +208,15 @@ fun PlayScreen(
                     bids.forEach { (canonicalId, amount) ->
                         viewModel.onRemoteBidReceived(canonicalId, amount)
                         mpSession.consumePlayerBid(canonicalId)
+                    }
+                }
+            }
+            // Collect remote card plays (unblocks awaitRemotePlay in PhaseManager)
+            launch {
+                mpSession.pendingPlayCard.collect { plays ->
+                    plays.forEach { (canonicalId, card) ->
+                        viewModel.onRemotePlayReceived(canonicalId, card)
+                        mpSession.consumePlayCard(canonicalId)
                     }
                 }
             }

@@ -49,7 +49,7 @@ fun MainMenuScreen(
     onNavigateToRenegeJokes: () -> Unit = {},
     onNavigateToStandings: () -> Unit = {},
     onNavigateToSettings: () -> Unit = {},
-    onNavigateToOnlineLobby: () -> Unit = {},
+    onNavigateToOnlineLobby: (mode: String) -> Unit = {},
     vm: MainMenuViewModel = viewModel()
 ) {
     var currentMenu by remember { mutableStateOf(SubMenu.None) }
@@ -115,8 +115,8 @@ fun MainMenuScreen(
                     font = jennasue
                 ) { tapped ->
                     when (tapped) {
-                        "Host Game"    -> onNavigateToOnlineLobby()
-                        "Join Game"    -> onNavigateToOnlineLobby()
+                        "Host Game"    -> onNavigateToOnlineLobby("host")
+                        "Join Game"    -> onNavigateToOnlineLobby("join")
                         "Messages"     -> onNavigateToMessages()
                         "Suggestions"  -> onNavigateToSuggestions()
                         "Renege Jokes" -> onNavigateToRenegeJokes()

@@ -53,6 +53,10 @@ class OnlineSession(
     private val _pendingDeal = MutableStateFlow<SpadesMPMessage.Deal?>(null)
     val pendingDeal: StateFlow<SpadesMPMessage.Deal?> = _pendingDeal
 
+    /** Card plays arriving from remote players during a live game. Key = canonical player ID. */
+    private val _pendingPlayCard = MutableStateFlow<Map<String, jmotley.com.jspades.data.Card>>(emptyMap())
+    val pendingPlayCard: StateFlow<Map<String, jmotley.com.jspades.data.Card>> = _pendingPlayCard
+
     /** True once startGame fires — routes Deal to the pending buffer instead of mock log. */
     private var realGameActive = false
 
@@ -122,6 +126,7 @@ class OnlineSession(
         _pendingDeal.value = null
         _pendingAllBids.value = null
         _pendingPlayerBids.value = emptyMap()
+        _pendingPlayCard.value = emptyMap()
         _countdown.value = 0
         realGameActive = false
         seenCmdIds.clear()
@@ -187,13 +192,13 @@ class OnlineSession(
             is SpadesMPMessage.StartGame      -> onStartGame(msg)
             is SpadesMPMessage.Unknown        -> Log.w(TAG, "UNKNOWN message: ${msg.raw.take(200)}")
 
-            // Game protocol messages — mock log in test mode, real handler in live game
-            is SpadesMPMessage.Deal -> if (realGameActive) onDeal(msg) else logReceived(msg)
+            // Game protocol messages
+            is SpadesMPMessage.Deal     -> if (realGameActive) onDeal(msg) else logReceived(msg)
+            is SpadesMPMessage.PlayCard -> if (realGameActive) onPlayCard(msg) else logReceived(msg)
             is SpadesMPMessage.Start,  // test-mode only; live path uses startGame + startCountdown
             is SpadesMPMessage.Bid,
             is SpadesMPMessage.BlindOffer,
             is SpadesMPMessage.BlindResponse,
-            is SpadesMPMessage.PlayCard,
             is SpadesMPMessage.TrickResult,
             is SpadesMPMessage.HandScore,
             is SpadesMPMessage.GameFinished -> logReceived(msg)
@@ -339,6 +344,43 @@ class OnlineSession(
     private fun onDeal(msg: SpadesMPMessage.Deal) {
         Log.i(TAG, "REAL GAME DEAL handNum=${msg.handNum} dealer=${msg.dealerSeat} — buffering")
         _pendingDeal.value = msg
+    }
+
+    private fun onPlayCard(msg: SpadesMPMessage.PlayCard) {
+        val lobby = _lobby.value ?: return
+        // Skip echoes of our own plays
+        if (msg.personId == lobby.localPlayerId) return
+        val card = jmotley.com.jspades.data.cardFromToken(msg.card) ?: run {
+            Log.w(TAG, "onPlayCard: unrecognised card token '${msg.card}'")
+            return
+        }
+        // Convert room seat index to local canonical player ID
+        val localSeat = lobby.localSeatIndex.coerceAtLeast(0)
+        val senderSeat = lobby.seats.find { it.playerId == msg.personId }?.seatIndex
+            ?: msg.seatIndex   // fall back to payload seatIndex if personId not found
+        val offset = (senderSeat - localSeat + 4) % 4
+        val canonicalId = listOf("south", "west", "north", "east")[offset]
+        Log.i(TAG, "PLAY CARD seat=$senderSeat → $canonicalId card=${msg.card}")
+        _pendingPlayCard.value = _pendingPlayCard.value + (canonicalId to card)
+    }
+
+    fun consumePlayCard(canonicalId: String) {
+        _pendingPlayCard.value = _pendingPlayCard.value - canonicalId
+    }
+
+    fun sendPlayCard(token: String, roomSeatIndex: Int) {
+        val lobby = _lobby.value ?: return
+        val msg = buildPlayCard(
+            personId   = lobby.localPlayerId,
+            roomId     = lobby.roomId,
+            handNum    = 1,   // placeholder; both devices advance together
+            trickNum   = 0,
+            leadSeat   = 0,
+            seatIndex  = roomSeatIndex,
+            card       = token
+        )
+        Log.d(TAG, "SEND playCard seat=$roomSeatIndex card=$token")
+        socket.send(msg)
     }
 
     /** Ticks the shared countdown display and fires gameStartSignal when it reaches 0. */

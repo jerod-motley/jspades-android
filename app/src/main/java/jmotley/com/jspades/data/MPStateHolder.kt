@@ -20,7 +20,13 @@ data class MPGameConfig(
      */
     val firstLeadRoomSeat: Int = 1,
     /** Canonical IDs of non-south human players whose bids arrive via WebSocket. */
-    val remoteHumanIds: Set<String> = emptySet()
+    val remoteHumanIds: Set<String> = emptySet(),
+    /**
+     * Canonical IDs of ALL non-south seats whose card plays arrive via WebSocket.
+     * On the host device this equals remoteHumanIds. On a guest device this includes
+     * every non-south seat because the host relays all plays (CPU + human).
+     */
+    val remotePlayerIds: Set<String> = emptySet()
 )
 
 /** App-scoped one-shot holder for passing MP game config from the lobby to PlayScreen. */

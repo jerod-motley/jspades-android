@@ -115,6 +115,39 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	 */
 	var mpFirstLeadIndex: Int = -1
 
+	/** Room seat index of the local player in a multiplayer game. -1 = not set. */
+	var mpLocalSeatIndex: Int = -1
+
+	/** Incoming card plays from remote players, keyed by canonical player ID. */
+	private val _remotePlays = MutableStateFlow<Map<String, jmotley.com.jspades.data.Card>>(emptyMap())
+
+	/** Called by Play.kt when a playCard WebSocket message arrives for a remote player. */
+	fun onRemotePlayReceived(canonicalId: String, card: jmotley.com.jspades.data.Card) {
+		_remotePlays.value = _remotePlays.value + (canonicalId to card)
+	}
+
+	/** Suspends until a card play arrives from [canonicalId] via WebSocket, then returns it. */
+	suspend fun awaitRemotePlay(canonicalId: String): jmotley.com.jspades.data.Card {
+		val plays = _remotePlays.first { it.containsKey(canonicalId) }
+		_remotePlays.value = _remotePlays.value - canonicalId
+		return plays[canonicalId]!!
+	}
+
+	/**
+	 * Send a card play over WSS. Converts the canonical player ID to the room seat index
+	 * using [mpLocalSeatIndex], then calls OnlineSession via MPSession.
+	 */
+	fun sendMpPlay(canonicalId: String, card: jmotley.com.jspades.data.Card) {
+		if (!_state.value.isMultiplayer) return
+		val session = jmotley.com.jspades.data.MPSession.session ?: return
+		val localSeat = mpLocalSeatIndex.takeIf { it >= 0 } ?: return
+		val canonicals = listOf("south", "west", "north", "east")
+		val offset = canonicals.indexOf(canonicalId)
+		if (offset < 0) return
+		val roomSeat = (localSeat + offset) % 4
+		session.sendPlayCard(card.toToken(), roomSeat)
+	}
+
 	/** Incoming individual bids from remote human players, keyed by canonical player ID. */
 	private val _remoteBids = MutableStateFlow<Map<String, Int>>(emptyMap())
 
@@ -144,7 +177,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	fun onLobbyComplete(ids: List<String>, names: List<String>, gameType: GameType,
 	                    dealtHands: Map<String, List<String>>? = null,
 	                    mpFirstLeadIndex: Int = -1,
-	                    remoteHumanIds: Set<String> = emptySet()) {
+	                    remoteHumanIds: Set<String> = emptySet(),
+	                    remotePlayerIds: Set<String> = emptySet(),
+	                    localSeatIndex: Int = -1) {
 		require(ids.size == gameType.playerCount && names.size == gameType.playerCount)
 		val players = defaultPlayers(ids, names, gameType)
 		val prefs = context.getSharedPreferences("jspades_prefs", Context.MODE_PRIVATE)
@@ -182,11 +217,12 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			gameLength           = gameLength
 		)
 		if (dealtHands != null) {
-			_state.value = _state.value.copy(isMultiplayer = true, remoteHumanIds = remoteHumanIds)
+			_state.value = _state.value.copy(isMultiplayer = true, remoteHumanIds = remoteHumanIds, remotePlayerIds = remotePlayerIds)
 			pendingMpHands = dealtHands.mapValues { (_, tokens) ->
 				tokens.mapNotNull { cardFromToken(it) }
 			}
 			if (mpFirstLeadIndex >= 0) this.mpFirstLeadIndex = mpFirstLeadIndex
+			if (localSeatIndex >= 0) this.mpLocalSeatIndex = localSeatIndex
 		}
 		phaseManager.execute()
 	}
@@ -299,11 +335,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	fun submitHumanTeamBid(teamId: Int, bid: Int, localPlayerId: String) {
+		submitBid(localPlayerId, bid, false)  // writes perPlayer[south].bid so playerBid WSS fires
 		setTeamBid(teamId, bid)
-		val players = _state.value.players.map { p ->
-			if (p.id == localPlayerId) p.copy(runtimeFlags = p.runtimeFlags.copy(didBid = true)) else p
-		}
-		_state.value = _state.value.copy(players = players)
 		advancePhase(GamePhase.Bid)
 		phaseManager.execute()
 	}
@@ -684,8 +717,21 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	fun submitHumanPlay(card: Card, localPlayerId: String) {
 		playCard(localPlayerId, card)
 		removeCardFromHand(localPlayerId, card)
+		sendMpPlay(localPlayerId, card)
 		advancePhase(GamePhase.Trick)
 		phaseManager.execute()
+	}
+
+	/**
+	 * Called by PhaseManager for every CPU card play. Applies the play locally and, if this
+	 * device is the MP host, relays it over WSS so guests can unblock awaitRemotePlay.
+	 */
+	fun cpuPlay(playerId: String, card: Card) {
+		playCard(playerId, card)
+		removeCardFromHand(playerId, card)
+		if (_state.value.isMultiplayer && jmotley.com.jspades.data.MPSession.isHost) {
+			sendMpPlay(playerId, card)
+		}
 	}
 
 	/**

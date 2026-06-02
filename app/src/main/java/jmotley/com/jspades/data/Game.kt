@@ -72,6 +72,17 @@ fun cardFromToken(token: String): Card? {
     return Card(suit, rank)
 }
 
+/** Inverse of [cardFromToken]: converts a Card to the Android wire token used in WSS messages. */
+fun Card.toToken(): String = when (rank) {
+    Rank.LITTLEJOKER -> "14_3"
+    Rank.BIGJOKER    -> "15_3"
+    else -> {
+        val r = rank.value - 2
+        val s = when (suit) { Suit.HEARTS -> 0; Suit.CLUBS -> 1; Suit.DIAMONDS -> 2; else -> 3 }
+        "${r}_${s}"
+    }
+}
+
 /** Player and runtime flags. */
 data class RuntimeFlags(
     val didBid: Boolean = false,
@@ -340,6 +351,8 @@ data class GameState(
      * PhaseManager waits for their playerBid WebSocket message instead of auto-bidding.
      */
     val remoteHumanIds: Set<String> = emptySet(),
+    /** All non-south seats whose moves arrive via WSS (used for trick play awaiting). */
+    val remotePlayerIds: Set<String> = emptySet(),
     /**
      * Game length: controls the score threshold needed to win.
      * SHORT / MEDIUM / LONG targets:
