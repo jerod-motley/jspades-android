@@ -139,6 +139,21 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	/**
+	 * Send a bid over WSS for any seat (host broadcasting CPU bids).
+	 * Converts the canonical player ID to the room seat index using [mpLocalSeatIndex].
+	 */
+	fun sendMpBid(canonicalId: String, bidAmount: Int) {
+		if (!_state.value.isMultiplayer) return
+		val session = jmotley.com.jspades.data.MPSession.session ?: return
+		val localSeat = mpLocalSeatIndex.takeIf { it >= 0 } ?: return
+		val canonicals = listOf("south", "west", "north", "east")
+		val offset = canonicals.indexOf(canonicalId)
+		if (offset < 0) return
+		val roomSeat = (localSeat + offset) % 4
+		session.sendPlayerBidForSeat(roomSeat, bidAmount)
+	}
+
+	/**
 	 * Send a card play over WSS. Converts the canonical player ID to the room seat index
 	 * using [mpLocalSeatIndex], then calls OnlineSession via MPSession.
 	 */

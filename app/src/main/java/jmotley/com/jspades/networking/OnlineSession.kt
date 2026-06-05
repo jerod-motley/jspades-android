@@ -61,6 +61,10 @@ class OnlineSession(
     private val _pendingPlayCard = MutableStateFlow<Map<String, jmotley.com.jspades.data.Card>>(emptyMap())
     val pendingPlayCard: StateFlow<Map<String, jmotley.com.jspades.data.Card>> = _pendingPlayCard
 
+    /** Emits the player ID of the most recent disconnection; null when no disconnect has occurred. */
+    private val _disconnectedPlayer = MutableStateFlow<String?>(null)
+    val disconnectedPlayer: StateFlow<String?> = _disconnectedPlayer
+
     /** True once startGame fires — routes Deal to the pending buffer instead of mock log. */
     private var realGameActive = false
     private var countdownStarted = false
@@ -136,6 +140,7 @@ class OnlineSession(
         _pendingPlayCard.value = emptyMap()
         _countdown.value = 0
         _startGameReady.value = false
+        _disconnectedPlayer.value = null
         realGameActive = false
         countdownStarted = false
         startGameReceived = false
@@ -201,6 +206,8 @@ class OnlineSession(
             is SpadesMPMessage.AllBids         -> onAllBids(msg)
             is SpadesMPMessage.StartCountdown -> onStartCountdown(msg)
             is SpadesMPMessage.StartGame      -> onStartGame(msg)
+            is SpadesMPMessage.PlayerDisconnected -> onPlayerDisconnected(msg)
+            is SpadesMPMessage.PlayerReconnected  -> Log.i(TAG, "← PlayerReconnected ${msg.personId.takeLast(8)}")
             is SpadesMPMessage.Unknown        -> Log.w(TAG, "UNKNOWN message: ${msg.raw.take(200)}")
 
             // Game protocol messages
@@ -312,6 +319,11 @@ class OnlineSession(
         addChat("system", "System", "This room is full.", isLocal = false)
     }
 
+    private fun onPlayerDisconnected(msg: SpadesMPMessage.PlayerDisconnected) {
+        Log.w(TAG, "← PlayerDisconnected ${msg.personId.takeLast(8)}")
+        _disconnectedPlayer.value = msg.personId
+    }
+
     private fun onPlayerBid(msg: SpadesMPMessage.PlayerBid) {
         val canonicalId = canonicalPlayerIdForSeat(msg.seatIndex) ?: return
         if (_pendingPlayerBids.value.containsKey(canonicalId)) {
@@ -340,12 +352,19 @@ class OnlineSession(
         _pendingPlayerBids.value = _pendingPlayerBids.value - canonicalId
     }
 
-    /** Send the local player's individual bid (first on team) or team-total (second on team). */
+    /** Send the local player's individual bid. */
     fun sendPlayerBid(bidAmount: Int) {
         val state = _lobby.value ?: return
         val localSeat = state.localSeatIndex.coerceAtLeast(0)
         Log.i(TAG, "SEND playerBid seat=$localSeat bid=$bidAmount")
         socket.send(buildPlayerBid(state.localPlayerId, state.roomId, localSeat, bidAmount))
+    }
+
+    /** Send a bid for any room seat (host broadcasting CPU bids). */
+    fun sendPlayerBidForSeat(roomSeatIndex: Int, bidAmount: Int) {
+        val state = _lobby.value ?: return
+        Log.i(TAG, "SEND playerBid seat=$roomSeatIndex bid=$bidAmount (cpu broadcast)")
+        socket.send(buildPlayerBid(state.localPlayerId, state.roomId, roomSeatIndex, bidAmount))
     }
 
     private fun onAllBids(msg: SpadesMPMessage.AllBids) {

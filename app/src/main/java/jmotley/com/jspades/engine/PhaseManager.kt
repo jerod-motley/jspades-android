@@ -141,8 +141,22 @@ class PhaseManager(
         if (mpHands != null) {
             viewModel.pendingMpHands = null
             val perPlayer = ids.associateWith { id ->
-                PlayerHandState(hand = (mpHands[id] ?: emptyList())
-                    .sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal })))
+                var hand = mpHands[id] ?: emptyList()
+                // Apply the same joker promotions as the offline deal path so that
+                // twoOfSpadesJoker / twoOfDiamondsJoker rules work in MP games.
+                if (state.twoOfSpadesJoker || state.twoOfDiamondsJoker) {
+                    hand = hand.map { c ->
+                        if (c.suit == Suit.SPADES && c.rank == Rank.TWO)
+                            Card(suit = Suit.SPADES, rank = Rank.DEUCE) else c
+                    }
+                }
+                if (state.twoOfDiamondsJoker) {
+                    hand = hand.map { c ->
+                        if (c.suit == Suit.DIAMONDS && c.rank == Rank.TWO)
+                            Card(suit = Suit.SPADES, rank = Rank.WILDDEUCE) else c
+                    }
+                }
+                PlayerHandState(hand = hand.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal })))
             }
             viewModel.applyDeal(Hand(playerOrder = ids, perPlayer = perPlayer))
             PlayLogger.logGameType(viewModel.state.value)

@@ -356,10 +356,26 @@ fun PlayScreen(
                 Log.d(tag, "animation event=${event::class.simpleName}")
                 when (event) {
                     is AnimationEvent.BidPlaced -> {
+                        // Host: broadcast CPU bids so remote PhaseManagers can display them.
+                        if (state.isMultiplayer && MPSession.isHost) {
+                            val pId = event.playerId
+                            if (pId != "south" && !state.remoteHumanIds.contains(pId)) {
+                                val bid = state.phaseHands[GamePhase.Deal]?.lastOrNull()
+                                    ?.perPlayer?.get(pId)?.bid ?: 0
+                                if (bid > 0) viewModel.sendMpBid(pId, bid)
+                            }
+                        }
                         // Bid badge fades in via DiamondView state change — wait for it
                         delay(600)
                     }
                     is AnimationEvent.CardPlayed -> {
+                        // Host: broadcast CPU card plays so remote awaitRemotePlay() unblocks.
+                        if (state.isMultiplayer && MPSession.isHost) {
+                            val pId = event.playerId
+                            if (pId != "south" && !state.remoteHumanIds.contains(pId)) {
+                                viewModel.sendMpPlay(pId, event.card)
+                            }
+                        }
                         // Card slides in from player's seat via DiamondView state change
                         delay(550)
                     }
