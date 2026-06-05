@@ -44,6 +44,8 @@ class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
     private val _navigateToPlay = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val navigateToPlay: SharedFlow<Unit> = _navigateToPlay
 
+    private var playTransitionStarted = false
+
     val personId: String = getOrCreatePersonId(app)
     val displayName: String = "Player ${personId.takeLast(4).uppercase()}"
 
@@ -96,74 +98,79 @@ class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             session.gameStartSignal.collect {
-                val lobby = session.lobby.value ?: return@collect
-                val seatIndex = lobby.localSeatIndex.coerceAtLeast(0)
-                // Build player name list rotated so this device's seat is always "south".
-                // Room seats: 0=host/south, 1=west, 2=north, 3=east (from host's view).
-                // Rotation: seat at seatIndex becomes south, the rest wrap clockwise.
-                val rawNames = (0..3).map { i ->
-                    val seat = lobby.seats.find { it.seatIndex == i }
-                    when {
-                        seat == null || seat.kind == SeatKind.Open -> "CPU"
-                        seat.playerId == lobby.localPlayerId -> lobby.localDisplayName
-                        else -> seat.displayName ?: "Player"
-                    }
+                try {
+                    maybeNavigateToPlay("countdownComplete")
+                } catch (t: Throwable) {
+                    Log.e("LobbyVM", "gameStartSignal handling failed", t)
+                    throw t
                 }
-                val rotated = (0..3).map { offset -> rawNames[(seatIndex + offset) % 4] }
-                // Rotate the server-dealt hands to canonical IDs ("south","west","north","east")
-                // using the same seatIndex rotation as the player names.
-                val canonicalIds = listOf("south", "west", "north", "east")
-                // If the deal hasn't arrived yet (e.g. slow relay), wait up to 3 s before
-                // proceeding. The deal is sent by the host during the 5-second countdown so
-                // it should always be buffered before we get here.
-                val deal = session.pendingDeal.value
-                    ?: withTimeoutOrNull(3_000L) { session.pendingDeal.first { it != null } }
-                if (deal == null) Log.w("LobbyVM", "gameStartSignal fired but deal is still null — starting without pre-dealt hands")
-                val rotatedHands = deal?.let {
-                    canonicalIds.indices.associate { offset ->
-                        canonicalIds[offset] to (it.hands[(seatIndex + offset) % 4] ?: emptyList())
-                    }
-                }
-                // Correct firstLead if it points to an open seat (iOS hardcodes firstLead=1).
-                // Walk clockwise from the raw value until we hit an occupied seat.
-                val rawFirstLead = deal?.firstLead ?: 1
-                val firstLeadRoomSeat = if (lobby.seats.find { it.seatIndex == rawFirstLead }?.kind != SeatKind.Open) {
-                    rawFirstLead
-                } else {
-                    (1..3).map { (rawFirstLead + it) % 4 }
-                        .firstOrNull { idx -> lobby.seats.find { s -> s.seatIndex == idx }?.kind != SeatKind.Open }
-                        ?: rawFirstLead
-                }
-                // Canonical IDs of non-south players who are human (not open/CPU).
-                // PhaseManager waits for their individual bid via WebSocket instead of auto-bidding.
-                val remoteHumanIds = canonicalIds.indices
-                    .filter { offset ->
-                        offset > 0 &&
-                        lobby.seats.find { s -> s.seatIndex == (seatIndex + offset) % 4 }?.kind == SeatKind.Human
-                    }
-                    .map { canonicalIds[it] }
-                    .toSet()
-                // Guests await ALL non-south plays from the host (CPU + human).
-                // The host only awaits guest human plays.
-                val remotePlayerIds: Set<String> = if (MPSession.isHost) {
-                    remoteHumanIds
-                } else {
-                    canonicalIds.drop(1).toSet()  // west, north, east
-                }
-                val config = MPGameConfig(
-                    playerNames       = rotated,
-                    localSeatIndex    = seatIndex,
-                    roomId            = lobby.roomId,
-                    dealtHands        = rotatedHands,
-                    firstLeadRoomSeat = firstLeadRoomSeat,
-                    remoteHumanIds    = remoteHumanIds,
-                    remotePlayerIds   = remotePlayerIds
-                )
-                MPStateHolder.set(config)
-                session.consumePendingDeal()
-                _navigateToPlay.emit(Unit)
             }
         }
+    }
+
+    private suspend fun maybeNavigateToPlay(reason: String) {
+        if (playTransitionStarted) return
+
+        val lobby = session.lobby.value ?: return
+        val seatIndex = lobby.localSeatIndex.coerceAtLeast(0)
+        val deal = session.pendingDeal.value
+            ?: withTimeoutOrNull(3_000L) { session.pendingDeal.first { it != null } }
+
+        if (!lobby.isHost && !session.startGameReady.value) return
+        if (deal == null) {
+            Log.w("LobbyVM", "maybeNavigateToPlay($reason) missing deal")
+            return
+        }
+
+        playTransitionStarted = true
+        Log.i("LobbyVM", "maybeNavigateToPlay reason=$reason room=${lobby.roomId} localSeat=$seatIndex hand=${deal.handNum}")
+
+        val rawNames = (0..3).map { i ->
+            val seat = lobby.seats.find { it.seatIndex == i }
+            when {
+                seat == null || seat.kind == SeatKind.Open -> "CPU"
+                seat.playerId == lobby.localPlayerId -> lobby.localDisplayName
+                else -> seat.displayName ?: "Player"
+            }
+        }
+        val rotated = (0..3).map { offset -> rawNames[(seatIndex + offset) % 4] }
+        val canonicalIds = listOf("south", "west", "north", "east")
+        val rotatedHands = canonicalIds.indices.associate { offset ->
+            canonicalIds[offset] to (deal.hands[(seatIndex + offset) % 4] ?: emptyList())
+        }
+        val rawFirstLead = deal.firstLead
+        val firstLeadRoomSeat = if (lobby.seats.find { it.seatIndex == rawFirstLead }?.kind != SeatKind.Open) {
+            rawFirstLead
+        } else {
+            (1..3).map { (rawFirstLead + it) % 4 }
+                .firstOrNull { idx -> lobby.seats.find { s -> s.seatIndex == idx }?.kind != SeatKind.Open }
+                ?: rawFirstLead
+        }
+        val remoteHumanIds = canonicalIds.indices
+            .filter { offset ->
+                offset > 0 &&
+                lobby.seats.find { s -> s.seatIndex == (seatIndex + offset) % 4 }?.kind == SeatKind.Human
+            }
+            .map { canonicalIds[it] }
+            .toSet()
+        val remotePlayerIds: Set<String> = if (MPSession.isHost) {
+            remoteHumanIds
+        } else {
+            canonicalIds.drop(1).toSet()
+        }
+        val config = MPGameConfig(
+            playerNames       = rotated,
+            localSeatIndex    = seatIndex,
+            roomId            = lobby.roomId,
+            dealtHands        = rotatedHands,
+            firstLeadRoomSeat = firstLeadRoomSeat,
+            remoteHumanIds    = remoteHumanIds,
+            remotePlayerIds   = remotePlayerIds
+        )
+        Log.i("LobbyVM", "navigateToPlay reason=$reason players=$rotated remoteHumans=$remoteHumanIds")
+        MPStateHolder.set(config)
+        session.consumePendingDeal()
+        _navigateToPlay.emit(Unit)
     }
 
     private fun pushInLobby(lobby: OnlineLobbyState) {
@@ -180,6 +187,7 @@ class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
     // ── Actions ───────────────────────────────────────────────────────────────
 
     fun chooseHost() {
+        playTransitionStarted = false
         _uiState.value = LobbyUiState.Connecting
         MPSession.session = session
         MPSession.isHost = true
@@ -202,6 +210,7 @@ class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
             _uiState.value = current.copy(error = "Enter a valid room code")
             return
         }
+        playTransitionStarted = false
         _uiState.value = LobbyUiState.Connecting
         MPSession.session = session
         MPSession.isHost = false
@@ -226,6 +235,7 @@ class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun disconnect() {
+        playTransitionStarted = false
         session.disconnect()
         MPSession.clear()
         _uiState.value = LobbyUiState.RoleChoice

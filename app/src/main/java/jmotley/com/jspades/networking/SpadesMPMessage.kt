@@ -33,7 +33,7 @@ fun MpEnvelope.toJson(): String = json.encodeToString(this)
 // ── Parsed message types ──────────────────────────────────────────────────────
 
 sealed class SpadesMPMessage {
-    data class SnapShot(val personId: String, val roomId: String, val cmdId: String, val phase: String, val payload: Map<String, String>) : SpadesMPMessage()
+    data class SnapShot(val personId: String, val roomId: String, val cmdId: String, val sequence: Int, val phase: String, val payload: Map<String, String>) : SpadesMPMessage()
     data class Start(val personId: String, val roomId: String, val cmdId: String) : SpadesMPMessage()
     /** iOS sends the final seat map + gameType inside the startGame payload. */
     data class StartGame(val personId: String, val roomId: String, val cmdId: String, val payload: Map<String, String>) : SpadesMPMessage()
@@ -46,7 +46,7 @@ sealed class SpadesMPMessage {
     data class BlindOffer(val personId: String, val roomId: String, val cmdId: String, val handNum: Int, val eligibleSeats: List<Int>) : SpadesMPMessage()
     data class BlindResponse(val personId: String, val roomId: String, val cmdId: String, val handNum: Int, val seatIndex: Int, val accepted: Boolean) : SpadesMPMessage()
     data class Deal(val personId: String, val roomId: String, val cmdId: String, val handNum: Int, val dealerSeat: Int, val firstLead: Int, val hands: Map<Int, List<String>>) : SpadesMPMessage()
-    data class Bid(val personId: String, val roomId: String, val cmdId: String, val handNum: Int, val teamIndex: Int, val bidAmount: Int, val isBlind: Boolean) : SpadesMPMessage()
+    data class Bid(val personId: String, val roomId: String, val cmdId: String, val handNum: Int, val teamIndex: Int, val seatIndex: Int, val bidAmount: Int, val isBlind: Boolean) : SpadesMPMessage()
     data class PlayCard(val personId: String, val roomId: String, val cmdId: String, val handNum: Int, val trickNum: Int, val leadSeat: Int, val seatIndex: Int, val card: String) : SpadesMPMessage()
     data class TrickResult(val personId: String, val roomId: String, val cmdId: String, val handNum: Int, val trickNum: Int, val winnerSeat: Int) : SpadesMPMessage()
     data class HandScore(val personId: String, val roomId: String, val cmdId: String, val handNum: Int, val team0Score: Int, val team1Score: Int, val gameOver: Boolean) : SpadesMPMessage()
@@ -71,7 +71,9 @@ fun parseIncoming(raw: String): SpadesMPMessage = try {
         ?.mapValues { it.value.jsonPrimitive.content } ?: emptyMap()
 
     when (type) {
-        "snapShot" -> SpadesMPMessage.SnapShot(personId, roomId, cmdId, payload["phase"] ?: "", payload)
+        "snapShot" -> SpadesMPMessage.SnapShot(personId, roomId, cmdId,
+            sequence = obj["sequence"]?.jsonPrimitive?.intOrNull ?: 0,
+            phase = payload["phase"] ?: "", payload)
         "start"     -> SpadesMPMessage.Start(personId, roomId, cmdId)
         "startGame"      -> SpadesMPMessage.StartGame(personId, roomId, cmdId, payload)
         "startCountdown" -> SpadesMPMessage.StartCountdown(personId, roomId, cmdId,
@@ -109,6 +111,7 @@ fun parseIncoming(raw: String): SpadesMPMessage = try {
             personId, roomId, cmdId,
             handNum = payload["handNum"]?.toIntOrNull() ?: 0,
             teamIndex = payload["teamIndex"]?.toIntOrNull() ?: 0,
+            seatIndex = payload["seatIndex"]?.toIntOrNull() ?: -1,
             bidAmount = payload["bidAmount"]?.toIntOrNull() ?: -1,
             isBlind = payload["isBlind"] == "true"
         )

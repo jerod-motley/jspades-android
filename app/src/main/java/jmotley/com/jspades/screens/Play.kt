@@ -73,6 +73,7 @@ import androidx.compose.ui.graphics.Color as ComposeColor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import android.util.Log
 
 /**
  * Primary game screen. Composites phase-appropriate views over the table background.
@@ -102,6 +103,7 @@ fun PlayScreen(
     onNavigateBack: () -> Unit = {},
     viewModel: GameViewModel = viewModel()
 ) {
+    val tag = "WSSMP"
     val state by viewModel.state.collectAsState()
     val resolvedGameType = GameType.fromLabel(gameType)
 
@@ -115,6 +117,7 @@ fun PlayScreen(
     var showChallengeResult by remember { mutableStateOf<ChallengeResult?>(null) }
     var showEndHandOverlay by remember { mutableStateOf(false) }
     var showEndGameOverlay by remember { mutableStateOf(false) }
+    var animationCollectorReady by remember { mutableStateOf(false) }
     val context = LocalContext.current
     // Cheat overlay state
     var revealedCard by remember { mutableStateOf<jmotley.com.jspades.data.Card?>(null) }
@@ -178,10 +181,13 @@ fun PlayScreen(
 
     // ── Multiplayer bypass — skip LobbyView and start immediately ────────────
     // MPStateHolder is set by OnlineLobbyViewModel just before navigating here.
-    // Consume it once so the config doesn't bleed into subsequent local games.
-    LaunchedEffect(Unit) {
+    // Delay bootstrap until the animation collector is attached so the first CPU
+    // bid animation cannot be dropped before it can re-enter the engine.
+    LaunchedEffect(animationCollectorReady) {
+        if (!animationCollectorReady) return@LaunchedEffect
         val mpConfig = MPStateHolder.consume() ?: return@LaunchedEffect
         val mpFirstLeadIndex = (mpConfig.firstLeadRoomSeat - mpConfig.localSeatIndex + 4) % 4
+        Log.i(tag, "bootstrap multiplayer localSeat=${mpConfig.localSeatIndex} firstLead=$mpFirstLeadIndex")
         viewModel.onLobbyComplete(
             ids              = mpConfig.playerIds,
             names            = mpConfig.playerNames,
@@ -344,7 +350,10 @@ fun PlayScreen(
         // Each event drives an animation; execute() is called on completion so the
         // engine can advance to the next step.
         LaunchedEffect(Unit) {
+            animationCollectorReady = true
+            Log.i(tag, "animation collector ready")
             viewModel.animationEvents.collect { event ->
+                Log.d(tag, "animation event=${event::class.simpleName}")
                 when (event) {
                     is AnimationEvent.BidPlaced -> {
                         // Bid badge fades in via DiamondView state change — wait for it

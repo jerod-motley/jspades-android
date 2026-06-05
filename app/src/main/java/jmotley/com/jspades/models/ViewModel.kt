@@ -35,6 +35,11 @@ import jmotley.com.jspades.engine.PhaseManager
 import jmotley.com.jspades.logging.PlayLogger
 import android.util.Log
 
+internal fun computeInitialLeaderIndex(playerCount: Int, localSeatIndex: Int, isMultiplayer: Boolean): Int {
+	if (!isMultiplayer || localSeatIndex < 0) return 1
+	return ((1 - localSeatIndex) % playerCount + playerCount) % playerCount
+}
+
 class GameViewModel(application: Application) : AndroidViewModel(application) {
 	private val context: Context get() = getApplication<Application>().applicationContext
 
@@ -145,7 +150,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		val offset = canonicals.indexOf(canonicalId)
 		if (offset < 0) return
 		val roomSeat = (localSeat + offset) % 4
-		session.sendPlayCard(card.toToken(), roomSeat)
+		val s = _state.value
+		val hand = s.phaseHands[GamePhase.Deal]?.lastOrNull()
+		val trickNum = hand?.perPlayer?.values?.sumOf { it.tricksWon } ?: 0
+		val leadRoomSeat = (localSeat + s.leaderIndex) % 4
+		session.sendPlayCard(card.toToken(), roomSeat, trickNum, leadRoomSeat)
 	}
 
 	/** Incoming individual bids from remote human players, keyed by canonical player ID. */
@@ -182,6 +191,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	                    localSeatIndex: Int = -1) {
 		require(ids.size == gameType.playerCount && names.size == gameType.playerCount)
 		val players = defaultPlayers(ids, names, gameType)
+		val initialLeaderIndex = computeInitialLeaderIndex(
+			playerCount = gameType.playerCount,
+			localSeatIndex = localSeatIndex,
+			isMultiplayer = dealtHands != null
+		)
 		val prefs = context.getSharedPreferences("jspades_prefs", Context.MODE_PRIVATE)
 		val twoOfSpadesJoker      = prefs.getBoolean("two_of_spades_joker", false)
 		val twoOfDiamondsJoker    = prefs.getBoolean("two_of_diamonds_joker", false)
@@ -199,13 +213,14 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		}
 		val gameLength = if (AppConfig.TEST_MODE) GameLength.TEST
 		                 else GameLength.valueOf(prefs.getString("game_length", GameLength.MEDIUM.name) ?: GameLength.MEDIUM.name)
-		// leaderIndex = 1: west (left of south) bids/leads first; south is initial dealer.
+		// In local games south is the initial dealer so west (index 1) bids first.
+		// In MP guest games the canonical seats are rotated so the first bidder must rotate too.
 		_state.value = _state.value.copy(
 			players          = players,
 			phase            = GamePhase.Deal,
 			gameType         = gameType,
-			leaderIndex      = 1,
-			handLeaderIndex  = 1,
+			leaderIndex      = initialLeaderIndex,
+			handLeaderIndex  = initialLeaderIndex,
 			currentTrick     = Trick(plays = List(gameType.playerCount) { null }),
 			twoOfSpadesJoker     = twoOfSpadesJoker,
 			twoOfDiamondsJoker   = twoOfDiamondsJoker,
