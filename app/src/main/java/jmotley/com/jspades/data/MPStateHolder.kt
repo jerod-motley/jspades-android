@@ -19,6 +19,7 @@ data class MPGameConfig(
      * actual seat layout). Used to set the game engine's leaderIndex for trick play.
      */
     val firstLeadRoomSeat: Int = 1,
+    val handNum: Int = 1,
     /** Canonical IDs of non-south human players whose bids arrive via WebSocket. */
     val remoteHumanIds: Set<String> = emptySet(),
     /**

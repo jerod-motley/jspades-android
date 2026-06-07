@@ -376,6 +376,14 @@ class OnlineSession(
 
     fun consumePendingDeal() { _pendingDeal.value = null }
 
+    /** Host broadcasts a new deal for hand 2+ so all guests can start the next hand. */
+    fun sendDeal(handNum: Int, dealerSeat: Int, firstLead: Int, hands: Map<Int, List<String>>) {
+        val lobby = _lobby.value ?: return
+        if (!lobby.isHost) return
+        Log.i(TAG, "SEND deal handNum=$handNum dealer=$dealerSeat firstLead=$firstLead")
+        socket.send(buildDeal(lobby.localPlayerId, lobby.roomId, handNum, dealerSeat, firstLead, hands))
+    }
+
     /** Host broadcasts final team bids to all clients. */
     fun sendAllBids(team0Bid: Int, team1Bid: Int) {
         val state = _lobby.value ?: return
@@ -452,12 +460,12 @@ class OnlineSession(
         _pendingPlayCard.value = _pendingPlayCard.value - canonicalId
     }
 
-    fun sendPlayCard(token: String, roomSeatIndex: Int, trickNum: Int, leadSeat: Int) {
+    fun sendPlayCard(token: String, roomSeatIndex: Int, handNum: Int, trickNum: Int, leadSeat: Int) {
         val lobby = _lobby.value ?: return
         val msg = buildPlayCard(
             personId   = lobby.localPlayerId,
             roomId     = lobby.roomId,
-            handNum    = 1,   // placeholder; both devices advance together
+            handNum    = handNum,
             trickNum   = trickNum,
             leadSeat   = leadSeat,
             seatIndex  = roomSeatIndex,
@@ -465,6 +473,18 @@ class OnlineSession(
         )
         Log.d(TAG, "SEND playCard seat=$roomSeatIndex card=$token trickNum=$trickNum leadSeat=$leadSeat")
         socket.send(msg)
+    }
+
+    fun sendTrickResult(handNum: Int, trickNum: Int, leadSeat: Int, winnerSeat: Int, cards: Map<Int, String>) {
+        val lobby = _lobby.value ?: return
+        Log.i(TAG, "SEND trickResult hand=$handNum trick=$trickNum winner=$winnerSeat lead=$leadSeat")
+        socket.send(buildTrickResult(lobby.localPlayerId, lobby.roomId, handNum, trickNum, leadSeat, winnerSeat, cards))
+    }
+
+    fun sendHandScore(handNum: Int, team0Bid: Int, team0Tricks: Int, team0Total: Int, team0Bags: Int, team1Bid: Int, team1Tricks: Int, team1Total: Int, team1Bags: Int, gameOver: Boolean) {
+        val lobby = _lobby.value ?: return
+        Log.i(TAG, "SEND handScore hand=$handNum t0=$team0Total t1=$team1Total gameOver=$gameOver")
+        socket.send(buildHandScore(lobby.localPlayerId, lobby.roomId, handNum, team0Bid, team0Tricks, team0Total, team0Bags, team1Bid, team1Tricks, team1Total, team1Bags, gameOver))
     }
 
     /** Ticks the shared countdown display and fires gameStartSignal when it reaches 0. */
@@ -532,11 +552,11 @@ class OnlineSession(
 
             // 1. Broadcast countdown — all clients start their timers simultaneously.
             socket.send(buildStartCountdown(pid, room, 5))
+            // AWS API Gateway does not guarantee ordering of back-to-back frames. A short gap
+            // ensures startCountdown is relayed before startGame so clients start the timer first.
+            delay(100L)
 
-            // 2. Send startGame, then wait 100 ms before deal.
-            //    AWS API Gateway does not guarantee ordering of frames sent near-simultaneously
-            //    from different write threads, so deal can arrive before startGame if sent back-
-            //    to-back. The gap ensures startGame is fully relayed before deal is queued.
+            // 2. Send startGame, then wait 100 ms before deal so startGame arrives before deal.
             socket.send(buildStartGame(pid, room, finalSeats))
             delay(100L)
 
@@ -551,8 +571,7 @@ class OnlineSession(
                 .firstOrNull { idx -> finalSeats.find { s -> s.seatIndex == idx }?.kind != SeatKind.Open }
                 ?: (dealerSeat + 1) % 4
             Log.i(TAG, "DEALING hands=${hands.map { (s, h) -> "seat$s:${h.size}cards" }} firstLead=$firstLead")
-            val wireHands = hands.mapValues { (_, tokens) -> tokens.map { androidToWireCard(it) } }
-            socket.send(buildDeal(pid, room, 1, dealerSeat, firstLead, wireHands))
+            socket.send(buildDeal(pid, room, 1, dealerSeat, firstLead, hands))
 
             // Buffer locally in Android format — host's PlayScreen reads via cardFromToken().
             _pendingDeal.value = SpadesMPMessage.Deal(

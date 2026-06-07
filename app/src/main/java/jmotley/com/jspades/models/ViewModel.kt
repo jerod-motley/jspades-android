@@ -123,6 +123,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	/** Room seat index of the local player in a multiplayer game. -1 = not set. */
 	var mpLocalSeatIndex: Int = -1
 
+	/** Current hand number for MP play card messages. Set from the wire deal payload. */
+	var mpHandNum: Int = 1
+
 	/** Incoming card plays from remote players, keyed by canonical player ID. */
 	private val _remotePlays = MutableStateFlow<Map<String, jmotley.com.jspades.data.Card>>(emptyMap())
 
@@ -167,9 +170,48 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		val roomSeat = (localSeat + offset) % 4
 		val s = _state.value
 		val hand = s.phaseHands[GamePhase.Deal]?.lastOrNull()
-		val trickNum = hand?.perPlayer?.values?.sumOf { it.tricksWon } ?: 0
+		val trickNum = (hand?.perPlayer?.values?.sumOf { it.tricksWon } ?: 0) + 1
 		val leadRoomSeat = (localSeat + s.leaderIndex) % 4
-		session.sendPlayCard(card.toToken(), roomSeat, trickNum, leadRoomSeat)
+		session.sendPlayCard(card.toToken(), roomSeat, mpHandNum, trickNum, leadRoomSeat)
+	}
+
+	fun sendMpTrickResult(winnerId: String, plays: List<jmotley.com.jspades.data.Play>) {
+		if (!_state.value.isMultiplayer) return
+		val session = jmotley.com.jspades.data.MPSession.session ?: return
+		val localSeat = mpLocalSeatIndex.takeIf { it >= 0 } ?: return
+		val s = _state.value
+		val hand = s.phaseHands[GamePhase.Deal]?.lastOrNull() ?: return
+		val canonicals = listOf("south", "west", "north", "east")
+		val trickNum = hand.perPlayer.values.sumOf { it.tricksWon }
+		val leadId = plays.firstOrNull()?.playerId ?: return
+		val leadOffset = canonicals.indexOf(leadId).takeIf { it >= 0 } ?: return
+		val leadSeat = (localSeat + leadOffset) % 4
+		val winnerOffset = canonicals.indexOf(winnerId).takeIf { it >= 0 } ?: return
+		val winnerSeat = (localSeat + winnerOffset) % 4
+		val cards = buildMap {
+			for (play in plays) {
+				val offset = canonicals.indexOf(play.playerId).takeIf { it >= 0 } ?: continue
+				put((localSeat + offset) % 4, play.card.toToken())
+			}
+		}
+		session.sendTrickResult(mpHandNum, trickNum, leadSeat, winnerSeat, cards)
+	}
+
+	fun sendMpHandScore() {
+		if (!_state.value.isMultiplayer) return
+		val session = jmotley.com.jspades.data.MPSession.session ?: return
+		val s = _state.value
+		val hand = s.phaseHands[GamePhase.Deal]?.lastOrNull() ?: return
+		val t0Bid = hand.teamBids.getOrElse(0) { 0 } ?: 0
+		val t1Bid = hand.teamBids.getOrElse(1) { 0 } ?: 0
+		val t0Tricks = hand.perPlayer.entries.filter { (id, _) -> s.players.firstOrNull { it.id == id }?.team == 0 }.sumOf { it.value.tricksWon }
+		val t1Tricks = hand.perPlayer.entries.filter { (id, _) -> s.players.firstOrNull { it.id == id }?.team == 1 }.sumOf { it.value.tricksWon }
+		val t0Total = (s.score.points["0"] ?: 0) + (s.score.bags["0"] ?: 0)
+		val t1Total = (s.score.points["1"] ?: 0) + (s.score.bags["1"] ?: 0)
+		val t0Bags = s.score.bags["0"] ?: 0
+		val t1Bags = s.score.bags["1"] ?: 0
+		val gameOver = s.phase == GamePhase.Finished
+		session.sendHandScore(mpHandNum, t0Bid, t0Tricks, t0Total, t0Bags, t1Bid, t1Tricks, t1Total, t1Bags, gameOver)
 	}
 
 	/** Incoming individual bids from remote human players, keyed by canonical player ID. */
@@ -203,7 +245,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	                    mpFirstLeadIndex: Int = -1,
 	                    remoteHumanIds: Set<String> = emptySet(),
 	                    remotePlayerIds: Set<String> = emptySet(),
-	                    localSeatIndex: Int = -1) {
+	                    localSeatIndex: Int = -1,
+	                    handNum: Int = 1) {
 		require(ids.size == gameType.playerCount && names.size == gameType.playerCount)
 		val players = defaultPlayers(ids, names, gameType)
 		val initialLeaderIndex = computeInitialLeaderIndex(
@@ -253,6 +296,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			}
 			if (mpFirstLeadIndex >= 0) this.mpFirstLeadIndex = mpFirstLeadIndex
 			if (localSeatIndex >= 0) this.mpLocalSeatIndex = localSeatIndex
+			this.mpHandNum = handNum
 		}
 		phaseManager.execute()
 	}
@@ -351,10 +395,21 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	 * Applied on guest devices when [allBids] arrives from the host.
 	 * Overrides the locally-computed team bids with the host's authoritative values,
 	 * marks every player as bid-complete, and skips directly to trick play.
+	 *
+	 * Also unblocks any [awaitRemoteBid] suspensions still pending due to per-seat bid
+	 * messages being reordered behind allBids by AWS API Gateway. Injects the team total
+	 * as a fallback; the authoritative setTeamBid calls below overwrite it in state.
 	 */
 	fun applyRemoteAllBids(team0Bid: Int, team1Bid: Int) {
 		val s = _state.value
 		if (s.phase !in setOf(GamePhase.Bid, GamePhase.BidHuman, GamePhase.BidReview)) return
+		val pending = _remoteBids.value
+		for (player in s.players) {
+			if (!s.remoteHumanIds.contains(player.id)) continue
+			if (pending.containsKey(player.id)) continue
+			val fallback = if (player.team == 0) team0Bid else team1Bid
+			_remoteBids.value = _remoteBids.value + (player.id to fallback)
+		}
 		setTeamBid(0, team0Bid)
 		setTeamBid(1, team1Bid)
 		val players = _state.value.players.map { p ->
@@ -365,7 +420,13 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	}
 
 	fun submitHumanTeamBid(teamId: Int, bid: Int, localPlayerId: String) {
-		submitBid(localPlayerId, bid, false)  // writes perPlayer[south].bid so playerBid WSS fires
+		submitBid(localPlayerId, bid, false)
+		if (_state.value.isMultiplayer) {
+			if (jmotley.com.jspades.data.MPSession.isHost)
+				sendMpBid(localPlayerId, bid)
+			else
+				jmotley.com.jspades.data.MPSession.session?.sendPlayerBid(bid)
+		}
 		setTeamBid(teamId, bid)
 		advancePhase(GamePhase.Bid)
 		phaseManager.execute()
@@ -535,6 +596,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			replayEvents      = emptyList(),
 			originalDealHands = emptyMap()
 		)
+		// Clear any stale remote inputs from the previous hand to prevent them being
+		// consumed by the next hand's awaitRemoteBid / awaitRemotePlay.
+		_remoteBids.value  = emptyMap()
+		_remotePlays.value = emptyMap()
 		frustratedVideoFiredThisHand = false
 	}
 
@@ -620,6 +685,12 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	 */
 	fun submitHumanBid(bid: Int, localPlayerId: String, isBlind: Boolean = false) {
 		submitBid(playerId = localPlayerId, bid = bid, isBlind = isBlind)
+		if (_state.value.isMultiplayer) {
+			if (jmotley.com.jspades.data.MPSession.isHost)
+				sendMpBid(localPlayerId, bid)
+			else
+				jmotley.com.jspades.data.MPSession.session?.sendPlayerBid(bid)
+		}
 		advancePhase(GamePhase.Bid)
 		phaseManager.execute()
 	}
@@ -759,9 +830,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	fun cpuPlay(playerId: String, card: Card) {
 		playCard(playerId, card)
 		removeCardFromHand(playerId, card)
-		if (_state.value.isMultiplayer && jmotley.com.jspades.data.MPSession.isHost) {
-			sendMpPlay(playerId, card)
-		}
+		if (_state.value.isMultiplayer && jmotley.com.jspades.data.MPSession.isHost) sendMpPlay(playerId, card)
 	}
 
 	/**
@@ -843,6 +912,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
 	/** Called by the "Next Hand" button on EndHandView. Resets per-hand state and deals. */
 	fun onNextHand() {
+		if (isMultiplayer) mpHandNum++
 		resetForNextHand()
 		advancePhase(GamePhase.Deal)
 		phaseManager.execute()

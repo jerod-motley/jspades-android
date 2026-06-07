@@ -17,17 +17,24 @@ import jmotley.com.jspades.data.AnimationEvent
 import jmotley.com.jspades.data.toSnapshot
 import jmotley.com.jspades.data.ReplayEvent
 import jmotley.com.jspades.data.Score
+import jmotley.com.jspades.data.SeatKind
 import jmotley.com.jspades.data.effectiveMinBid
 import jmotley.com.jspades.data.targetScore
+import jmotley.com.jspades.data.toToken
 import jmotley.com.jspades.models.GameViewModel
 import jmotley.com.jspades.networking.PlayLogApi
 import jmotley.com.jspades.networking.PlayLogGame
 import jmotley.com.jspades.networking.PlayLogPayload
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
+
+private const val MPTAG = "WSSMP"
 
 /**
  * PhaseManager — the single entry point for all game-phase transitions.
@@ -135,9 +142,11 @@ class PhaseManager(
         val ids   = state.players.map { it.id }
 
         // MP path: use the server-dealt hands broadcast by the host.
-        // Skip deal animation phases entirely — DealComplete is emitted before the PlayScreen
-        // animation collector subscribes (race condition), so go straight to Bid.
+        // Hand 1: pre-loaded into pendingMpHands by onLobbyComplete.
+        // Hand 2+: guest suspends here until the host broadcasts the new deal over WSS.
+        // Skip deal animation entirely — go straight to Bid (same race-condition reason as before).
         val mpHands = viewModel.pendingMpHands
+            ?: if (state.isMultiplayer && !jmotley.com.jspades.data.MPSession.isHost) awaitGuestDeal() else null
         if (mpHands != null) {
             viewModel.pendingMpHands = null
             val perPlayer = ids.associateWith { id ->
@@ -168,6 +177,11 @@ class PhaseManager(
             dispatch()
             return
         }
+
+        // Guard: an MP guest should never deal locally — awaitGuestDeal() timed out.
+        // Leave the phase as Deal and return; the engine stops until the user navigates back.
+        // This is preferable to a silent local shuffle that would immediately desync with the host.
+        if (state.isMultiplayer && !jmotley.com.jspades.data.MPSession.isHost) return
 
         // 1. Build base deck: TWO–ACE × all 4 suits
         val standardRanks = listOf(
@@ -222,8 +236,56 @@ class PhaseManager(
         // Capture hand-start checkpoint and reset per-hand cheat flags
         viewModel.handStartSnapshot = viewModel.state.value.toSnapshot()
 
+        // MP host hand 2+: broadcast dealt hands to guests, then skip deal animation.
+        if (state.isMultiplayer && jmotley.com.jspades.data.MPSession.isHost) {
+            Log.i(MPTAG, "handleDeal: host broadcasting deal handNum=${viewModel.mpHandNum}")
+            broadcastDeal()
+            ids.forEach { viewModel.markBlindDecision(it) }
+            viewModel.advancePhase(GamePhase.Bid)
+            dispatch()
+            return
+        }
+
         viewModel.advancePhase(GamePhase.DealHuman)
         dispatch()
+    }
+
+    /** MP guest: suspends until the host's WSS deal arrives; returns hands keyed by canonical ID. */
+    private suspend fun awaitGuestDeal(): Map<String, List<Card>>? {
+        val session = jmotley.com.jspades.data.MPSession.session ?: return null
+        Log.i(MPTAG, "awaitGuestDeal: waiting for host deal (pendingDeal=${session.pendingDeal.value != null})")
+        val deal = session.pendingDeal.value
+            ?: withTimeoutOrNull(30_000L) { session.pendingDeal.first { it != null } }
+            ?: run { Log.e(MPTAG, "awaitGuestDeal: 30s timeout — stopping engine"); return null }
+        val localSeat = viewModel.mpLocalSeatIndex.coerceAtLeast(0)
+        val canonicals = listOf("south", "west", "north", "east")
+        viewModel.mpHandNum = deal.handNum
+        session.consumePendingDeal()
+        return canonicals.indices.associate { offset ->
+            canonicals[offset] to (deal.hands[(localSeat + offset) % 4] ?: emptyList())
+                .mapNotNull { jmotley.com.jspades.data.cardFromToken(it) }
+        }
+    }
+
+    /** MP host: converts the just-dealt local hands to wire format and sends the WSS deal. */
+    private fun broadcastDeal() {
+        val session = jmotley.com.jspades.data.MPSession.session ?: return
+        val s = viewModel.state.value
+        val hand = s.phaseHands[GamePhase.Deal]?.lastOrNull() ?: return
+        val localSeat = viewModel.mpLocalSeatIndex.coerceAtLeast(0)
+        val canonicals = listOf("south", "west", "north", "east")
+        val dealerSeat = (viewModel.mpHandNum - 1) % 4
+        val lobby = session.lobby.value
+        val firstLead = if (lobby != null) {
+            (1..3).map { (dealerSeat + it) % 4 }
+                .firstOrNull { idx -> lobby.seats.find { s -> s.seatIndex == idx }?.kind != SeatKind.Open }
+                ?: (dealerSeat + 1) % 4
+        } else (dealerSeat + 1) % 4
+        val wireHands = canonicals.indices.associate { offset ->
+            val roomSeat = (localSeat + offset) % 4
+            roomSeat to (hand.perPlayer[canonicals[offset]]?.hand?.map { it.toToken() } ?: emptyList())
+        }
+        session.sendDeal(viewModel.mpHandNum, dealerSeat, firstLead, wireHands)
     }
 
     // ── Deal algorithms ───────────────────────────────────────────────────────
@@ -757,11 +819,20 @@ class PhaseManager(
                 }
 
                 if (!humanOnTeam) {
-                    // CPU-only team — sum individual bids and store team total (idempotent)
-                    val teamBid = teamPlayers.sumOf { player ->
-                        s.phaseHands[GamePhase.Deal]?.lastOrNull()
-                            ?.perPlayer?.get(player.id)?.bid ?: 0
-                    }.coerceAtLeast(s.effectiveMinBid)
+                    val remoteHuman = teamPlayers.firstOrNull { s.remoteHumanIds.contains(it.id) }
+                    val teamBid = if (remoteHuman != null) {
+                        // Remote human bids for the whole team in house rules — CPU partner bid is
+                        // informational only and must not be added to the team total.
+                        (s.phaseHands[GamePhase.Deal]?.lastOrNull()
+                            ?.perPlayer?.get(remoteHuman.id)?.bid ?: 0)
+                            .coerceAtLeast(s.effectiveMinBid)
+                    } else {
+                        // CPU-only team — sum individual bids and store team total (idempotent)
+                        teamPlayers.sumOf { player ->
+                            s.phaseHands[GamePhase.Deal]?.lastOrNull()
+                                ?.perPlayer?.get(player.id)?.bid ?: 0
+                        }.coerceAtLeast(s.effectiveMinBid)
+                    }
                     viewModel.setTeamBid(teamId, teamBid)
                 }
                 // fall through to next team
@@ -803,8 +874,10 @@ class PhaseManager(
             viewModel.mpFirstLeadIndex = -1   // consume
             viewModel.advancePhase(GamePhase.Trick)
             viewModel.setLeaderIndex(firstLead)
+            Log.i(MPTAG, "advanceAfterBidding: applying firstLead=$firstLead (canonical leaderIndex=$firstLead)")
         } else {
             viewModel.advancePhase(GamePhase.Trick)
+            Log.i(MPTAG, "advanceAfterBidding: no mpFirstLeadIndex, using default leaderIndex=${viewModel.state.value.leaderIndex}")
         }
         dispatch()
     }
@@ -894,7 +967,9 @@ class PhaseManager(
 
         // Remote player — suspend until their playCard WSS message arrives
         if (s.remotePlayerIds.contains(nextPlayer)) {
+            Log.i(MPTAG, "handleTrick: awaiting remote play from $nextPlayer (playedCount=$playedCount leaderIndex=${s.leaderIndex})")
             val card = viewModel.awaitRemotePlay(nextPlayer)
+            Log.i(MPTAG, "handleTrick: received remote play from $nextPlayer card=${card.toToken()}")
             viewModel.playCard(nextPlayer, card)
             viewModel.removeCardFromHand(nextPlayer, card)
             val trickComplete = viewModel.state.value.currentTrick.plays.count { it != null } == n
@@ -1047,6 +1122,7 @@ class PhaseManager(
         val high = totals.values.maxOrNull() ?: 0
         val low  = totals.values.minOrNull() ?: 0
         viewModel.advancePhase(if (high >= u.targetScore || low <= -u.targetScore) GamePhase.Finished else GamePhase.EndHand)
+        if (jmotley.com.jspades.data.MPSession.isHost) viewModel.sendMpHandScore()
         dispatch()
     }
 

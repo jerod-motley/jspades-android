@@ -196,7 +196,8 @@ fun PlayScreen(
             mpFirstLeadIndex = mpFirstLeadIndex,
             remoteHumanIds   = mpConfig.remoteHumanIds,
             remotePlayerIds  = mpConfig.remotePlayerIds,
-            localSeatIndex   = mpConfig.localSeatIndex
+            localSeatIndex   = mpConfig.localSeatIndex,
+            handNum          = mpConfig.handNum
         )
     }
 
@@ -261,17 +262,6 @@ fun PlayScreen(
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop
         )
-
-        // ── MP: broadcast this player's individual bid when BidHuman completes ──
-        // When phase transitions away from BidHuman, the local player just bid.
-        // Send playerBid so remote PhaseManagers can unblock awaitRemoteBid().
-        if (state.isMultiplayer && state.phase == GamePhase.Bid) {
-            LaunchedEffect(GamePhase.Bid) {
-                val hand = state.phaseHands[GamePhase.Deal]?.lastOrNull() ?: return@LaunchedEffect
-                val southBid = hand.perPlayer["south"]?.bid ?: return@LaunchedEffect
-                if (southBid > 0) MPSession.session?.sendPlayerBid(southBid)
-            }
-        }
 
         // ── MP host: broadcast allBids when bidding round is complete ────────────
         if (state.isMultiplayer && MPSession.isHost && state.phase == GamePhase.BidReview) {
@@ -356,32 +346,31 @@ fun PlayScreen(
                 Log.d(tag, "animation event=${event::class.simpleName}")
                 when (event) {
                     is AnimationEvent.BidPlaced -> {
-                        // Host: broadcast CPU bids so remote PhaseManagers can display them.
-                        if (state.isMultiplayer && MPSession.isHost) {
+                        if (state.isMultiplayer) {
                             val pId = event.playerId
-                            if (pId != "south" && !state.remoteHumanIds.contains(pId)) {
-                                val bid = state.phaseHands[GamePhase.Deal]?.lastOrNull()
-                                    ?.perPlayer?.get(pId)?.bid ?: 0
-                                if (bid > 0) viewModel.sendMpBid(pId, bid)
+                            val bid = event.bid
+                            if (MPSession.isHost) {
+                                // Host: broadcast every host-controlled seat (south + CPUs).
+                                // Remote human seats send their own bids independently.
+                                if (!state.remoteHumanIds.contains(pId) && bid > 0)
+                                    viewModel.sendMpBid(pId, bid)
+                            } else if (pId == "south" && bid > 0) {
+                                // Guest: send own bid when the local human's BidPlaced fires.
+                                MPSession.session?.sendPlayerBid(bid)
                             }
                         }
                         // Bid badge fades in via DiamondView state change — wait for it
                         delay(600)
                     }
                     is AnimationEvent.CardPlayed -> {
-                        // Host: broadcast CPU card plays so remote awaitRemotePlay() unblocks.
-                        if (state.isMultiplayer && MPSession.isHost) {
-                            val pId = event.playerId
-                            if (pId != "south" && !state.remoteHumanIds.contains(pId)) {
-                                viewModel.sendMpPlay(pId, event.card)
-                            }
-                        }
                         // Card slides in from player's seat via DiamondView state change
                         delay(550)
                     }
                     is AnimationEvent.TrickWon -> {
                         // Freeze played cards so DiamondView can show them during animation
                         // (collectTrick already cleared currentTrick before this event)
+                        if (state.isMultiplayer && MPSession.isHost)
+                            viewModel.sendMpTrickResult(event.winnerId, event.plays)
                         frozenPlays = event.plays
                         trickWinner = event.winnerId
                         delay(1750)

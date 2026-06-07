@@ -164,6 +164,7 @@ class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
             roomId            = lobby.roomId,
             dealtHands        = rotatedHands,
             firstLeadRoomSeat = firstLeadRoomSeat,
+            handNum           = deal.handNum,
             remoteHumanIds    = remoteHumanIds,
             remotePlayerIds   = remotePlayerIds
         )

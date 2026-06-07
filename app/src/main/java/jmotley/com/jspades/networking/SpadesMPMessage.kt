@@ -204,9 +204,10 @@ fun buildStartCountdown(personId: String, roomId: String, seconds: Int) =
     MpEnvelope(type = "startCountdown", playerId = personId, roomId = roomId,
         cmdId = cmdId(), payload = mapOf("seconds" to seconds.toString())).toJson()
 
-fun buildStartGame(personId: String, roomId: String, seats: List<OnlineSeat> = emptyList()): String {
+fun buildStartGame(personId: String, roomId: String, seats: List<OnlineSeat> = emptyList(), countdownSeconds: Int = 5): String {
     val payload = buildMap<String, String> {
         put("gameType", "houseRules")
+        put("countdownSeconds", countdownSeconds.toString())
         seats.forEach { s ->
             put("seat${s.seatIndex}Id",   s.playerId   ?: "")
             put("seat${s.seatIndex}Name", s.displayName ?: "")
