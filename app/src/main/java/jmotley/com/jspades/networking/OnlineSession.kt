@@ -37,36 +37,20 @@ class OnlineSession(
     private val _countdown = MutableStateFlow(0)
     val countdown: StateFlow<Int> = _countdown
 
-    /** Final team bids broadcast by the host. Consumed once by PlayScreen on guest devices. */
-    private val _pendingAllBids = MutableStateFlow<SpadesMPMessage.AllBids?>(null)
-    val pendingAllBids: StateFlow<SpadesMPMessage.AllBids?> = _pendingAllBids
-
     /** True once the authoritative startGame payload has arrived for this hand. */
     private val _startGameReady = MutableStateFlow(false)
     val startGameReady: StateFlow<Boolean> = _startGameReady
-
-    /** Individual player bids arriving from remote humans. Key = canonical player ID. */
-    private val _pendingPlayerBids = MutableStateFlow<Map<String, Int>>(emptyMap())
-    val pendingPlayerBids: StateFlow<Map<String, Int>> = _pendingPlayerBids
-
-    /**
-     * Buffered deal from the server. Populated as soon as the deal message arrives
-     * (which can be before the UI has navigated to the game screen). Consumed once
-     * by the game screen; cleared on disconnect.
-     */
-    private val _pendingDeal = MutableStateFlow<SpadesMPMessage.Deal?>(null)
-    val pendingDeal: StateFlow<SpadesMPMessage.Deal?> = _pendingDeal
-
-    /** Card plays arriving from remote players during a live game. Key = canonical player ID. */
-    private val _pendingPlayCard = MutableStateFlow<Map<String, jmotley.com.jspades.data.Card>>(emptyMap())
-    val pendingPlayCard: StateFlow<Map<String, jmotley.com.jspades.data.Card>> = _pendingPlayCard
 
     /** Emits the player ID of the most recent disconnection; null when no disconnect has occurred. */
     private val _disconnectedPlayer = MutableStateFlow<String?>(null)
     val disconnectedPlayer: StateFlow<String?> = _disconnectedPlayer
 
-    /** True once startGame fires — routes Deal to the pending buffer instead of mock log. */
-    private var realGameActive = false
+    /** Latest game object received from the host. Clients consume this to update display state. */
+    private val _pendingGameState = MutableStateFlow<GameObj?>(null)
+    val pendingGameState: StateFlow<GameObj?> = _pendingGameState
+
+    fun consumeGameState() { _pendingGameState.value = null }
+
     private var countdownStarted = false
     private var startGameReceived = false
     private var lastAppliedSnapshotSeq = 0
@@ -134,14 +118,12 @@ class OnlineSession(
         _chat.value = emptyList()
         _mockLog.value = emptyList()
         _mockRunning.value = false
-        _pendingDeal.value = null
-        _pendingAllBids.value = null
-        _pendingPlayerBids.value = emptyMap()
-        _pendingPlayCard.value = emptyMap()
         _countdown.value = 0
         _startGameReady.value = false
         _disconnectedPlayer.value = null
-        realGameActive = false
+        _pendingGameState.value = null
+        onRemotePlayerBid = null
+        onRemotePlayCard = null
         countdownStarted = false
         startGameReceived = false
         lastAppliedSnapshotSeq = 0
@@ -149,6 +131,13 @@ class OnlineSession(
     }
 
     // ── Sending ───────────────────────────────────────────────────────────────
+
+    /** Host sends the full game object to all clients after every state change. */
+    fun sendGameState(gameObj: GameObj) {
+        val state = _lobby.value ?: return
+        Log.i(TAG, "sendGameState phase=${gameObj.phase} waitingSeat=${gameObj.waitingSeat} hands=${gameObj.hands.size}")
+        socket.send(buildGameState(state.localPlayerId, state.roomId, gameObj))
+    }
 
     fun sendChat(text: String) {
         val state = _lobby.value ?: return
@@ -172,18 +161,13 @@ class OnlineSession(
         val msg = parseIncoming(raw)
 
         val cmdId = (msg as? SpadesMPMessage.PlayerBid)?.cmdId
-            ?: (msg as? SpadesMPMessage.AllBids)?.cmdId
             ?: (msg as? SpadesMPMessage.StartCountdown)?.cmdId
             ?: (msg as? SpadesMPMessage.StartGame)?.cmdId
             ?: (msg as? SpadesMPMessage.Start)?.cmdId
             ?: (msg as? SpadesMPMessage.SnapShot)?.cmdId
-            ?: (msg as? SpadesMPMessage.Deal)?.cmdId
-            ?: (msg as? SpadesMPMessage.Bid)?.cmdId
             ?: (msg as? SpadesMPMessage.PlayCard)?.cmdId
-            ?: (msg as? SpadesMPMessage.TrickResult)?.cmdId
-            ?: (msg as? SpadesMPMessage.HandScore)?.cmdId
-            ?: (msg as? SpadesMPMessage.GameFinished)?.cmdId
             ?: (msg as? SpadesMPMessage.Chat)?.cmdId
+            ?: (msg as? SpadesMPMessage.GameState)?.cmdId
 
         if (cmdId != null) {
             if (seenCmdIds.contains(cmdId)) {
@@ -203,23 +187,36 @@ class OnlineSession(
             is SpadesMPMessage.Chat         -> onChat(msg)
             is SpadesMPMessage.RoomFull     -> onRoomFull()
             is SpadesMPMessage.PlayerBid       -> onPlayerBid(msg)
-            is SpadesMPMessage.AllBids         -> onAllBids(msg)
             is SpadesMPMessage.StartCountdown -> onStartCountdown(msg)
             is SpadesMPMessage.StartGame      -> onStartGame(msg)
             is SpadesMPMessage.PlayerDisconnected -> onPlayerDisconnected(msg)
             is SpadesMPMessage.PlayerReconnected  -> Log.i(TAG, "← PlayerReconnected ${msg.personId.takeLast(8)}")
             is SpadesMPMessage.Unknown        -> Log.w(TAG, "UNKNOWN message: ${msg.raw.take(200)}")
 
-            // Game protocol messages
-            is SpadesMPMessage.Deal     -> if (realGameActive || countdownStarted || startGameReceived) onDeal(msg) else logReceived(msg)
-            is SpadesMPMessage.PlayCard -> if (realGameActive) onPlayCard(msg) else logReceived(msg)
-            is SpadesMPMessage.Start,  // test-mode only; live path uses startGame + startCountdown
+            // Game protocol messages — full game object from host; card/bid inputs from clients
+            is SpadesMPMessage.GameState -> {
+                _pendingGameState.value = msg.data
+                // iOS hosts may send gameState without a prior startGame/startCountdown.
+                // Treat the first gameState as the implicit start signal so the guest navigates.
+                if (!startGameReceived) {
+                    Log.i(TAG, "GameState received before startGame — treating as implicit start")
+                    startGameReceived = true
+                    _startGameReady.value = true
+                    if (!countdownStarted) {
+                        countdownStarted = true
+                        scope.launch { runCountdownThenNavigate(0) }
+                    }
+                }
+            }
+            is SpadesMPMessage.PlayCard -> onPlayCard(msg)
+            is SpadesMPMessage.Start,
             is SpadesMPMessage.BlindOffer,
             is SpadesMPMessage.BlindResponse,
+            is SpadesMPMessage.Deal,
+            is SpadesMPMessage.Bid,
             is SpadesMPMessage.TrickResult,
             is SpadesMPMessage.HandScore,
             is SpadesMPMessage.GameFinished -> logReceived(msg)
-            is SpadesMPMessage.Bid -> onLegacyBid(msg)
 
             else -> Unit
         }
@@ -324,32 +321,18 @@ class OnlineSession(
         _disconnectedPlayer.value = msg.personId
     }
 
+    /** Set by the host ViewModel on game start to receive remote player bids. */
+    var onRemotePlayerBid: ((seatIndex: Int, bidAmount: Int) -> Unit)? = null
+
+    /** Set by the host ViewModel on game start to receive remote player card plays. */
+    var onRemotePlayCard: ((seatIndex: Int, card: String) -> Unit)? = null
+
     private fun onPlayerBid(msg: SpadesMPMessage.PlayerBid) {
-        val canonicalId = canonicalPlayerIdForSeat(msg.seatIndex) ?: return
-        if (_pendingPlayerBids.value.containsKey(canonicalId)) {
-            Log.w(TAG, "DEDUP BID canonicalId=$canonicalId — already have bid, dropping duplicate")
-            return
-        }
-        Log.i(TAG, "PLAYER BID: room_seat=${msg.seatIndex} → $canonicalId bid=${msg.bidAmount}")
-        _pendingPlayerBids.value = _pendingPlayerBids.value + (canonicalId to msg.bidAmount)
-    }
-
-    private fun onLegacyBid(msg: SpadesMPMessage.Bid) {
-        if (msg.seatIndex < 0) {
-            Log.w(TAG, "LEGACY BID missing seatIndex — team=${msg.teamIndex} amount=${msg.bidAmount}")
-            return
-        }
-        val canonicalId = canonicalPlayerIdForSeat(msg.seatIndex) ?: return
-        if (_pendingPlayerBids.value.containsKey(canonicalId)) {
-            Log.w(TAG, "DEDUP BID canonicalId=$canonicalId — already have bid, dropping duplicate")
-            return
-        }
-        Log.i(TAG, "LEGACY BID: room_seat=${msg.seatIndex} → $canonicalId bid=${msg.bidAmount}")
-        _pendingPlayerBids.value = _pendingPlayerBids.value + (canonicalId to msg.bidAmount)
-    }
-
-    fun consumePlayerBid(canonicalId: String) {
-        _pendingPlayerBids.value = _pendingPlayerBids.value - canonicalId
+        val lobby = _lobby.value ?: return
+        if (msg.personId == lobby.localPlayerId) return
+        if (!lobby.isHost) return
+        Log.i(TAG, "HOST ← playerBid seat=${msg.seatIndex} bid=${msg.bidAmount}")
+        onRemotePlayerBid?.invoke(msg.seatIndex, msg.bidAmount)
     }
 
     /** Send the local player's individual bid. */
@@ -360,43 +343,10 @@ class OnlineSession(
         socket.send(buildPlayerBid(state.localPlayerId, state.roomId, localSeat, bidAmount))
     }
 
-    /** Send a bid for any room seat (host broadcasting CPU bids). */
-    fun sendPlayerBidForSeat(roomSeatIndex: Int, bidAmount: Int) {
-        val state = _lobby.value ?: return
-        Log.i(TAG, "SEND playerBid seat=$roomSeatIndex bid=$bidAmount (cpu broadcast)")
-        socket.send(buildPlayerBid(state.localPlayerId, state.roomId, roomSeatIndex, bidAmount))
-    }
-
-    private fun onAllBids(msg: SpadesMPMessage.AllBids) {
-        Log.i(TAG, "ALL BIDS from=${msg.personId.takeLast(8)} t0=${msg.team0Bid} t1=${msg.team1Bid}")
-        _pendingAllBids.value = msg
-    }
-
-    fun clearPendingAllBids() { _pendingAllBids.value = null }
-
-    fun consumePendingDeal() { _pendingDeal.value = null }
-
-    /** Host broadcasts a new deal for hand 2+ so all guests can start the next hand. */
-    fun sendDeal(handNum: Int, dealerSeat: Int, firstLead: Int, hands: Map<Int, List<String>>) {
-        val lobby = _lobby.value ?: return
-        if (!lobby.isHost) return
-        Log.i(TAG, "SEND deal handNum=$handNum dealer=$dealerSeat firstLead=$firstLead")
-        socket.send(buildDeal(lobby.localPlayerId, lobby.roomId, handNum, dealerSeat, firstLead, hands))
-    }
-
-    /** Host broadcasts final team bids to all clients. */
-    fun sendAllBids(team0Bid: Int, team1Bid: Int) {
-        val state = _lobby.value ?: return
-        if (!state.isHost) return
-        Log.i(TAG, "SEND allBids t0=$team0Bid t1=$team1Bid")
-        socket.send(buildAllBids(state.localPlayerId, state.roomId, team0Bid, team1Bid))
-    }
-
     private fun onStartCountdown(msg: SpadesMPMessage.StartCountdown) {
         if (_lobby.value?.isHost == true) return   // host drives its own countdown
         Log.i(TAG, "COUNTDOWN ${msg.seconds}s — guest starting")
         countdownStarted = true
-        realGameActive = true
         Log.d(TAG, "COUNTDOWN coroutine launch seconds=${msg.seconds}")
         scope.launch { runCountdownThenNavigate(msg.seconds) }
     }
@@ -405,59 +355,43 @@ class OnlineSession(
         Log.i(TAG, "START GAME from=${msg.personId.takeLast(8)}")
         startGameReceived = true
         _startGameReady.value = true
-        realGameActive = true
-        // Apply the authoritative final seat map from the payload.
         val state = _lobby.value
-        if (state != null && msg.payload.isNotEmpty()) {
-            val seats = (0..3).map { i ->
-                val id      = msg.payload["seat${i}Id"]?.takeIf { it.isNotBlank() }
-                val name    = msg.payload["seat${i}Name"]?.takeIf { it.isNotBlank() }
-                val kindStr = msg.payload["seat${i}Kind"] ?: "open"
-                val kind    = when (kindStr) { "human" -> SeatKind.Human; "cpu" -> SeatKind.Cpu; else -> SeatKind.Open }
-                OnlineSeat(i, id, name, isHost = i == 0, kind = kind)
+        // Only apply seat map from payload if it actually contains seat-ID keys.
+        // iOS hosts send startGame without Android's seat${i}Id layout; overwriting would
+        // clear all player IDs and break localSeatIndex for the guest.
+        val hasSeatKeys = (0..3).any { msg.payload.containsKey("seat${it}Id") }
+        if (state != null) {
+            if (hasSeatKeys) {
+                val seats = (0..3).map { i ->
+                    val id      = msg.payload["seat${i}Id"]?.takeIf { it.isNotBlank() }
+                    val name    = msg.payload["seat${i}Name"]?.takeIf { it.isNotBlank() }
+                    val kindStr = msg.payload["seat${i}Kind"] ?: "open"
+                    val kind    = when (kindStr) { "human" -> SeatKind.Human; "cpu" -> SeatKind.Cpu; else -> SeatKind.Open }
+                    OnlineSeat(i, id, name, isHost = i == 0, kind = kind)
+                }
+                Log.i(TAG, "START GAME seats: ${seats.map { "${it.seatIndex}:${it.kind}:${it.displayName}" }}")
+                _lobby.value = state.copy(seats = seats, status = LobbyStatus.Starting)
+            } else {
+                Log.i(TAG, "START GAME — no seat keys in payload, preserving snapshot seat layout")
+                _lobby.value = state.copy(status = LobbyStatus.Starting)
             }
-            Log.i(TAG, "START GAME seats: ${seats.map { "${it.seatIndex}:${it.kind}:${it.displayName}" }}")
-            _lobby.value = state.copy(seats = seats, status = LobbyStatus.Starting)
         }
-        // If startCountdown hasn't arrived yet but the payload carries countdownSeconds, start now.
-        // This makes Android robust to startGame arriving before startCountdown (Issue 2).
+        // Always start the countdown when startGame arrives and no countdown is running yet.
+        // Falls back to 5 s for iOS hosts that omit countdownSeconds from their payload.
         if (!countdownStarted) {
-            val seconds = msg.payload["countdownSeconds"]?.toIntOrNull()
-            if (seconds != null) {
-                Log.i(TAG, "START GAME — starting countdown from payload seconds=$seconds")
-                countdownStarted = true
-                scope.launch { runCountdownThenNavigate(seconds) }
-            }
+            val seconds = msg.payload["countdownSeconds"]?.toIntOrNull() ?: 5
+            Log.i(TAG, "START GAME — starting countdown seconds=$seconds")
+            countdownStarted = true
+            scope.launch { runCountdownThenNavigate(seconds) }
         }
-        // Navigation is triggered by the countdown completing, not by startGame directly.
-    }
-
-    private fun onDeal(msg: SpadesMPMessage.Deal) {
-        Log.i(TAG, "REAL GAME DEAL handNum=${msg.handNum} dealer=${msg.dealerSeat} — buffering")
-        _pendingDeal.value = msg
-        Log.d(TAG, "REAL GAME DEAL buffered seats=${msg.hands.mapValues { it.value.size }}")
     }
 
     private fun onPlayCard(msg: SpadesMPMessage.PlayCard) {
         val lobby = _lobby.value ?: return
-        // Skip echoes of our own plays
         if (msg.personId == lobby.localPlayerId) return
-        val card = jmotley.com.jspades.data.cardFromToken(msg.card) ?: run {
-            Log.w(TAG, "onPlayCard: unrecognised card token '${msg.card}'")
-            return
-        }
-        // Convert room seat index to local canonical player ID
-        val localSeat = lobby.localSeatIndex.coerceAtLeast(0)
-        val senderSeat = lobby.seats.find { it.playerId == msg.personId }?.seatIndex
-            ?: msg.seatIndex   // fall back to payload seatIndex if personId not found
-        val offset = (senderSeat - localSeat + 4) % 4
-        val canonicalId = listOf("south", "west", "north", "east")[offset]
-        Log.i(TAG, "PLAY CARD seat=$senderSeat → $canonicalId card=${msg.card}")
-        _pendingPlayCard.value = _pendingPlayCard.value + (canonicalId to card)
-    }
-
-    fun consumePlayCard(canonicalId: String) {
-        _pendingPlayCard.value = _pendingPlayCard.value - canonicalId
+        if (!lobby.isHost) return
+        Log.i(TAG, "HOST ← playCard seat=${msg.seatIndex} card=${msg.card}")
+        onRemotePlayCard?.invoke(msg.seatIndex, msg.card)
     }
 
     fun sendPlayCard(token: String, roomSeatIndex: Int, handNum: Int, trickNum: Int, leadSeat: Int) {
@@ -473,18 +407,6 @@ class OnlineSession(
         )
         Log.d(TAG, "SEND playCard seat=$roomSeatIndex card=$token trickNum=$trickNum leadSeat=$leadSeat")
         socket.send(msg)
-    }
-
-    fun sendTrickResult(handNum: Int, trickNum: Int, leadSeat: Int, winnerSeat: Int, cards: Map<Int, String>) {
-        val lobby = _lobby.value ?: return
-        Log.i(TAG, "SEND trickResult hand=$handNum trick=$trickNum winner=$winnerSeat lead=$leadSeat")
-        socket.send(buildTrickResult(lobby.localPlayerId, lobby.roomId, handNum, trickNum, leadSeat, winnerSeat, cards))
-    }
-
-    fun sendHandScore(handNum: Int, team0Bid: Int, team0Tricks: Int, team0Total: Int, team0Bags: Int, team1Bid: Int, team1Tricks: Int, team1Total: Int, team1Bags: Int, gameOver: Boolean) {
-        val lobby = _lobby.value ?: return
-        Log.i(TAG, "SEND handScore hand=$handNum t0=$team0Total t1=$team1Total gameOver=$gameOver")
-        socket.send(buildHandScore(lobby.localPlayerId, lobby.roomId, handNum, team0Bid, team0Tricks, team0Total, team0Bags, team1Bid, team1Tricks, team1Total, team1Bags, gameOver))
     }
 
     /** Ticks the shared countdown display and fires gameStartSignal when it reaches 0. */
@@ -529,7 +451,6 @@ class OnlineSession(
             return
         }
         Log.i(TAG, "========== START REAL GAME ==========")
-        realGameActive = true
         scope.launch {
             val pid  = state.localPlayerId
             val room = state.roomId
@@ -556,28 +477,9 @@ class OnlineSession(
             // ensures startCountdown is relayed before startGame so clients start the timer first.
             delay(100L)
 
-            // 2. Send startGame, then wait 100 ms before deal so startGame arrives before deal.
+            // 2. Broadcast startGame with final seat map.
+            // Host's engine deals locally once the play screen opens; game object is broadcast from there.
             socket.send(buildStartGame(pid, room, finalSeats))
-            delay(100L)
-
-            val deck  = buildHouseRulesDeck()
-            val hands = (0..3).associateWith { seat -> deck.subList(seat * 13, seat * 13 + 13) }
-
-            // Compute the first lead: first non-open seat clockwise from the dealer (seat 0).
-            // Hardcoding 1 is wrong when seat 1 is empty — it tells remote clients to wait
-            // for a player who doesn't exist.
-            val dealerSeat = 0
-            val firstLead  = (1..3).map { (dealerSeat + it) % 4 }
-                .firstOrNull { idx -> finalSeats.find { s -> s.seatIndex == idx }?.kind != SeatKind.Open }
-                ?: (dealerSeat + 1) % 4
-            Log.i(TAG, "DEALING hands=${hands.map { (s, h) -> "seat$s:${h.size}cards" }} firstLead=$firstLead")
-            socket.send(buildDeal(pid, room, 1, dealerSeat, firstLead, hands))
-
-            // Buffer locally in Android format — host's PlayScreen reads via cardFromToken().
-            _pendingDeal.value = SpadesMPMessage.Deal(
-                personId = pid, roomId = room, cmdId = "",
-                handNum = 1, dealerSeat = dealerSeat, firstLead = firstLead, hands = hands
-            )
 
             // 3. Run the same 5-second countdown the clients are showing, then navigate.
             runCountdownThenNavigate(5)

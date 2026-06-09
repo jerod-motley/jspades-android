@@ -17,7 +17,6 @@ import jmotley.com.jspades.data.MPStateHolder
 import android.util.Log
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
 sealed class LobbyUiState {
@@ -112,18 +111,11 @@ class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
         if (playTransitionStarted) return
 
         val lobby = session.lobby.value ?: return
-        val seatIndex = lobby.localSeatIndex.coerceAtLeast(0)
-        val deal = session.pendingDeal.value
-            ?: withTimeoutOrNull(3_000L) { session.pendingDeal.first { it != null } }
-
         if (!lobby.isHost && !session.startGameReady.value) return
-        if (deal == null) {
-            Log.w("LobbyVM", "maybeNavigateToPlay($reason) missing deal")
-            return
-        }
 
+        val seatIndex = lobby.localSeatIndex.coerceAtLeast(0)
         playTransitionStarted = true
-        Log.i("LobbyVM", "maybeNavigateToPlay reason=$reason room=${lobby.roomId} localSeat=$seatIndex hand=${deal.handNum}")
+        Log.i("LobbyVM", "maybeNavigateToPlay reason=$reason room=${lobby.roomId} localSeat=$seatIndex")
 
         val rawNames = (0..3).map { i ->
             val seat = lobby.seats.find { it.seatIndex == i }
@@ -134,43 +126,18 @@ class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         val rotated = (0..3).map { offset -> rawNames[(seatIndex + offset) % 4] }
-        val canonicalIds = listOf("south", "west", "north", "east")
-        val rotatedHands = canonicalIds.indices.associate { offset ->
-            canonicalIds[offset] to (deal.hands[(seatIndex + offset) % 4] ?: emptyList())
-        }
-        val rawFirstLead = deal.firstLead
-        val firstLeadRoomSeat = if (lobby.seats.find { it.seatIndex == rawFirstLead }?.kind != SeatKind.Open) {
-            rawFirstLead
-        } else {
-            (1..3).map { (rawFirstLead + it) % 4 }
-                .firstOrNull { idx -> lobby.seats.find { s -> s.seatIndex == idx }?.kind != SeatKind.Open }
-                ?: rawFirstLead
-        }
-        val remoteHumanIds = canonicalIds.indices
-            .filter { offset ->
-                offset > 0 &&
-                lobby.seats.find { s -> s.seatIndex == (seatIndex + offset) % 4 }?.kind == SeatKind.Human
-            }
-            .map { canonicalIds[it] }
-            .toSet()
-        val remotePlayerIds: Set<String> = if (MPSession.isHost) {
-            remoteHumanIds
-        } else {
-            canonicalIds.drop(1).toSet()
-        }
+        val remoteHumanSeats = (0..3).filter { i ->
+            i != seatIndex &&
+            lobby.seats.find { it.seatIndex == i }?.kind == SeatKind.Human
+        }.toSet()
         val config = MPGameConfig(
-            playerNames       = rotated,
-            localSeatIndex    = seatIndex,
-            roomId            = lobby.roomId,
-            dealtHands        = rotatedHands,
-            firstLeadRoomSeat = firstLeadRoomSeat,
-            handNum           = deal.handNum,
-            remoteHumanIds    = remoteHumanIds,
-            remotePlayerIds   = remotePlayerIds
+            playerNames      = rotated,
+            localSeatIndex   = seatIndex,
+            roomId           = lobby.roomId,
+            remoteHumanSeats = remoteHumanSeats
         )
-        Log.i("LobbyVM", "navigateToPlay reason=$reason players=$rotated remoteHumans=$remoteHumanIds")
+        Log.i("LobbyVM", "navigateToPlay reason=$reason players=$rotated")
         MPStateHolder.set(config)
-        session.consumePendingDeal()
         _navigateToPlay.emit(Unit)
     }
 

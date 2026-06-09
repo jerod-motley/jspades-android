@@ -42,6 +42,7 @@ import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.engine.ChallengeResult
 import jmotley.com.jspades.models.GameViewModel
 import jmotley.com.jspades.data.DealMode
+import jmotley.com.jspades.data.ClientDisplayState
 import jmotley.com.jspades.data.MPSession
 import jmotley.com.jspades.data.MPStateHolder
 import jmotley.com.jspades.views.BidView
@@ -179,69 +180,58 @@ fun PlayScreen(
         }
     }
 
-    // ── Multiplayer bypass — skip LobbyView and start immediately ────────────
+    // ── Client (guest) path — render ClientPlayScreen driven by incoming GameObj ──
+    // Clients do not run the engine. They receive the full game object from the host,
+    // render what it says, and send human inputs back.
+    val mpConfigPeeked = remember { MPStateHolder.peek() }
+    val isOnlineClient = mpConfigPeeked != null && !MPSession.isHost
+    val clientSeatIndex = mpConfigPeeked?.localSeatIndex ?: 0
+
+    if (isOnlineClient) {
+        val clientSession = remember { MPSession.session }
+        LaunchedEffect(clientSession) {
+            MPStateHolder.consume()  // clear the config; client doesn't need engine bootstrap
+            clientSession ?: return@LaunchedEffect
+            clientSession.pendingGameState.collect { obj ->
+                obj ?: return@collect
+                viewModel.applyGameState(obj, clientSeatIndex)
+                clientSession.consumeGameState()
+            }
+        }
+        val clientState by viewModel.clientState.collectAsState()
+        ClientPlayScreen(
+            clientState  = clientState,
+            myRoomSeat   = clientSeatIndex,
+            onSendBid    = { bid -> clientSession?.sendPlayerBid(bid) },
+            onSendPlay   = { token, trickNum, leaderSeat ->
+                val handNum = clientState.gameObj?.currentHand?.handNum ?: 0
+                clientSession?.sendPlayCard(token, clientSeatIndex, handNum, trickNum, leaderSeat)
+            }
+        )
+        return
+    }
+
+    // ── Multiplayer bypass — host: skip LobbyView and start engine immediately ──
     // MPStateHolder is set by OnlineLobbyViewModel just before navigating here.
     // Delay bootstrap until the animation collector is attached so the first CPU
     // bid animation cannot be dropped before it can re-enter the engine.
     LaunchedEffect(animationCollectorReady) {
         if (!animationCollectorReady) return@LaunchedEffect
         val mpConfig = MPStateHolder.consume() ?: return@LaunchedEffect
-        val mpFirstLeadIndex = (mpConfig.firstLeadRoomSeat - mpConfig.localSeatIndex + 4) % 4
-        Log.i(tag, "bootstrap multiplayer localSeat=${mpConfig.localSeatIndex} firstLead=$mpFirstLeadIndex")
+        Log.i(tag, "bootstrap multiplayer localSeat=${mpConfig.localSeatIndex}")
         viewModel.onLobbyComplete(
             ids              = mpConfig.playerIds,
             names            = mpConfig.playerNames,
             gameType         = GameType.HOUSE_RULES,
-            dealtHands       = mpConfig.dealtHands,
-            mpFirstLeadIndex = mpFirstLeadIndex,
-            remoteHumanIds   = mpConfig.remoteHumanIds,
-            remotePlayerIds  = mpConfig.remotePlayerIds,
+            isMultiplayer    = true,
             localSeatIndex   = mpConfig.localSeatIndex,
-            handNum          = mpConfig.handNum
+            handNum          = mpConfig.handNum,
+            remoteHumanSeats = mpConfig.remoteHumanSeats
         )
     }
 
     // ── Multiplayer session reference ─────────────────────────────────────────
     val mpSession = remember { MPSession.session }
-
-    // ── Remote player bid events → unblock PhaseManager ─────────────────────
-    // Forward incoming playerBid messages to the ViewModel so awaitRemoteBid() unblocks.
-    // Also applies allBids (guest only) once BidHuman is reached.
-    if (mpSession != null) {
-        LaunchedEffect(mpSession) {
-            // Collect remote individual bids (used by host's awaitRemoteBid in PhaseManager)
-            launch {
-                mpSession.pendingPlayerBids.collect { bids ->
-                    bids.forEach { (canonicalId, amount) ->
-                        viewModel.onRemoteBidReceived(canonicalId, amount)
-                        mpSession.consumePlayerBid(canonicalId)
-                    }
-                }
-            }
-            // Collect remote card plays (unblocks awaitRemotePlay in PhaseManager)
-            launch {
-                mpSession.pendingPlayCard.collect { plays ->
-                    plays.forEach { (canonicalId, card) ->
-                        viewModel.onRemotePlayReceived(canonicalId, card)
-                        mpSession.consumePlayCard(canonicalId)
-                    }
-                }
-            }
-            // Guest only: apply allBids from the host, but only after BidHuman is shown
-            if (!MPSession.isHost) {
-                mpSession.pendingAllBids.collect { allBids ->
-                    allBids ?: return@collect
-                    // Wait for BidHuman so the CPU animation chain completes first.
-                    // Firing during Bid phase would skip the human's bid UI entirely.
-                    viewModel.state.first {
-                        it.phase == GamePhase.BidHuman || it.phase == GamePhase.BidReview
-                    }
-                    viewModel.applyRemoteAllBids(allBids.team0Bid, allBids.team1Bid)
-                    mpSession.clearPendingAllBids()
-                }
-            }
-        }
-    }
 
     // ── Video event collector ─────────────────────────────────────────────────
     // Merges all three video flows into a single currentVideoAsset state.
@@ -262,16 +252,6 @@ fun PlayScreen(
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop
         )
-
-        // ── MP host: broadcast allBids when bidding round is complete ────────────
-        if (state.isMultiplayer && MPSession.isHost && state.phase == GamePhase.BidReview) {
-            LaunchedEffect(GamePhase.BidReview) {
-                val hand = state.phaseHands[GamePhase.Deal]?.lastOrNull()
-                val t0 = hand?.teamBids?.getOrNull(0) ?: 0
-                val t1 = hand?.teamBids?.getOrNull(1) ?: 0
-                if (t0 > 0 || t1 > 0) MPSession.session?.sendAllBids(t0, t1)
-            }
-        }
 
         // ── Ad trigger (interstitial + banner) ───────────────────────────────────
         // Interstitial: every-other-hand cadence managed internally by AdManager.
@@ -346,19 +326,6 @@ fun PlayScreen(
                 Log.d(tag, "animation event=${event::class.simpleName}")
                 when (event) {
                     is AnimationEvent.BidPlaced -> {
-                        if (state.isMultiplayer) {
-                            val pId = event.playerId
-                            val bid = event.bid
-                            if (MPSession.isHost) {
-                                // Host: broadcast every host-controlled seat (south + CPUs).
-                                // Remote human seats send their own bids independently.
-                                if (!state.remoteHumanIds.contains(pId) && bid > 0)
-                                    viewModel.sendMpBid(pId, bid)
-                            } else if (pId == "south" && bid > 0) {
-                                // Guest: send own bid when the local human's BidPlaced fires.
-                                MPSession.session?.sendPlayerBid(bid)
-                            }
-                        }
                         // Bid badge fades in via DiamondView state change — wait for it
                         delay(600)
                     }
@@ -369,8 +336,6 @@ fun PlayScreen(
                     is AnimationEvent.TrickWon -> {
                         // Freeze played cards so DiamondView can show them during animation
                         // (collectTrick already cleared currentTrick before this event)
-                        if (state.isMultiplayer && MPSession.isHost)
-                            viewModel.sendMpTrickResult(event.winnerId, event.plays)
                         frozenPlays = event.plays
                         trickWinner = event.winnerId
                         delay(1750)

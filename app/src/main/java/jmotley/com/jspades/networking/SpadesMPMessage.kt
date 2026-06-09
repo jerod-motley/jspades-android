@@ -1,15 +1,105 @@
 package jmotley.com.jspades.networking
 
+import android.util.Log
 import jmotley.com.jspades.data.OnlineSeat
 import jmotley.com.jspades.data.SeatKind
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.addJsonArray
+import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 import java.util.UUID
+
+// ── Game object data model ────────────────────────────────────────────────────
+
+@Serializable
+data class MpTrick(
+    val trickNum: Int,
+    val leader: Int,
+    val plays: List<String>,  // indexed by room seat; "" = not played yet
+    val winner: Int           // -1 if trick not yet complete
+)
+
+@Serializable
+data class MpHandDeal(
+    val seat0: List<String>,
+    val seat1: List<String>,
+    val seat2: List<String>,
+    val seat3: List<String>
+) {
+    fun forSeat(seat: Int): List<String> = when (seat) {
+        0    -> seat0
+        1    -> seat1
+        2    -> seat2
+        else -> seat3
+    }
+}
+
+@Serializable
+data class MpHand(
+    val handNum: Int,
+    val seatBids: List<Int>,      // indexed by room seat
+    val team0Bid: Int,
+    val team1Bid: Int,
+    val team0Tricks: Int,
+    val team1Tricks: Int,
+    val deal: MpHandDeal,
+    val tricks: List<MpTrick>,
+    val seatDidBid: List<Boolean> = emptyList()  // indexed by room seat; empty = unknown
+)
+
+@Serializable
+data class MpSeatInfo(
+    val seatIndex: Int,
+    val playerId: String,
+    val playerName: String,
+    val team: Int,
+    val isHuman: Boolean = false
+)
+
+@Serializable
+data class GameObj(
+    val phase: String,         // "bid" | "trick" | "score" | "endHand" | "finished"
+    val waitingSeat: Int,      // room seat index of who must act next; -1 if nobody
+    val gameOver: Boolean,
+    val team0Score: Int,
+    val team1Score: Int,
+    val team0Bags: Int,
+    val team1Bags: Int,
+    val seats: List<MpSeatInfo>,
+    val hands: List<MpHand>
+) {
+    val currentHand: MpHand? get() = hands.lastOrNull()
+    val currentTrick: MpTrick? get() = currentHand?.tricks?.lastOrNull()
+}
+
+/** Wire envelope for the `gameState` message (nested data, not flat payload map). */
+@Serializable
+data class GameStateEnvelope(
+    val action: String = "sendMessage",
+    val type: String = "gameState",
+    val playerId: String,
+    val sessionId: String = playerId,
+    val gm_type: String = "spades",
+    val gm_sub_type: String = "houseRules",
+    val roomId: String,
+    val cmdId: String,
+    val data: GameObj
+)
 
 // ── Wire envelope ─────────────────────────────────────────────────────────────
 
@@ -39,8 +129,6 @@ sealed class SpadesMPMessage {
     data class StartGame(val personId: String, val roomId: String, val cmdId: String, val payload: Map<String, String>) : SpadesMPMessage()
     /** Sent by the host to begin the countdown. Clients show the timer then navigate together. */
     data class StartCountdown(val personId: String, val roomId: String, val cmdId: String, val seconds: Int) : SpadesMPMessage()
-    /** Host broadcasts final team bids so all clients can sync before trick play begins. */
-    data class AllBids(val personId: String, val roomId: String, val cmdId: String, val team0Bid: Int, val team1Bid: Int, val team0IsBlind: Boolean = false, val team1IsBlind: Boolean = false) : SpadesMPMessage()
     /** A human player's individual bid (first on team) or team-total bid (second on team). */
     data class PlayerBid(val personId: String, val roomId: String, val cmdId: String, val seatIndex: Int, val bidAmount: Int) : SpadesMPMessage()
     data class BlindOffer(val personId: String, val roomId: String, val cmdId: String, val handNum: Int, val eligibleSeats: List<Int>) : SpadesMPMessage()
@@ -58,7 +146,252 @@ sealed class SpadesMPMessage {
     data class PlayerDisconnected(val personId: String) : SpadesMPMessage()
     data class PlayerReconnected(val personId: String) : SpadesMPMessage()
     data class RoomFull(val roomId: String) : SpadesMPMessage()
+    data class GameState(val personId: String, val roomId: String, val cmdId: String, val data: GameObj) : SpadesMPMessage()
     data class Unknown(val raw: String) : SpadesMPMessage()
+}
+
+private data class IosPlayerInfo(val uuid: String, val seat: Int, val team: Int, val name: String)
+
+/**
+ * Parses an iOS-format `gameState` message (payload: {json: "..."}) and converts it to
+ * a [GameObj] that Android's client pipeline understands.
+ *
+ * iOS wire format differences from Android's GameStateEnvelope:
+ *  - Game data is in payload.json (a JSON string), not in a top-level "data" object.
+ *  - perPlayer is an alternating [uuid, state, uuid, state, …] JSON array, not a map.
+ *  - dealtHands is an alternating [uuid, [cards], uuid, [cards], …] JSON array.
+ *  - Card rank/suit ordinals are the same 0-based integers Android uses in "rank_suit" tokens.
+ *
+ * Returns null if the message is not in iOS format or the parse fails for any reason.
+ */
+private fun tryParseIosLegacyGameState(obj: JsonObject): GameObj? = runCatching {
+    val payloadJson = obj["payload"]?.jsonObject?.get("json")?.jsonPrimitive?.content
+        ?: return null
+    val ios = json.parseToJsonElement(payloadJson).jsonObject
+
+    // ── Players ───────────────────────────────────────────────────────────────
+    val playersArr = ios["players"]?.jsonArray ?: return null
+    val players = playersArr.mapNotNull { p ->
+        runCatching {
+            val po = p.jsonObject
+            IosPlayerInfo(
+                uuid = po["id"]!!.jsonPrimitive.content,
+                seat = po["seatIndex"]!!.jsonPrimitive.intOrNull!!,
+                team = po["team"]!!.jsonPrimitive.intOrNull!!,
+                name = po["name"]?.jsonPrimitive?.content ?: ""
+            )
+        }.getOrNull()
+    }
+    if (players.isEmpty()) return null
+
+    val uuidToSeat = players.associate { it.uuid to it.seat }
+    val uuidToTeam = players.associate { it.uuid to it.team }
+    val seatToUuid = players.associate { it.seat to it.uuid }
+    val canonIds   = listOf("south", "west", "north", "east")
+    val seats = players.map { p ->
+        MpSeatInfo(p.seat, canonIds.getOrElse(p.seat) { "seat${p.seat}" }, p.name, p.team)
+    }
+
+    // ── Phase ─────────────────────────────────────────────────────────────────
+    val iosPhase = ios["phase"]?.jsonPrimitive?.content ?: "bid"
+    val androidPhase = when (iosPhase) {
+        "bid", "bidHuman", "bidReview"        -> "bid"
+        "trick", "trickHuman", "trickResolve" -> "trick"
+        "score", "endHand", "handScore"       -> "score"
+        "finished", "gameFinished"            -> "finished"
+        else                                  -> "bid"
+    }
+
+    // ── Helper: parse perPlayer as alternating array or plain object ───────────
+    fun parsePerPlayer(node: JsonElement?): Map<String, JsonObject> {
+        val out = mutableMapOf<String, JsonObject>()
+        when (node) {
+            is JsonArray -> {
+                var i = 0
+                while (i + 1 < node.size) {
+                    val uuid  = runCatching { node[i].jsonPrimitive.content }.getOrNull() ?: break
+                    val state = runCatching { node[i + 1].jsonObject }.getOrNull() ?: break
+                    out[uuid] = state; i += 2
+                }
+            }
+            is JsonObject -> node.entries.forEach { (k, v) ->
+                runCatching { out[k] = v.jsonObject }
+            }
+            else -> {}
+        }
+        return out
+    }
+
+    // ── Hands ─────────────────────────────────────────────────────────────────
+    val handsArr = ios["hands"]?.jsonArray ?: return null
+    val mpHands  = handsArr.mapIndexedNotNull { handIdx, handEl ->
+        runCatching {
+            val hand      = handEl.jsonObject
+            val perPlayer = parsePerPlayer(hand["perPlayer"])
+
+            val seatBids = (0..3).map { seat ->
+                perPlayer[seatToUuid[seat] ?: ""]?.get("bid")?.jsonPrimitive?.intOrNull ?: 0
+            }
+            val teamBidsArr = hand["teamBids"]?.jsonArray
+            val team0Bid    = teamBidsArr?.getOrNull(0)?.jsonPrimitive?.intOrNull ?: 0
+            val team1Bid    = teamBidsArr?.getOrNull(1)?.jsonPrimitive?.intOrNull ?: 0
+            val team0Tricks = players.filter { it.team == 0 }
+                .sumOf { p -> perPlayer[p.uuid]?.get("tricksTaken")?.jsonPrimitive?.intOrNull ?: 0 }
+            val team1Tricks = players.filter { it.team == 1 }
+                .sumOf { p -> perPlayer[p.uuid]?.get("tricksTaken")?.jsonPrimitive?.intOrNull ?: 0 }
+
+            // dealtHands alternating array → "rank_suit" tokens by seat
+            val dealBySeat = mutableMapOf<Int, List<String>>()
+            val dhEl = hand["dealtHands"]
+            if (dhEl is JsonArray) {
+                var j = 0
+                while (j + 1 < dhEl.size) {
+                    val uuid  = runCatching { dhEl[j].jsonPrimitive.content }.getOrNull() ?: break
+                    val cards = runCatching { dhEl[j + 1].jsonArray }.getOrNull() ?: break
+                    val seat  = uuidToSeat[uuid]
+                    if (seat != null) {
+                        dealBySeat[seat] = cards.mapNotNull { c ->
+                            runCatching {
+                                val co   = c.jsonObject
+                                val rank = co["rank"]!!.jsonPrimitive.intOrNull!!
+                                val suit = co["suit"]!!.jsonPrimitive.intOrNull!!
+                                "${rank}_${suit}"
+                            }.getOrNull()
+                        }
+                    }
+                    j += 2
+                }
+            }
+            val deal = MpHandDeal(
+                seat0 = dealBySeat[0] ?: emptyList(),
+                seat1 = dealBySeat[1] ?: emptyList(),
+                seat2 = dealBySeat[2] ?: emptyList(),
+                seat3 = dealBySeat[3] ?: emptyList()
+            )
+
+            // Past completed tricks from hands[].tricks array
+            val pastTricks = hand["tricks"]?.jsonArray?.mapIndexedNotNull { tIdx, tEl ->
+                runCatching {
+                    val t      = tEl.jsonObject
+                    val leader = t["leaderSeat"]?.jsonPrimitive?.intOrNull
+                        ?: t["currentLeaderSeat"]?.jsonPrimitive?.intOrNull ?: 0
+                    val plays  = MutableList(4) { "" }
+                    t["plays"]?.jsonArray?.forEach { pEl ->
+                        runCatching {
+                            val pObj = pEl.jsonObject
+                            val uuid = pObj["playerId"]!!.jsonPrimitive.content
+                            val c    = pObj["card"]!!.jsonObject
+                            val seat = uuidToSeat[uuid]!!
+                            plays[seat] = "${c["rank"]!!.jsonPrimitive.intOrNull}_${c["suit"]!!.jsonPrimitive.intOrNull}"
+                        }
+                    }
+                    MpTrick(tIdx, leader, plays, t["winnerSeat"]?.jsonPrimitive?.intOrNull ?: -1)
+                }.getOrNull()
+            } ?: emptyList()
+
+            // Current in-progress trick reconstructed from perPlayer[uuid].currentPlay
+            val leaderSeat = hand["currentLeaderSeat"]?.jsonPrimitive?.intOrNull ?: 0
+            val curPlays   = MutableList(4) { "" }
+            var hasCurPlay = false
+            perPlayer.forEach { (uuid, state) ->
+                runCatching {
+                    val cp   = state["currentPlay"]?.jsonObject ?: return@runCatching
+                    val seat = uuidToSeat[uuid]!!
+                    curPlays[seat] = "${cp["rank"]!!.jsonPrimitive.intOrNull}_${cp["suit"]!!.jsonPrimitive.intOrNull}"
+                    hasCurPlay = true
+                }
+            }
+            val allTricks = if (hasCurPlay && androidPhase == "trick")
+                pastTricks + MpTrick(pastTricks.size, leaderSeat, curPlays, -1)
+            else pastTricks
+
+            MpHand(
+                handNum     = hand["number"]?.jsonPrimitive?.intOrNull ?: handIdx,
+                seatBids    = seatBids,
+                team0Bid    = team0Bid,
+                team1Bid    = team1Bid,
+                team0Tricks = team0Tricks,
+                team1Tricks = team1Tricks,
+                deal        = deal,
+                tricks      = allTricks
+            )
+        }.getOrNull()
+    }
+
+    // ── waitingSeat ───────────────────────────────────────────────────────────
+    val lastHand = handsArr.lastOrNull()?.jsonObject
+    val lastPP   = parsePerPlayer(lastHand?.get("perPlayer"))
+    // Android-generated iOS-format messages embed waitingSeat directly at the root
+    val waitingSeat = ios["waitingSeat"]?.jsonPrimitive?.intOrNull
+        ?: when (androidPhase) {
+            "bid" -> {
+                val nextUuid = lastHand?.get("bidOrder")?.jsonArray
+                    ?.firstOrNull { el ->
+                        val u = runCatching { el.jsonPrimitive.content }.getOrNull()
+                        u != null && lastPP[u]?.get("didBid")?.jsonPrimitive?.booleanOrNull != true
+                    }?.let { runCatching { it.jsonPrimitive.content }.getOrNull() }
+                uuidToSeat[nextUuid] ?: -1
+            }
+            "trick" -> {
+                val leader = lastHand?.get("currentLeaderSeat")?.jsonPrimitive?.intOrNull ?: 0
+                (0..3).map { off -> (leader + off) % 4 }.firstOrNull { seat ->
+                    lastPP[seatToUuid[seat] ?: ""]?.get("hasPlayedThisTrick")
+                        ?.jsonPrimitive?.booleanOrNull != true
+                } ?: -1
+            }
+            else -> -1
+        }
+
+    // ── Scores ────────────────────────────────────────────────────────────────
+    // Android-generated messages embed scores directly; fall back to scoreboard or perPlayer sums
+    val team0Score = ios["team0Score"]?.jsonPrimitive?.intOrNull
+        ?: run {
+            var t = 0
+            val scoresObj = ios["scoreboard"]?.jsonObject?.get("scores")?.jsonObject
+            if (!scoresObj.isNullOrEmpty()) {
+                scoresObj.forEach { (uuid, v) ->
+                    if (uuidToTeam[uuid] == 0) t += v.jsonPrimitive.intOrNull ?: 0
+                }
+            } else {
+                players.filter { it.team == 0 }.forEach { p ->
+                    t += lastPP[p.uuid]?.get("totalScore")?.jsonPrimitive?.intOrNull ?: 0
+                }
+            }
+            t
+        }
+    val team1Score = ios["team1Score"]?.jsonPrimitive?.intOrNull
+        ?: run {
+            var t = 0
+            val scoresObj = ios["scoreboard"]?.jsonObject?.get("scores")?.jsonObject
+            if (!scoresObj.isNullOrEmpty()) {
+                scoresObj.forEach { (uuid, v) ->
+                    if (uuidToTeam[uuid] == 1) t += v.jsonPrimitive.intOrNull ?: 0
+                }
+            } else {
+                players.filter { it.team == 1 }.forEach { p ->
+                    t += lastPP[p.uuid]?.get("totalScore")?.jsonPrimitive?.intOrNull ?: 0
+                }
+            }
+            t
+        }
+    val team0Bags = ios["team0Bags"]?.jsonPrimitive?.intOrNull ?: 0
+    val team1Bags = ios["team1Bags"]?.jsonPrimitive?.intOrNull ?: 0
+
+    Log.i("WSSMP", "iOS legacy gameState → phase=$androidPhase waitingSeat=$waitingSeat hands=${mpHands.size}")
+    GameObj(
+        phase       = androidPhase,
+        waitingSeat = waitingSeat,
+        gameOver    = iosPhase in listOf("finished", "gameFinished"),
+        team0Score  = team0Score,
+        team1Score  = team1Score,
+        team0Bags   = team0Bags,
+        team1Bags   = team1Bags,
+        seats       = seats,
+        hands       = mpHands
+    )
+}.getOrElse { e ->
+    Log.w("WSSMP", "tryParseIosLegacyGameState failed: ${e.message?.take(120)}")
+    null
 }
 
 fun parseIncoming(raw: String): SpadesMPMessage = try {
@@ -81,11 +414,6 @@ fun parseIncoming(raw: String): SpadesMPMessage = try {
         "playerBid" -> SpadesMPMessage.PlayerBid(personId, roomId, cmdId,
             seatIndex = payload["seatIndex"]?.toIntOrNull() ?: 0,
             bidAmount = payload["bidAmount"]?.toIntOrNull() ?: 0)
-        "allBids" -> SpadesMPMessage.AllBids(personId, roomId, cmdId,
-            team0Bid = payload["team0Bid"]?.toIntOrNull() ?: 0,
-            team1Bid = payload["team1Bid"]?.toIntOrNull() ?: 0,
-            team0IsBlind = payload["team0Blind"] == "true",
-            team1IsBlind = payload["team1Blind"] == "true")
         "blindOffer" -> SpadesMPMessage.BlindOffer(
             personId, roomId, cmdId,
             handNum = payload["handNum"]?.toIntOrNull() ?: 0,
@@ -146,6 +474,18 @@ fun parseIncoming(raw: String): SpadesMPMessage = try {
             displayName = payload["displayName"] ?: personId,
             message = payload["message"] ?: ""
         )
+        "gameState" -> {
+            if (obj.containsKey("data")) {
+                // Android format: top-level "data" object with GameObj
+                val envelope = json.decodeFromString<GameStateEnvelope>(raw)
+                SpadesMPMessage.GameState(envelope.playerId, envelope.roomId, envelope.cmdId, envelope.data)
+            } else {
+                // iOS legacy format: payload: {json: "..."} — attempt conversion to GameObj
+                val gameObj = tryParseIosLegacyGameState(obj)
+                if (gameObj != null) SpadesMPMessage.GameState(personId, roomId, cmdId, gameObj)
+                else SpadesMPMessage.Unknown(raw)
+            }
+        }
         "playerInfo" -> SpadesMPMessage.PlayerInfo(
             personId = personId,
             roomId = roomId,
@@ -173,6 +513,179 @@ fun parseIncoming(raw: String): SpadesMPMessage = try {
 
 private fun cmdId() = UUID.randomUUID().toString()
 
+/**
+ * Serializes [gameObj] to an iOS-compatible GameState JSON string (the value inside payload.json).
+ * Uses canonical seat IDs ("south"/"west"/"north"/"east") as stable player UUIDs so both
+ * Android's [tryParseIosLegacyGameState] and iOS's native parser can index by them.
+ * Android-specific fields (waitingSeat, team scores, bags) are embedded at the root so that
+ * [tryParseIosLegacyGameState] can read them directly without re-deriving from bid/trick state.
+ */
+fun gameObjToIosJson(gameObj: GameObj): String {
+    val canonIds = listOf("south", "west", "north", "east")
+
+    val iosPhase = when (gameObj.phase) {
+        "bid"             -> if (gameObj.waitingSeat >= 0) "bidHuman" else "bid"
+        "trick"           -> if (gameObj.waitingSeat >= 0) "trickHuman" else "trick"
+        "score", "endHand" -> "endHand"
+        "finished"        -> "gameFinished"
+        else              -> gameObj.phase
+    }
+
+    fun tokenToCard(token: String): JsonObject? {
+        val parts = token.split("_"); if (parts.size != 2) return null
+        val rank = parts[0].toIntOrNull() ?: return null
+        val suit = parts[1].toIntOrNull() ?: return null
+        return buildJsonObject { put("id", "a_${rank}_${suit}"); put("rank", rank); put("suit", suit) }
+    }
+
+    val root = buildJsonObject {
+        // ── Android extension fields (read by tryParseIosLegacyGameState) ─────────
+        put("waitingSeat", gameObj.waitingSeat)
+        put("team0Score",  gameObj.team0Score)
+        put("team1Score",  gameObj.team1Score)
+        put("team0Bags",   gameObj.team0Bags)
+        put("team1Bags",   gameObj.team1Bags)
+
+        // ── Standard iOS fields ───────────────────────────────────────────────────
+        put("phase", iosPhase)
+        put("currentHandIndex", (gameObj.hands.size - 1).coerceAtLeast(0))
+        put("gameType", "houseRules")
+
+        putJsonArray("players") {
+            gameObj.seats.sortedBy { it.seatIndex }.forEach { seat ->
+                addJsonObject {
+                    put("id", canonIds.getOrElse(seat.seatIndex) { "seat${seat.seatIndex}" })
+                    put("seatIndex", seat.seatIndex)
+                    put("team", seat.team)
+                    put("name", seat.playerName)
+                    put("isHuman", seat.isHuman)
+                }
+            }
+        }
+
+        putJsonArray("hands") {
+            gameObj.hands.forEach { hand ->
+                addJsonObject {
+                    put("number", hand.handNum)
+                    put("dealerSeatIndex", 0)
+                    put("currentLeaderSeat",
+                        hand.tricks.lastOrNull()?.leader ?: 0)
+
+                    putJsonArray("teamBids") { add(hand.team0Bid); add(hand.team1Bid) }
+                    putJsonArray("bidOrder") { canonIds.forEach { add(it) } }
+
+                    val completedTricks = hand.tricks.filter { it.winner >= 0 }
+                    val inProgress      = hand.tricks.lastOrNull()?.takeIf { it.winner < 0 }
+
+                    // Cards already played in completed tricks per seat
+                    val playedBySeat = Array(4) { mutableSetOf<String>() }
+                    completedTricks.forEach { trick ->
+                        trick.plays.forEachIndexed { seat, token ->
+                            if (token.isNotBlank()) playedBySeat[seat].add(token)
+                        }
+                    }
+
+                    // dealtHands: alternating [uuid, [Card...], ...]
+                    putJsonArray("dealtHands") {
+                        for (seat in 0..3) {
+                            add(canonIds[seat])
+                            addJsonArray {
+                                hand.deal.forSeat(seat).forEach { token ->
+                                    tokenToCard(token)?.let { add(it) }
+                                }
+                            }
+                        }
+                    }
+
+                    // perPlayer: alternating [uuid, {state}, ...]
+                    putJsonArray("perPlayer") {
+                        for (seat in 0..3) {
+                            add(canonIds[seat])
+                            addJsonObject {
+                                put("bid", hand.seatBids.getOrElse(seat) { 0 })
+                                put("didBid", hand.seatDidBid.getOrElse(seat) {
+                                    // fallback: completed hands → all bid; current hand → unknown (false)
+                                    hand.handNum < (gameObj.hands.lastOrNull()?.handNum ?: 0)
+                                })
+                                // Assign full team tricks to seat 0 / seat 1 so team sums work
+                                put("tricksTaken", when (seat) {
+                                    0 -> hand.team0Tricks
+                                    1 -> hand.team1Tricks
+                                    else -> 0
+                                })
+                                put("totalScore", when (seat) {
+                                    0 -> gameObj.team0Score
+                                    1 -> gameObj.team1Score
+                                    else -> 0
+                                })
+                                val curToken = inProgress?.plays?.getOrElse(seat) { "" } ?: ""
+                                put("hasPlayedThisTrick", curToken.isNotBlank())
+                                if (curToken.isNotBlank()) {
+                                    tokenToCard(curToken)?.let { put("currentPlay", it) }
+                                }
+                                // Remaining hand = deal minus cards played in completed tricks
+                                val remaining = hand.deal.forSeat(seat)
+                                    .filter { it !in playedBySeat[seat] }
+                                putJsonArray("hand") {
+                                    remaining.forEach { token -> tokenToCard(token)?.let { add(it) } }
+                                }
+                                put("cuttingSpades", false)
+                                put("cuttingHearts", false)
+                                put("cuttingClubs", false)
+                                put("cuttingDiamonds", false)
+                                put("sandBags", 0)
+                                put("blind", false)
+                            }
+                        }
+                    }
+
+                    // Completed tricks
+                    putJsonArray("tricks") {
+                        completedTricks.forEach { trick ->
+                            addJsonObject {
+                                put("leaderSeat", trick.leader)
+                                put("winnerSeat", trick.winner)
+                                putJsonArray("plays") {
+                                    trick.plays.forEachIndexed { seat, token ->
+                                        if (token.isNotBlank()) {
+                                            addJsonObject {
+                                                put("playerId", canonIds.getOrElse(seat) { "seat$seat" })
+                                                tokenToCard(token)?.let { put("card", it) }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        putJsonObject("scoreboard") {
+            putJsonObject("scores") {
+                put("south", gameObj.team0Score)
+                put("north", 0)
+                put("west",  gameObj.team1Score)
+                put("east",  0)
+            }
+            putJsonObject("sandbagCount")       {}
+            putJsonObject("playerAdjustments")  {}
+        }
+    }
+    return root.toString()
+}
+
+/** Builds a gameState wire message using the iOS payload.json envelope (understood by both platforms). */
+fun buildGameState(personId: String, roomId: String, gameObj: GameObj): String =
+    MpEnvelope(
+        type    = "gameState",
+        playerId = personId,
+        roomId  = roomId,
+        cmdId   = cmdId(),
+        payload = mapOf("json" to gameObjToIosJson(gameObj))
+    ).toJson()
+
 fun buildJoinRoom(roomId: String, playerId: String): String =
     """{"action":"joinRoom","playerId":"$playerId","roomId":"$roomId","gameType":"spades"}"""
 
@@ -192,13 +705,6 @@ fun buildStart(personId: String, roomId: String) =
 fun buildPlayerBid(personId: String, roomId: String, seatIndex: Int, bidAmount: Int) =
     MpEnvelope(type = "playerBid", playerId = personId, roomId = roomId, cmdId = cmdId(),
         payload = mapOf("seatIndex" to seatIndex.toString(), "bidAmount" to bidAmount.toString())).toJson()
-
-fun buildAllBids(personId: String, roomId: String, team0Bid: Int, team1Bid: Int, team0IsBlind: Boolean = false, team1IsBlind: Boolean = false) =
-    MpEnvelope(type = "allBids", playerId = personId, roomId = roomId, cmdId = cmdId(),
-        payload = mapOf(
-            "team0Bid" to team0Bid.toString(), "team0Blind" to team0IsBlind.toString(),
-            "team1Bid" to team1Bid.toString(), "team1Blind" to team1IsBlind.toString()
-        )).toJson()
 
 fun buildStartCountdown(personId: String, roomId: String, seconds: Int) =
     MpEnvelope(type = "startCountdown", playerId = personId, roomId = roomId,

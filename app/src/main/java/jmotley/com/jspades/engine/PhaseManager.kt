@@ -20,6 +20,7 @@ import jmotley.com.jspades.data.Score
 import jmotley.com.jspades.data.SeatKind
 import jmotley.com.jspades.data.effectiveMinBid
 import jmotley.com.jspades.data.targetScore
+import jmotley.com.jspades.data.cardFromToken
 import jmotley.com.jspades.data.toToken
 import jmotley.com.jspades.models.GameViewModel
 import jmotley.com.jspades.networking.PlayLogApi
@@ -30,7 +31,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -141,48 +141,6 @@ class PhaseManager(
         val gt    = state.gameType
         val ids   = state.players.map { it.id }
 
-        // MP path: use the server-dealt hands broadcast by the host.
-        // Hand 1: pre-loaded into pendingMpHands by onLobbyComplete.
-        // Hand 2+: guest suspends here until the host broadcasts the new deal over WSS.
-        // Skip deal animation entirely — go straight to Bid (same race-condition reason as before).
-        val mpHands = viewModel.pendingMpHands
-            ?: if (state.isMultiplayer && !jmotley.com.jspades.data.MPSession.isHost) awaitGuestDeal() else null
-        if (mpHands != null) {
-            viewModel.pendingMpHands = null
-            val perPlayer = ids.associateWith { id ->
-                var hand = mpHands[id] ?: emptyList()
-                // Apply the same joker promotions as the offline deal path so that
-                // twoOfSpadesJoker / twoOfDiamondsJoker rules work in MP games.
-                if (state.twoOfSpadesJoker || state.twoOfDiamondsJoker) {
-                    hand = hand.map { c ->
-                        if (c.suit == Suit.SPADES && c.rank == Rank.TWO)
-                            Card(suit = Suit.SPADES, rank = Rank.DEUCE) else c
-                    }
-                }
-                if (state.twoOfDiamondsJoker) {
-                    hand = hand.map { c ->
-                        if (c.suit == Suit.DIAMONDS && c.rank == Rank.TWO)
-                            Card(suit = Suit.SPADES, rank = Rank.WILDDEUCE) else c
-                    }
-                }
-                PlayerHandState(hand = hand.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal })))
-            }
-            viewModel.applyDeal(Hand(playerOrder = ids, perPlayer = perPlayer))
-            PlayLogger.logGameType(viewModel.state.value)
-            PlayLogger.logDealtHands(viewModel.state.value)
-            viewModel.handStartSnapshot = viewModel.state.value.toSnapshot()
-            // Mark all players as blind-decided so handleBid doesn't wait on blind round.
-            ids.forEach { viewModel.markBlindDecision(it) }
-            viewModel.advancePhase(GamePhase.Bid)
-            dispatch()
-            return
-        }
-
-        // Guard: an MP guest should never deal locally — awaitGuestDeal() timed out.
-        // Leave the phase as Deal and return; the engine stops until the user navigates back.
-        // This is preferable to a silent local shuffle that would immediately desync with the host.
-        if (state.isMultiplayer && !jmotley.com.jspades.data.MPSession.isHost) return
-
         // 1. Build base deck: TWO–ACE × all 4 suits
         val standardRanks = listOf(
             Rank.TWO, Rank.THREE, Rank.FOUR, Rank.FIVE, Rank.SIX, Rank.SEVEN,
@@ -236,56 +194,11 @@ class PhaseManager(
         // Capture hand-start checkpoint and reset per-hand cheat flags
         viewModel.handStartSnapshot = viewModel.state.value.toSnapshot()
 
-        // MP host hand 2+: broadcast dealt hands to guests, then skip deal animation.
-        if (state.isMultiplayer && jmotley.com.jspades.data.MPSession.isHost) {
-            Log.i(MPTAG, "handleDeal: host broadcasting deal handNum=${viewModel.mpHandNum}")
-            broadcastDeal()
-            ids.forEach { viewModel.markBlindDecision(it) }
-            viewModel.advancePhase(GamePhase.Bid)
-            dispatch()
-            return
-        }
+        // Broadcast the deal to all clients with phase="bid" and the first bidder as waitingSeat
+        viewModel.sendMpGameState("bid", viewModel.state.value.leaderIndex)
 
         viewModel.advancePhase(GamePhase.DealHuman)
         dispatch()
-    }
-
-    /** MP guest: suspends until the host's WSS deal arrives; returns hands keyed by canonical ID. */
-    private suspend fun awaitGuestDeal(): Map<String, List<Card>>? {
-        val session = jmotley.com.jspades.data.MPSession.session ?: return null
-        Log.i(MPTAG, "awaitGuestDeal: waiting for host deal (pendingDeal=${session.pendingDeal.value != null})")
-        val deal = session.pendingDeal.value
-            ?: withTimeoutOrNull(30_000L) { session.pendingDeal.first { it != null } }
-            ?: run { Log.e(MPTAG, "awaitGuestDeal: 30s timeout — stopping engine"); return null }
-        val localSeat = viewModel.mpLocalSeatIndex.coerceAtLeast(0)
-        val canonicals = listOf("south", "west", "north", "east")
-        viewModel.mpHandNum = deal.handNum
-        session.consumePendingDeal()
-        return canonicals.indices.associate { offset ->
-            canonicals[offset] to (deal.hands[(localSeat + offset) % 4] ?: emptyList())
-                .mapNotNull { jmotley.com.jspades.data.cardFromToken(it) }
-        }
-    }
-
-    /** MP host: converts the just-dealt local hands to wire format and sends the WSS deal. */
-    private fun broadcastDeal() {
-        val session = jmotley.com.jspades.data.MPSession.session ?: return
-        val s = viewModel.state.value
-        val hand = s.phaseHands[GamePhase.Deal]?.lastOrNull() ?: return
-        val localSeat = viewModel.mpLocalSeatIndex.coerceAtLeast(0)
-        val canonicals = listOf("south", "west", "north", "east")
-        val dealerSeat = (viewModel.mpHandNum - 1) % 4
-        val lobby = session.lobby.value
-        val firstLead = if (lobby != null) {
-            (1..3).map { (dealerSeat + it) % 4 }
-                .firstOrNull { idx -> lobby.seats.find { s -> s.seatIndex == idx }?.kind != SeatKind.Open }
-                ?: (dealerSeat + 1) % 4
-        } else (dealerSeat + 1) % 4
-        val wireHands = canonicals.indices.associate { offset ->
-            val roomSeat = (localSeat + offset) % 4
-            roomSeat to (hand.perPlayer[canonicals[offset]]?.hand?.map { it.toToken() } ?: emptyList())
-        }
-        session.sendDeal(viewModel.mpHandNum, dealerSeat, firstLead, wireHands)
     }
 
     // ── Deal algorithms ───────────────────────────────────────────────────────
@@ -719,6 +632,19 @@ class PhaseManager(
                     dispatch()
                     return
                 }
+                // Remote human player — wait for their bid to arrive over the network
+                if (viewModel.isRemoteHumanCanonicalId(player.id)) {
+                    val remoteSeat = listOf("south", "west", "north", "east").indexOf(player.id)
+                    val (bid, isBlind) = viewModel.awaitRemoteHumanBid(remoteSeat)
+                    viewModel.submitBid(player.id, bid, isBlind)
+                    viewModel.emitAnimation(AnimationEvent.BidPlaced(player.id, bid))
+                    val s2 = viewModel.state.value
+                    val nextBidSeat = (0 until s2.players.size).firstOrNull { off ->
+                        !s2.players[(s2.leaderIndex + off) % s2.players.size].runtimeFlags.didBid
+                    }?.let { off -> (s2.leaderIndex + off) % s2.players.size } ?: -1
+                    viewModel.sendMpGameState("bid", nextBidSeat)
+                    return
+                }
                 val hand   = getPlayerHand(s, player.id)
                 val result = BidEngine.computeCpuBid(
                     hand          = hand,
@@ -729,6 +655,12 @@ class PhaseManager(
                 viewModel.submitBid(player.id, result.bid, result.isBlind)
                 // Fire-and-forget: emit event, return; animation completion calls execute()
                 viewModel.emitAnimation(AnimationEvent.BidPlaced(player.id, result.bid))
+                // Send updated bid state; next bidder determined from fresh state
+                val s2 = viewModel.state.value
+                val nextBidSeat = (0 until s2.players.size).firstOrNull { off ->
+                    !s2.players[(s2.leaderIndex + off) % s2.players.size].runtimeFlags.didBid
+                }?.let { off -> (s2.leaderIndex + off) % s2.players.size } ?: -1
+                viewModel.sendMpGameState("bid", nextBidSeat)
                 return
             }
         }
@@ -741,9 +673,10 @@ class PhaseManager(
      * House Rules team bid flow.
      *
      * Non-dealer team bids first; dealer's team bids second.
+     * Within each team, the bid order is always: CPUs first → remote human → local human (south).
+     * This ensures every human player sees their CPU partner's bid before being asked to enter
+     * the team total, regardless of seat position.
      * Fire-and-forget: one CPU bid per execute() call.
-     * CPU-only teams: sum individual bids after all have bid (idempotent on re-entry).
-     * Human's team: hand off to BidHuman when all CPU partners have bid.
      */
     private suspend fun handleBidHouseRules() {
         val s          = viewModel.state.value
@@ -753,93 +686,137 @@ class PhaseManager(
         val teamOrder  = listOf(1 - dealerTeam, dealerTeam) // non-dealer first
 
         for (teamId in teamOrder) {
-            val teamPlayers    = s.players.filter { it.team == teamId }
-            val humanOnTeam    = teamPlayers.any { it.id == "south" }
+            val teamPlayers     = s.players.filter { it.team == teamId }
+            val humanOnTeam     = teamPlayers.any { it.id == "south" }
             val humanAlreadyBid = s.players.find { it.id == "south" }?.runtimeFlags?.didBid ?: false
 
-            // Check if this team is already committed to a blind bid (set by a previous CPU on the team)
             val teamAlreadyBlind = s.phaseHands[GamePhase.Deal]?.lastOrNull()
                 ?.teamBlind?.getOrNull(teamId) ?: false
 
             if (teamAlreadyBlind) {
-                // Blind already committed — auto-fill any remaining unbidd players and skip BidHuman
+                // Blind already committed — auto-fill any remaining unbid players and skip BidHuman
                 val remaining = teamPlayers.filter { !it.runtimeFlags.didBid }
                 if (remaining.isNotEmpty()) {
                     remaining.forEach { p -> viewModel.submitBid(p.id, 0, false) }
                     viewModel.emitAnimation(AnimationEvent.BidPlaced(remaining.first().id, 0))
                     return
                 }
-                // fall through to next team
-            } else {
-                // Find the next unbid non-south player on this team.
-                // Remote human partners wait for a playerBid WebSocket message;
-                // CPU players are auto-bid by the engine as before.
-                val nextUnbid = teamPlayers.firstOrNull { !it.runtimeFlags.didBid && it.id != "south" }
-                if (nextUnbid != null) {
-                    if (s.remoteHumanIds.contains(nextUnbid.id)) {
-                        // Remote human — suspend until their bid arrives via WebSocket
-                        val bid = viewModel.awaitRemoteBid(nextUnbid.id)
-                        viewModel.submitBid(nextUnbid.id, bid, false)
-                        viewModel.emitAnimation(AnimationEvent.BidPlaced(nextUnbid.id, bid))
-                        return
+                continue // all done for this team — check next
+            }
+
+            // ── Step 1: CPU players always bid first ──────────────────────────
+            // This guarantees every human (local or remote) sees the CPU partner's
+            // individual bid before entering the team total, regardless of seat order.
+            val nextCpuUnbid = teamPlayers.firstOrNull {
+                !it.runtimeFlags.didBid &&
+                it.id != "south" &&
+                !viewModel.isRemoteHumanCanonicalId(it.id)
+            }
+            if (nextCpuUnbid != null) {
+                val hand   = getPlayerHand(s, nextCpuUnbid.id)
+                val result = BidEngine.computeCpuBid(hand, nextCpuUnbid, s)
+
+                if (result.isBlind) {
+                    viewModel.submitBid(nextCpuUnbid.id, 0, false)
+                    teamPlayers.filter { it.id != nextCpuUnbid.id }.forEach { p ->
+                        viewModel.submitBid(p.id, 0, false)
                     }
-
-                    // CPU — auto-bid
-                    val hand   = getPlayerHand(s, nextUnbid.id)
-                    val result = BidEngine.computeCpuBid(hand, nextUnbid, s)
-
-                    if (result.isBlind) {
-                        // Team goes blind: commit combined bid of 7, auto-fill all teammates
-                        viewModel.submitBid(nextUnbid.id, 0, false)
-                        teamPlayers.filter { it.id != nextUnbid.id }.forEach { p ->
-                            viewModel.submitBid(p.id, 0, false)
-                        }
-                        viewModel.setTeamBid(teamId, 7)
-                        viewModel.setTeamBlind(teamId, true)
-                        viewModel.emitAnimation(AnimationEvent.BidPlaced(nextUnbid.id, 7))
-                        return
-                    }
-
-                    viewModel.submitBid(nextUnbid.id, result.bid, result.isBlind)
-                    viewModel.emitAnimation(AnimationEvent.BidPlaced(nextUnbid.id, result.bid))
+                    viewModel.setTeamBid(teamId, 7)
+                    viewModel.setTeamBlind(teamId, true)
+                    viewModel.emitAnimation(AnimationEvent.BidPlaced(nextCpuUnbid.id, 7))
+                    viewModel.sendMpGameState("bid", nextHumanBidSeat(viewModel.state.value))
                     return
                 }
 
-                // All CPUs on this team have bid
-                if (humanOnTeam && !humanAlreadyBid) {
-                    val allowBid = AchievementsRepo.getActiveChallengeAllowBid(context)
-                    if (allowBid != null && allowBid != "south") {
-                        viewModel.submitBid("south", 0, false)
-                        viewModel.emitAnimation(AnimationEvent.BidPlaced("south", 0))
-                        return
+                viewModel.submitBid(nextCpuUnbid.id, result.bid, result.isBlind)
+                viewModel.emitAnimation(AnimationEvent.BidPlaced(nextCpuUnbid.id, result.bid))
+                viewModel.sendMpGameState("bid", nextHumanBidSeat(viewModel.state.value))
+                return
+            }
+
+            // ── Step 2: Remote human bids after all CPUs on this team ─────────
+            val nextRemoteUnbid = teamPlayers.firstOrNull {
+                !it.runtimeFlags.didBid &&
+                it.id != "south" &&
+                viewModel.isRemoteHumanCanonicalId(it.id)
+            }
+            if (nextRemoteUnbid != null) {
+                val remoteSeat = listOf("south", "west", "north", "east").indexOf(nextRemoteUnbid.id)
+                // Tell the guest it is their turn before suspending to await their bid.
+                viewModel.sendMpGameState("bid", remoteSeat)
+                val (bid, isBlind) = viewModel.awaitRemoteHumanBid(remoteSeat)
+                if (isBlind) {
+                    viewModel.submitBid(nextRemoteUnbid.id, 0, false)
+                    teamPlayers.filter { it.id != nextRemoteUnbid.id }.forEach { p ->
+                        viewModel.submitBid(p.id, 0, false)
                     }
-                    viewModel.advancePhase(GamePhase.BidHuman)
-                    dispatch()
+                    viewModel.setTeamBid(teamId, 7)
+                    viewModel.setTeamBlind(teamId, true)
+                    viewModel.emitAnimation(AnimationEvent.BidPlaced(nextRemoteUnbid.id, 7))
+                } else {
+                    viewModel.submitBid(nextRemoteUnbid.id, bid, false)
+                    viewModel.emitAnimation(AnimationEvent.BidPlaced(nextRemoteUnbid.id, bid))
+                }
+                viewModel.sendMpGameState("bid", nextHumanBidSeat(viewModel.state.value))
+                return
+            }
+
+            // ── Step 3: Local human (south) bids last on their team ───────────
+            if (humanOnTeam && !humanAlreadyBid) {
+                val allowBid = AchievementsRepo.getActiveChallengeAllowBid(context)
+                if (allowBid != null && allowBid != "south") {
+                    viewModel.submitBid("south", 0, false)
+                    viewModel.emitAnimation(AnimationEvent.BidPlaced("south", 0))
+                    viewModel.sendMpGameState("bid", nextHumanBidSeat(viewModel.state.value))
                     return
                 }
+                viewModel.advancePhase(GamePhase.BidHuman)
+                viewModel.sendMpGameState("bid", 0)
+                dispatch()
+                return
+            }
 
-                if (!humanOnTeam) {
-                    val remoteHuman = teamPlayers.firstOrNull { s.remoteHumanIds.contains(it.id) }
-                    val teamBid = if (remoteHuman != null) {
-                        // Remote human bids for the whole team in house rules — CPU partner bid is
-                        // informational only and must not be added to the team total.
-                        (s.phaseHands[GamePhase.Deal]?.lastOrNull()
-                            ?.perPlayer?.get(remoteHuman.id)?.bid ?: 0)
-                            .coerceAtLeast(s.effectiveMinBid)
-                    } else {
-                        // CPU-only team — sum individual bids and store team total (idempotent)
-                        teamPlayers.sumOf { player ->
-                            s.phaseHands[GamePhase.Deal]?.lastOrNull()
-                                ?.perPlayer?.get(player.id)?.bid ?: 0
-                        }.coerceAtLeast(s.effectiveMinBid)
-                    }
-                    viewModel.setTeamBid(teamId, teamBid)
-                }
-                // fall through to next team
+            if (!humanOnTeam) {
+                val teamBid = teamPlayers.sumOf { player ->
+                    s.phaseHands[GamePhase.Deal]?.lastOrNull()
+                        ?.perPlayer?.get(player.id)?.bid ?: 0
+                }.coerceAtLeast(s.effectiveMinBid)
+                viewModel.setTeamBid(teamId, teamBid)
             }
         }
 
         viewModel.advancePhase(GamePhase.BidReview)
+    }
+
+    /**
+     * Scans fresh bid state (after a bid is submitted) and returns the room-seat index
+     * of the next human who still needs to bid, or -1 if only CPUs remain.
+     * Respects team order (non-dealer first) and the CPU-first rule within each team.
+     */
+    private fun nextHumanBidSeat(s: GameState): Int {
+        val n          = s.players.size
+        val dealerIdx  = (s.leaderIndex - 1 + n) % n
+        val dealerTeam = s.players[dealerIdx].team
+        val canonIds   = listOf("south", "west", "north", "east")
+        for (teamId in listOf(1 - dealerTeam, dealerTeam)) {
+            val team = s.players.filter { it.team == teamId }
+            // If any CPU on this team still hasn't bid, humans on this team aren't up yet
+            val cpuStillPending = team.any {
+                !it.runtimeFlags.didBid &&
+                it.id != "south" &&
+                !viewModel.isRemoteHumanCanonicalId(it.id)
+            }
+            if (cpuStillPending) continue
+            // Remote humans bid before south
+            team.firstOrNull {
+                !it.runtimeFlags.didBid &&
+                it.id != "south" &&
+                viewModel.isRemoteHumanCanonicalId(it.id)
+            }?.let { return canonIds.indexOf(it.id) }
+            // Local host
+            if (team.any { it.id == "south" && !it.runtimeFlags.didBid }) return 0
+        }
+        return -1
     }
 
     /**
@@ -867,18 +844,9 @@ class PhaseManager(
 
     /** Advance from bidding to Trick — kitty is always resolved before bidding. */
     private suspend fun advanceAfterBidding() {
-        // Apply the MP first-lead index if the host provided one, so the correct player
-        // leads the first trick even when some seats are empty (firstLead skips open seats).
-        val firstLead = viewModel.mpFirstLeadIndex
-        if (firstLead >= 0) {
-            viewModel.mpFirstLeadIndex = -1   // consume
-            viewModel.advancePhase(GamePhase.Trick)
-            viewModel.setLeaderIndex(firstLead)
-            Log.i(MPTAG, "advanceAfterBidding: applying firstLead=$firstLead (canonical leaderIndex=$firstLead)")
-        } else {
-            viewModel.advancePhase(GamePhase.Trick)
-            Log.i(MPTAG, "advanceAfterBidding: no mpFirstLeadIndex, using default leaderIndex=${viewModel.state.value.leaderIndex}")
-        }
+        viewModel.advancePhase(GamePhase.Trick)
+        // Broadcast to clients: trick phase begins, waiting for the first leader
+        viewModel.sendMpGameState("trick", viewModel.state.value.leaderIndex)
         dispatch()
     }
 
@@ -965,26 +933,43 @@ class PhaseManager(
             return
         }
 
-        // Remote player — suspend until their playCard WSS message arrives
-        if (s.remotePlayerIds.contains(nextPlayer)) {
-            Log.i(MPTAG, "handleTrick: awaiting remote play from $nextPlayer (playedCount=$playedCount leaderIndex=${s.leaderIndex})")
-            val card = viewModel.awaitRemotePlay(nextPlayer)
-            Log.i(MPTAG, "handleTrick: received remote play from $nextPlayer card=${card.toToken()}")
-            viewModel.playCard(nextPlayer, card)
-            viewModel.removeCardFromHand(nextPlayer, card)
-            val trickComplete = viewModel.state.value.currentTrick.plays.count { it != null } == n
-            if (trickComplete) viewModel.advancePhase(GamePhase.TrickResolve)
-            viewModel.emitAnimation(AnimationEvent.CardPlayed(nextPlayer, card))
+        // Remote human player — wait for their card over the network
+        if (viewModel.isRemoteHumanCanonicalId(nextPlayer)) {
+            val remoteSeat = listOf("south", "west", "north", "east").indexOf(nextPlayer)
+            val cardToken  = viewModel.awaitRemoteHumanPlay(remoteSeat)
+            val remoteCard = cardFromToken(cardToken)
+            val playCard   = if (remoteCard != null) remoteCard else {
+                Log.w(MPTAG, "Remote play: invalid token='$cardToken' seat=$remoteSeat — auto-play fallback")
+                PlayEngine.selectCard(nextPlayer, s)
+            }
+            viewModel.cpuPlay(nextPlayer, playCard)
+            val s2r = viewModel.state.value
+            val trickCompleteR = s2r.currentTrick.plays.count { it != null } == n
+            if (trickCompleteR) viewModel.advancePhase(GamePhase.TrickResolve)
+            val nextSeatR = if (trickCompleteR) -1 else {
+                (s2r.leaderIndex + s2r.currentTrick.plays.count { it != null }) % n
+            }
+            viewModel.sendMpGameState("trick", nextSeatR)
+            viewModel.emitAnimation(AnimationEvent.CardPlayed(nextPlayer, playCard))
             return
         }
 
         val card = PlayEngine.selectCard(nextPlayer, s)
         viewModel.cpuPlay(nextPlayer, card)
 
-        val trickComplete = viewModel.state.value.currentTrick.plays.count { it != null } == n
+        val s2 = viewModel.state.value
+        val trickComplete = s2.currentTrick.plays.count { it != null } == n
         if (trickComplete) {
             viewModel.advancePhase(GamePhase.TrickResolve)
         }
+
+        // Broadcast updated trick state; waitingSeat = next player or -1 if trick is complete
+        val nextTrickSeat = if (trickComplete) -1 else {
+            val played2 = s2.currentTrick.plays.count { it != null }
+            (s2.leaderIndex + played2) % n
+        }
+        viewModel.sendMpGameState("trick", nextTrickSeat)
+
         // Fire-and-forget: emit card play event; animation completion calls execute()
         viewModel.emitAnimation(AnimationEvent.CardPlayed(nextPlayer, card))
     }
@@ -1010,6 +995,20 @@ class PhaseManager(
         val leaderId   = leadPlay.playerId
         val winnerPlay = PlayEngine.computeTrickWinner(s.currentTrick.plays)
         val winnerId   = winnerPlay.playerId
+
+        // Record completed trick for MP game object BEFORE collectTrick() clears the plays
+        if (viewModel.isMultiplayer) {
+            val canonIds = listOf("south", "west", "north", "east")
+            val byRoomSeat = MutableList(4) { "" }
+            s.currentTrick.plays.forEach { play ->
+                if (play != null) {
+                    val seat = canonIds.indexOf(play.playerId)
+                    if (seat >= 0) byRoomSeat[seat] = play.card.toToken()
+                }
+            }
+            val winnerIdx = s.players.indexOfFirst { it.id == winnerId }.coerceAtLeast(0)
+            viewModel.recordMpCompletedTrick(viewModel.mpTrickHistory.size, s.leaderIndex, byRoomSeat, winnerIdx)
+        }
 
         // Break spades if trump was played on a non-trump lead (Classic gate)
         if (!isTrump(leadCard) && !s.spadesBroken) {
@@ -1046,6 +1045,11 @@ class PhaseManager(
         val handsEmpty = fresh.phaseHands[GamePhase.Deal]?.lastOrNull()
             ?.perPlayer?.values?.all { phs -> phs.hand.isEmpty() } == true
         viewModel.advancePhase(if (handsEmpty) GamePhase.Score else GamePhase.Trick)
+
+        // Broadcast resolved trick; if hand ends, handleScore() will send the score state
+        if (!handsEmpty) {
+            viewModel.sendMpGameState("trick", winnerIndex)
+        }
 
         // Fire-and-forget: emit winner event with play snapshot; animation completion calls execute()
         viewModel.emitAnimation(AnimationEvent.TrickWon(winnerId, plays))
@@ -1121,8 +1125,13 @@ class PhaseManager(
         }
         val high = totals.values.maxOrNull() ?: 0
         val low  = totals.values.minOrNull() ?: 0
-        viewModel.advancePhase(if (high >= u.targetScore || low <= -u.targetScore) GamePhase.Finished else GamePhase.EndHand)
-        if (jmotley.com.jspades.data.MPSession.isHost) viewModel.sendMpHandScore()
+        val nextPhase = if (high >= u.targetScore || low <= -u.targetScore) GamePhase.Finished else GamePhase.EndHand
+        viewModel.advancePhase(nextPhase)
+
+        // Seal the hand into history and broadcast final score/endHand/finished state to clients
+        viewModel.sealMpHand()
+        viewModel.sendMpGameState(if (nextPhase == GamePhase.Finished) "finished" else "endHand", -1)
+
         dispatch()
     }
 

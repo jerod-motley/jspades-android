@@ -1,33 +1,30 @@
 package jmotley.com.jspades.data
 
+import jmotley.com.jspades.networking.GameObj
+
+/** Client-only display state derived from the latest received GameObj. */
+data class ClientDisplayState(
+    val gameObj: GameObj? = null,
+    val myRoomSeat: Int = 0,
+    val isMyTurn: Boolean = false,
+    val myHand: List<String> = emptyList(),  // card tokens for this client's current hand
+    val waitingSeatName: String = ""
+) {
+    /** Maps a visual position (0=south … 3=east) to a room seat index. */
+    fun roomSeatForVisual(visualPos: Int): Int = (myRoomSeat + visualPos) % 4
+}
+
 data class MPGameConfig(
-    /** [south, west, north, east] display names */
+    /** [south, west, north, east] display names rotated for this device's perspective */
     val playerNames: List<String>,
     /** Canonical IDs used by GameViewModel ("south","west","north","east") */
     val playerIds: List<String> = listOf("south", "west", "north", "east"),
-    /** This device's room seat index (0 = host/south, 1 = west, 2 = north, 3 = east) */
+    /** This device's room seat index (0 = host/south, 1..3 = guests) */
     val localSeatIndex: Int = 0,
     val roomId: String = "",
-    /**
-     * Pre-dealt hands keyed by canonical player ID ("south","west","north","east"), already
-     * rotated for this device's perspective. When set, PlayScreen skips the local shuffle
-     * so every device plays the same deck broadcast by the host.
-     */
-    val dealtHands: Map<String, List<String>>? = null,
-    /**
-     * Room seat index of the player who leads the first trick (computed by the host from the
-     * actual seat layout). Used to set the game engine's leaderIndex for trick play.
-     */
-    val firstLeadRoomSeat: Int = 1,
     val handNum: Int = 1,
-    /** Canonical IDs of non-south human players whose bids arrive via WebSocket. */
-    val remoteHumanIds: Set<String> = emptySet(),
-    /**
-     * Canonical IDs of ALL non-south seats whose card plays arrive via WebSocket.
-     * On the host device this equals remoteHumanIds. On a guest device this includes
-     * every non-south seat because the host relays all plays (CPU + human).
-     */
-    val remotePlayerIds: Set<String> = emptySet()
+    /** Room seat indices of human players who are NOT this device (host only). */
+    val remoteHumanSeats: Set<Int> = emptySet()
 )
 
 /** App-scoped one-shot holder for passing MP game config from the lobby to PlayScreen. */

@@ -347,13 +347,6 @@ data class GameState(
     /** True for WebSocket multiplayer games — suppresses single-player-only features like rewarded ads. */
     val isMultiplayer: Boolean = false,
     /**
-     * Canonical player IDs ("west", "north", "east") of remote human players.
-     * PhaseManager waits for their playerBid WebSocket message instead of auto-bidding.
-     */
-    val remoteHumanIds: Set<String> = emptySet(),
-    /** All non-south seats whose moves arrive via WSS (used for trick play awaiting). */
-    val remotePlayerIds: Set<String> = emptySet(),
-    /**
      * Game length: controls the score threshold needed to win.
      * SHORT / MEDIUM / LONG targets:
      *   Team / 2-man / 3-man solo: 150 / 250 / 500.
