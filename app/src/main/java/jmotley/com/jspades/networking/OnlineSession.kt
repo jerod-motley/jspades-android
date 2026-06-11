@@ -55,6 +55,16 @@ class OnlineSession(
     private var startGameReceived = false
     private var lastAppliedSnapshotSeq = 0
 
+    // ── Canonical game identity ───────────────────────────────────────────────
+    // seatUuidMap: room-seat-index → UUID used in outgoing gameState JSON.
+    // Human seats use the player's WSS playerId; CPU seats get a generated UUID.
+    // Populated lazily on the host's first sendGameState call.
+    private val seatUuidMap = mutableMapOf<Int, String>()
+    // Stable UUID for the current game session; drives deterministic hand IDs.
+    private var mpGameId = java.util.UUID.randomUUID().toString()
+    // Monotonically incrementing counter for the iOS seq dedup/ordering guard.
+    private var sendSeq = 0
+
     // ── Internal ──────────────────────────────────────────────────────────────
 
     private lateinit var socket: GameSocketClient
@@ -128,6 +138,9 @@ class OnlineSession(
         startGameReceived = false
         lastAppliedSnapshotSeq = 0
         seenCmdIds.clear()
+        seatUuidMap.clear()
+        mpGameId = java.util.UUID.randomUUID().toString()
+        sendSeq = 0
     }
 
     // ── Sending ───────────────────────────────────────────────────────────────
@@ -135,8 +148,20 @@ class OnlineSession(
     /** Host sends the full game object to all clients after every state change. */
     fun sendGameState(gameObj: GameObj) {
         val state = _lobby.value ?: return
-        Log.i(TAG, "sendGameState phase=${gameObj.phase} waitingSeat=${gameObj.waitingSeat} hands=${gameObj.hands.size}")
-        socket.send(buildGameState(state.localPlayerId, state.roomId, gameObj))
+        // Populate UUID map on first send: human seats use their WSS playerId, CPU seats get
+        // a generated UUID. Map is stable for the lifetime of the game session.
+        if (seatUuidMap.isEmpty()) {
+            state.seats.forEach { seat ->
+                seatUuidMap[seat.seatIndex] = when {
+                    seat.kind == SeatKind.Human && !seat.playerId.isNullOrBlank() -> seat.playerId
+                    else -> java.util.UUID.randomUUID().toString()
+                }
+            }
+            Log.i(TAG, "seatUuidMap initialized: $seatUuidMap")
+        }
+        val seq = ++sendSeq
+        Log.i(TAG, "sendGameState phase=${gameObj.phase} waitingSeat=${gameObj.waitingSeat} seq=$seq hands=${gameObj.hands.size}")
+        socket.send(buildGameState(state.localPlayerId, state.roomId, gameObj, seatUuidMap, mpGameId, seq))
     }
 
     fun sendChat(text: String) {
@@ -195,7 +220,11 @@ class OnlineSession(
 
             // Game protocol messages — full game object from host; card/bid inputs from clients
             is SpadesMPMessage.GameState -> {
-                _pendingGameState.value = msg.data
+                val gs = msg.data
+                if (gs.phase == "bid" && gs.waitingSeat < 0) {
+                    Log.i(TAG, "GameState: all bids in — awaiting trick-phase state from host")
+                }
+                _pendingGameState.value = gs
                 // iOS hosts may send gameState without a prior startGame/startCountdown.
                 // Treat the first gameState as the implicit start signal so the guest navigates.
                 if (!startGameReceived) {

@@ -469,7 +469,7 @@ fun parseIncoming(raw: String): SpadesMPMessage = try {
             handNum = payload["handNum"]?.toIntOrNull() ?: 0,
             winnerTeam = payload["winnerTeam"]?.toIntOrNull() ?: 0
         )
-        "chat" -> SpadesMPMessage.Chat(
+        "chat", "chatMessage" -> SpadesMPMessage.Chat(
             personId, roomId, cmdId,
             displayName = payload["displayName"] ?: personId,
             message = payload["message"] ?: ""
@@ -514,51 +514,77 @@ fun parseIncoming(raw: String): SpadesMPMessage = try {
 private fun cmdId() = UUID.randomUUID().toString()
 
 /**
- * Serializes [gameObj] to an iOS-compatible GameState JSON string (the value inside payload.json).
- * Uses canonical seat IDs ("south"/"west"/"north"/"east") as stable player UUIDs so both
- * Android's [tryParseIosLegacyGameState] and iOS's native parser can index by them.
- * Android-specific fields (waitingSeat, team scores, bags) are embedded at the root so that
- * [tryParseIosLegacyGameState] can read them directly without re-deriving from bid/trick state.
+ * Serializes [gameObj] to the canonical iOS GameState JSON (the value inside payload.json).
+ *
+ * [seatUuidMap]  room-seat-index → UUID string. Human seats use their WSS playerId;
+ *                CPU seats use a UUID generated once at game-start. Populated by the host;
+ *                callers that don't supply a map get random UUIDs (non-cross-platform safe).
+ * [gameId]       stable UUID for this game session, used to generate deterministic hand IDs.
+ *
+ * tryParseIosLegacyGameState reads [waitingSeat] from the root, so that field is kept as
+ * an Android extension alongside the canonical iOS schema.
  */
-fun gameObjToIosJson(gameObj: GameObj): String {
-    val canonIds = listOf("south", "west", "north", "east")
+fun gameObjToIosJson(
+    gameObj: GameObj,
+    seatUuidMap: Map<Int, String> = emptyMap(),
+    gameId: String = "",
+    seq: Int = 1
+): String {
+    fun seatUuid(seat: Int): String = seatUuidMap[seat] ?: UUID.randomUUID().toString()
+    fun handUuid(handNum: Int): String =
+        UUID.nameUUIDFromBytes("$gameId/$handNum".toByteArray()).toString()
 
     val iosPhase = when (gameObj.phase) {
-        "bid"             -> if (gameObj.waitingSeat >= 0) "bidHuman" else "bid"
-        "trick"           -> if (gameObj.waitingSeat >= 0) "trickHuman" else "trick"
+        "bid"              -> if (gameObj.waitingSeat >= 0) "bidHuman" else "bid"
+        "trick"            -> if (gameObj.waitingSeat >= 0) "trickHuman" else "trick"
         "score", "endHand" -> "endHand"
-        "finished"        -> "gameFinished"
-        else              -> gameObj.phase
+        "finished"         -> "gameFinished"
+        else               -> gameObj.phase
     }
 
     fun tokenToCard(token: String): JsonObject? {
         val parts = token.split("_"); if (parts.size != 2) return null
         val rank = parts[0].toIntOrNull() ?: return null
         val suit = parts[1].toIntOrNull() ?: return null
-        return buildJsonObject { put("id", "a_${rank}_${suit}"); put("rank", rank); put("suit", suit) }
+        return buildJsonObject { put("id", "c${rank + 2}_${suit + 1}"); put("rank", rank); put("suit", suit) }
     }
 
     val root = buildJsonObject {
-        // ── Android extension fields (read by tryParseIosLegacyGameState) ─────────
+        // Android extension field — read by tryParseIosLegacyGameState on the receiving side.
         put("waitingSeat", gameObj.waitingSeat)
-        put("team0Score",  gameObj.team0Score)
-        put("team1Score",  gameObj.team1Score)
-        put("team0Bags",   gameObj.team0Bags)
-        put("team1Bags",   gameObj.team1Bags)
 
-        // ── Standard iOS fields ───────────────────────────────────────────────────
-        put("phase", iosPhase)
-        put("currentHandIndex", (gameObj.hands.size - 1).coerceAtLeast(0))
-        put("gameType", "houseRules")
+        // Required top-level iOS fields
+        put("id",                      gameId.ifEmpty { UUID.randomUUID().toString() })
+        put("seq",                     seq)
+        put("phase",                   iosPhase)
+        put("gameType",                "houseRules")
+        put("currentHandIndex",        (gameObj.hands.size - 1).coerceAtLeast(0))
+        put("trump",                   3)
+        put("minimumBid",              4)
+        put("maximumBid",              13)
+        put("maxScore",                250)
+        put("losingScore",             -250)
+        put("deckCount",               0)
+        put("deuceIsWild",             false)
+        put("deuceOfDiamondsIsWild",   false)
+        put("boardFive",               false)
+        put("spadesMustBreak",         false)
+        put("sandbagsEnabled",         false)
+        put("blindNilExchangeEnabled", false)
+        put("challengeMode",           false)
+        putJsonArray("discard")               {}
+        putJsonArray("pendingBlindBids")      {}
+        putJsonArray("pendingBlindDeclines")  {}
+        putJsonObject("metadata")             {}
 
         putJsonArray("players") {
             gameObj.seats.sortedBy { it.seatIndex }.forEach { seat ->
                 addJsonObject {
-                    put("id", canonIds.getOrElse(seat.seatIndex) { "seat${seat.seatIndex}" })
+                    put("id",        seatUuid(seat.seatIndex))
                     put("seatIndex", seat.seatIndex)
-                    put("team", seat.team)
-                    put("name", seat.playerName)
-                    put("isHuman", seat.isHuman)
+                    put("team",      seat.team)
+                    put("name",      seat.playerName)
+                    put("isHuman",   seat.isHuman)
                 }
             }
         }
@@ -566,18 +592,35 @@ fun gameObjToIosJson(gameObj: GameObj): String {
         putJsonArray("hands") {
             gameObj.hands.forEach { hand ->
                 addJsonObject {
-                    put("number", hand.handNum)
-                    put("dealerSeatIndex", 0)
-                    put("currentLeaderSeat",
-                        hand.tricks.lastOrNull()?.leader ?: 0)
-
-                    putJsonArray("teamBids") { add(hand.team0Bid); add(hand.team1Bid) }
-                    putJsonArray("bidOrder") { canonIds.forEach { add(it) } }
-
+                    // Compute trick state up front so currentLeaderSeat can use it
                     val completedTricks = hand.tricks.filter { it.winner >= 0 }
                     val inProgress      = hand.tricks.lastOrNull()?.takeIf { it.winner < 0 }
+                    // currentLeaderSeat: use in-progress trick's leader if one exists;
+                    // otherwise the new trick hasn't started yet and waitingSeat IS the leader.
+                    val currentLeader   = inProgress?.leader
+                        ?: if (gameObj.waitingSeat >= 0) gameObj.waitingSeat else 0
 
-                    // Cards already played in completed tricks per seat
+                    put("id",                  handUuid(hand.handNum))
+                    put("number",              hand.handNum)
+                    put("dealerSeatIndex",     0)
+                    put("currentLeaderSeat",   currentLeader)
+                    put("currentBidderIndex",  0)
+                    put("currentTeamBidIndex", 0)
+                    put("spadesBroken",        false)
+                    put("numOfTrumpPlayed",    0)
+                    put("cardOnHeadPlayed",    false)
+                    put("bostonPlayed",        false)
+                    put("frustratedPlayed",    false)
+                    put("pickCurrentSeat",     0)
+                    putJsonArray("pickDeck")  {}
+                    putJsonArray("teamBlind") { add(false); add(false) }
+                    putJsonArray("teamBids")  { add(hand.team0Bid); add(hand.team1Bid) }
+                    putJsonArray("teamBidOrder") { add(1); add(0) }
+                    putJsonObject("highestRemainingRank") {
+                        put("0", 12); put("1", 12); put("2", 12); put("3", 15)
+                    }
+                    putJsonArray("bidOrder") { for (s in 0..3) add(seatUuid(s)) }
+
                     val playedBySeat = Array(4) { mutableSetOf<String>() }
                     completedTricks.forEach { trick ->
                         trick.plays.forEachIndexed { seat, token ->
@@ -585,10 +628,10 @@ fun gameObjToIosJson(gameObj: GameObj): String {
                         }
                     }
 
-                    // dealtHands: alternating [uuid, [Card...], ...]
+                    // dealtHands: interleaved [uuid, [Card...], uuid, [Card...], ...]
                     putJsonArray("dealtHands") {
                         for (seat in 0..3) {
-                            add(canonIds[seat])
+                            add(seatUuid(seat))
                             addJsonArray {
                                 hand.deal.forSeat(seat).forEach { token ->
                                     tokenToCard(token)?.let { add(it) }
@@ -597,62 +640,66 @@ fun gameObjToIosJson(gameObj: GameObj): String {
                         }
                     }
 
-                    // perPlayer: alternating [uuid, {state}, ...]
+                    // perPlayer: interleaved [uuid, {state}, uuid, {state}, ...]
                     putJsonArray("perPlayer") {
                         for (seat in 0..3) {
-                            add(canonIds[seat])
+                            add(seatUuid(seat))
                             addJsonObject {
-                                put("bid", hand.seatBids.getOrElse(seat) { 0 })
-                                put("didBid", hand.seatDidBid.getOrElse(seat) {
-                                    // fallback: completed hands → all bid; current hand → unknown (false)
+                                val hasBid = hand.seatDidBid.getOrElse(seat) {
                                     hand.handNum < (gameObj.hands.lastOrNull()?.handNum ?: 0)
-                                })
-                                // Assign full team tricks to seat 0 / seat 1 so team sums work
-                                put("tricksTaken", when (seat) {
-                                    0 -> hand.team0Tricks
-                                    1 -> hand.team1Tricks
-                                    else -> 0
-                                })
-                                put("totalScore", when (seat) {
-                                    0 -> gameObj.team0Score
-                                    1 -> gameObj.team1Score
-                                    else -> 0
-                                })
+                                }
+                                put("bid",    if (hasBid) hand.seatBids.getOrElse(seat) { 0 } else -1)
+                                val teamIdx = gameObj.seats.find { it.seatIndex == seat }?.team ?: 0
+                                put("teamBid", if (teamIdx == 0) hand.team0Bid else hand.team1Bid)
+                                put("didBid", hasBid)
+                                put("tricksTaken", if (teamIdx == 0) hand.team0Tricks else hand.team1Tricks)
+                                put("totalScore", if (teamIdx == 0) gameObj.team0Score else gameObj.team1Score)
                                 val curToken = inProgress?.plays?.getOrElse(seat) { "" } ?: ""
                                 put("hasPlayedThisTrick", curToken.isNotBlank())
                                 if (curToken.isNotBlank()) {
                                     tokenToCard(curToken)?.let { put("currentPlay", it) }
                                 }
-                                // Remaining hand = deal minus cards played in completed tricks
                                 val remaining = hand.deal.forSeat(seat)
                                     .filter { it !in playedBySeat[seat] }
                                 putJsonArray("hand") {
                                     remaining.forEach { token -> tokenToCard(token)?.let { add(it) } }
                                 }
-                                put("cuttingSpades", false)
-                                put("cuttingHearts", false)
-                                put("cuttingClubs", false)
+                                put("cuttingSpades",   false)
+                                put("cuttingHearts",   false)
+                                put("cuttingClubs",    false)
                                 put("cuttingDiamonds", false)
                                 put("sandBags", 0)
-                                put("blind", false)
+                                put("blind",    false)
                             }
                         }
                     }
 
-                    // Completed tricks
+                    // Completed tricks — iOS format: plays keyed by seat-index string
                     putJsonArray("tricks") {
                         completedTricks.forEach { trick ->
                             addJsonObject {
-                                put("leaderSeat", trick.leader)
-                                put("winnerSeat", trick.winner)
-                                putJsonArray("plays") {
+                                put("number",       trick.trickNum)
+                                put("leadSeatIndex", trick.leader)
+                                putJsonObject("plays") {
                                     trick.plays.forEachIndexed { seat, token ->
                                         if (token.isNotBlank()) {
-                                            addJsonObject {
-                                                put("playerId", canonIds.getOrElse(seat) { "seat$seat" })
-                                                tokenToCard(token)?.let { put("card", it) }
-                                            }
+                                            tokenToCard(token)?.let { put("$seat", it) }
                                         }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // In-progress trick as a separate field (omitted when null)
+                    if (inProgress != null) {
+                        putJsonObject("currentTrick") {
+                            put("number",        inProgress.trickNum)
+                            put("leadSeatIndex", inProgress.leader)
+                            putJsonObject("plays") {
+                                inProgress.plays.forEachIndexed { seat, token ->
+                                    if (token.isNotBlank()) {
+                                        tokenToCard(token)?.let { put("$seat", it) }
                                     }
                                 }
                             }
@@ -662,28 +709,37 @@ fun gameObjToIosJson(gameObj: GameObj): String {
             }
         }
 
+        // Scoreboard keyed by team index as string
         putJsonObject("scoreboard") {
             putJsonObject("scores") {
-                put("south", gameObj.team0Score)
-                put("north", 0)
-                put("west",  gameObj.team1Score)
-                put("east",  0)
+                put("0", gameObj.team0Score)
+                put("1", gameObj.team1Score)
             }
-            putJsonObject("sandbagCount")       {}
-            putJsonObject("playerAdjustments")  {}
+            putJsonObject("sandbagCount") {
+                put("0", gameObj.team0Bags)
+                put("1", gameObj.team1Bags)
+            }
+            putJsonObject("playerAdjustments") {}
         }
     }
     return root.toString()
 }
 
 /** Builds a gameState wire message using the iOS payload.json envelope (understood by both platforms). */
-fun buildGameState(personId: String, roomId: String, gameObj: GameObj): String =
+fun buildGameState(
+    personId: String,
+    roomId: String,
+    gameObj: GameObj,
+    seatUuidMap: Map<Int, String> = emptyMap(),
+    gameId: String = "",
+    seq: Int = 1
+): String =
     MpEnvelope(
-        type    = "gameState",
+        type     = "gameState",
         playerId = personId,
-        roomId  = roomId,
-        cmdId   = cmdId(),
-        payload = mapOf("json" to gameObjToIosJson(gameObj))
+        roomId   = roomId,
+        cmdId    = cmdId(),
+        payload  = mapOf("json" to gameObjToIosJson(gameObj, seatUuidMap, gameId, seq))
     ).toJson()
 
 fun buildJoinRoom(roomId: String, playerId: String): String =
@@ -833,7 +889,7 @@ fun androidToWireCard(token: String): String {
 }
 
 fun buildChat(personId: String, roomId: String, displayName: String, message: String) =
-    MpEnvelope(type = "chat", playerId = personId, roomId = roomId, cmdId = cmdId(), payload = mapOf(
+    MpEnvelope(type = "chatMessage", playerId = personId, roomId = roomId, cmdId = cmdId(), payload = mapOf(
         "displayName" to displayName,
         "message" to message
     )).toJson()

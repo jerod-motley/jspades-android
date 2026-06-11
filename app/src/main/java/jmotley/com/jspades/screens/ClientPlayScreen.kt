@@ -44,6 +44,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import jmotley.com.jspades.R
+import jmotley.com.jspades.data.ChatMessage
 import jmotley.com.jspades.data.ClientDisplayState
 import jmotley.com.jspades.data.Rank
 import jmotley.com.jspades.data.Suit
@@ -63,8 +64,10 @@ import jmotley.com.jspades.data.cardFromToken
 fun ClientPlayScreen(
     clientState: ClientDisplayState,
     myRoomSeat: Int,
+    chatMessages: List<ChatMessage> = emptyList(),
     onSendBid: (Int) -> Unit,
-    onSendPlay: (token: String, trickNum: Int, leaderSeat: Int) -> Unit
+    onSendPlay: (token: String, trickNum: Int, leaderSeat: Int) -> Unit,
+    onSendChat: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val obj = clientState.gameObj
@@ -118,6 +121,8 @@ fun ClientPlayScreen(
             Spacer(Modifier.weight(1f))
 
             when {
+                !clientState.isMyTurn && obj.phase == "bid" && obj.waitingSeat < 0 ->
+                    WaitingIndicator("All bids submitted…")
                 !clientState.isMyTurn -> WaitingIndicator(clientState.waitingSeatName)
 
                 obj.phase == "bid" -> if (bidSubmitted) {
@@ -133,15 +138,15 @@ fun ClientPlayScreen(
                 }
 
                 obj.phase == "trick" -> {
+                    val trickNum   = currentTrick?.trickNum ?: 0
+                    val leaderSeat = currentTrick?.leader ?: obj.waitingSeat
                     MyHandArea(
                         myHand       = clientState.myHand,
                         currentTrick = currentTrick,
                         context      = context,
                         onPlayCard   = if (cardPlayed) null else { token ->
-                            if (currentTrick != null) {
-                                cardPlayed = true
-                                onSendPlay(token, currentTrick.trickNum, currentTrick.leader)
-                            }
+                            cardPlayed = true
+                            onSendPlay(token, trickNum, leaderSeat)
                         }
                     )
                 }
@@ -162,6 +167,18 @@ fun ClientPlayScreen(
                 )
             }
         }
+
+        // ── In-game chat overlay ──────────────────────────────────────────────
+        var chatOpen by remember { mutableStateOf(false) }
+        InGameChatOverlay(
+            messages = chatMessages,
+            open     = chatOpen,
+            onToggle = { chatOpen = !chatOpen },
+            onSend   = onSendChat,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(bottom = 16.dp, end = 8.dp)
+        )
     }
 }
 

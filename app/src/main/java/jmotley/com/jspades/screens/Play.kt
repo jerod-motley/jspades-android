@@ -73,8 +73,22 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color as ComposeColor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import android.util.Log
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.text.input.ImeAction
+import jmotley.com.jspades.data.ChatMessage
 
 /**
  * Primary game screen. Composites phase-appropriate views over the table background.
@@ -199,14 +213,19 @@ fun PlayScreen(
             }
         }
         val clientState by viewModel.clientState.collectAsState()
+        val chatMessages by remember(clientSession) {
+            clientSession?.chat ?: MutableStateFlow(emptyList())
+        }.collectAsState()
         ClientPlayScreen(
-            clientState  = clientState,
-            myRoomSeat   = clientSeatIndex,
-            onSendBid    = { bid -> clientSession?.sendPlayerBid(bid) },
-            onSendPlay   = { token, trickNum, leaderSeat ->
+            clientState   = clientState,
+            myRoomSeat    = clientSeatIndex,
+            chatMessages  = chatMessages,
+            onSendBid     = { bid -> clientSession?.sendPlayerBid(bid) },
+            onSendPlay    = { token, trickNum, leaderSeat ->
                 val handNum = clientState.gameObj?.currentHand?.handNum ?: 0
                 clientSession?.sendPlayCard(token, clientSeatIndex, handNum, trickNum, leaderSeat)
-            }
+            },
+            onSendChat    = { text -> clientSession?.sendChat(text) }
         )
         return
     }
@@ -860,6 +879,97 @@ fun PlayScreen(
             )
         }
 
+        // ── In-game chat overlay (MP host only) ───────────────────────────────
+        if (mpSession != null) {
+            val chatMessages by mpSession.chat.collectAsState()
+            var chatOpen by remember { mutableStateOf(false) }
+            InGameChatOverlay(
+                messages = chatMessages,
+                open     = chatOpen,
+                onToggle = { chatOpen = !chatOpen },
+                onSend   = { text -> mpSession.sendChat(text) },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(bottom = 16.dp, end = 8.dp)
+            )
+        }
+
+    }
+}
+
+/**
+ * Floating chat panel for in-game multiplayer chat.
+ * Shows a toggle button anchored to the bottom-right; when open, displays a compact
+ * scrollable message list and a text input above the button.
+ */
+@Composable
+internal fun InGameChatOverlay(
+    messages: List<ChatMessage>,
+    open: Boolean,
+    onToggle: () -> Unit,
+    onSend: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier, horizontalAlignment = Alignment.End) {
+        if (open) {
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 280.dp)
+                    .heightIn(max = 220.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xEE0A0A1A))
+                    .padding(8.dp)
+            ) {
+                val listState = rememberLazyListState()
+                LaunchedEffect(messages.size) {
+                    if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
+                }
+                LazyColumn(
+                    state    = listState,
+                    modifier = Modifier.weight(1f, fill = false),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(messages) { msg ->
+                        Text(
+                            text  = "${msg.displayName}: ${msg.text}",
+                            color = if (msg.isLocal) Color(0xFFFFD700) else Color.White,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                var draft by remember { mutableStateOf("") }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value         = draft,
+                        onValueChange = { draft = it },
+                        modifier      = Modifier.weight(1f),
+                        singleLine    = true,
+                        placeholder   = { Text("Message...", style = MaterialTheme.typography.bodySmall) },
+                        textStyle     = MaterialTheme.typography.bodySmall,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = {
+                            val t = draft.trim(); if (t.isNotEmpty()) { onSend(t); draft = "" }
+                        })
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    TextButton(onClick = {
+                        val t = draft.trim(); if (t.isNotEmpty()) { onSend(t); draft = "" }
+                    }) { Text("Send", style = MaterialTheme.typography.labelSmall) }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+        }
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(RoundedCornerShape(22.dp))
+                .background(if (open) Color(0xCC2A4A7A) else Color(0xCC000000))
+                .clickable { onToggle() },
+            contentAlignment = Alignment.Center
+        ) {
+            Text("Chat", style = MaterialTheme.typography.labelSmall, color = Color.White)
+        }
     }
 }
 

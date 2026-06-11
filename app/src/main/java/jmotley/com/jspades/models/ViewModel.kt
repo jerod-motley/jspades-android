@@ -375,7 +375,13 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			val updatedHands  = obj.hands.dropLast(1) + hand.copy(tricks = updatedTricks)
 			obj.copy(hands = updatedHands)
 		}
-		val myHand = sanitized.currentHand?.deal?.forSeat(myRoomSeat) ?: emptyList()
+		val dealtHand = sanitized.currentHand?.deal?.forSeat(myRoomSeat) ?: emptyList()
+		val playedCards = sanitized.currentHand?.tricks
+			?.filter { it.winner >= 0 }
+			?.mapNotNull { it.plays.getOrNull(myRoomSeat) }
+			?.filter { it.isNotBlank() }
+			.orEmpty()
+		val myHand = dealtHand.filter { it !in playedCards }
 		val waitingName = sanitized.seats.find { it.seatIndex == sanitized.waitingSeat }?.playerName ?: ""
 		_clientState.value = ClientDisplayState(
 			gameObj         = sanitized,
