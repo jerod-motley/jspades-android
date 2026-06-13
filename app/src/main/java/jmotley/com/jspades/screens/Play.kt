@@ -42,7 +42,6 @@ import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.engine.ChallengeResult
 import jmotley.com.jspades.models.GameViewModel
 import jmotley.com.jspades.data.DealMode
-import jmotley.com.jspades.data.ClientDisplayState
 import jmotley.com.jspades.data.MPSession
 import jmotley.com.jspades.data.MPStateHolder
 import jmotley.com.jspades.views.BidView
@@ -194,13 +193,12 @@ fun PlayScreen(
         }
     }
 
-    // ── Client (guest) path — render ClientPlayScreen driven by incoming GameObj ──
-    // Clients do not run the engine. They receive the full game object from the host,
-    // render what it says, and send human inputs back.
+    // ── Client (guest) detection ──────────────────────────────────────────────────
     val mpConfigPeeked = remember { MPStateHolder.peek() }
     val isOnlineClient = mpConfigPeeked != null && !MPSession.isHost
     val clientSeatIndex = mpConfigPeeked?.localSeatIndex ?: 0
 
+    // ── Client (guest): collect GameObj snapshots from host and translate to GameState ──
     if (isOnlineClient) {
         val clientSession = remember { MPSession.session }
         LaunchedEffect(clientSession) {
@@ -212,22 +210,6 @@ fun PlayScreen(
                 clientSession.consumeGameState()
             }
         }
-        val clientState by viewModel.clientState.collectAsState()
-        val chatMessages by remember(clientSession) {
-            clientSession?.chat ?: MutableStateFlow(emptyList())
-        }.collectAsState()
-        ClientPlayScreen(
-            clientState   = clientState,
-            myRoomSeat    = clientSeatIndex,
-            chatMessages  = chatMessages,
-            onSendBid     = { bid -> clientSession?.sendPlayerBid(bid) },
-            onSendPlay    = { token, trickNum, leaderSeat ->
-                val handNum = clientState.gameObj?.currentHand?.handNum ?: 0
-                clientSession?.sendPlayCard(token, clientSeatIndex, handNum, trickNum, leaderSeat)
-            },
-            onSendChat    = { text -> clientSession?.sendChat(text) }
-        )
-        return
     }
 
     // ── Multiplayer bypass — host: skip LobbyView and start engine immediately ──

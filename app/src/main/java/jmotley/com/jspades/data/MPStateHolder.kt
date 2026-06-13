@@ -1,19 +1,5 @@
 package jmotley.com.jspades.data
 
-import jmotley.com.jspades.networking.GameObj
-
-/** Client-only display state derived from the latest received GameObj. */
-data class ClientDisplayState(
-    val gameObj: GameObj? = null,
-    val myRoomSeat: Int = 0,
-    val isMyTurn: Boolean = false,
-    val myHand: List<String> = emptyList(),  // card tokens for this client's current hand
-    val waitingSeatName: String = ""
-) {
-    /** Maps a visual position (0=south … 3=east) to a room seat index. */
-    fun roomSeatForVisual(visualPos: Int): Int = (myRoomSeat + visualPos) % 4
-}
-
 data class MPGameConfig(
     /** [south, west, north, east] display names rotated for this device's perspective */
     val playerNames: List<String>,

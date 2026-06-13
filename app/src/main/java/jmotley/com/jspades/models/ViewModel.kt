@@ -12,7 +12,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import jmotley.com.jspades.data.*
-import jmotley.com.jspades.data.ClientDisplayState
 /*import jmotley.com.jspades.data.AchievementsRepo
 import jmotley.com.jspades.data.AnimationEvent
 import jmotley.com.jspades.data.Card
@@ -119,6 +118,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	/** Current hand number for MP play card messages. Set from the wire deal payload. */
 	var mpHandNum: Int = 1
 
+	/** Last sanitized GameObj received by this client; used for trickNum/leaderSeat on play. */
+	var lastGameObj: GameObj? = null
+
 	// ── MP remote-human input channels (host only) ────────────────────────────
 
 	/** Room seat indices of remote human players (populated at lobby complete, host only). */
@@ -177,11 +179,6 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
 	/** Completed hands sealed at score time. Append-only for the lifetime of the game. */
 	val mpHandHistory: MutableList<MpHand> = mutableListOf()
-
-	// ── MP client display state (guest only) ──────────────────────────────────
-
-	private val _clientState = MutableStateFlow(ClientDisplayState())
-	val clientState: StateFlow<ClientDisplayState> = _clientState.asStateFlow()
 
 	/**
 	 * Called by LobbyView once all seats are filled.
@@ -276,6 +273,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		val team1Tricks = s.players.filter { it.team == 1 }.sumOf { p -> currentHand.perPlayer[p.id]?.tricksWon ?: 0 }
 		mpHandHistory.add(MpHand(
 			handNum      = mpHandNum - 1,
+			dealerSeat   = (mpHandNum - 1) % 4,
 			seatBids     = seatBids,
 			team0Bid     = currentHand.teamBids.getOrNull(0) ?: 0,
 			team1Bid     = currentHand.teamBids.getOrNull(1) ?: 0,
@@ -324,6 +322,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		val allTricks = mpTrickHistory + listOfNotNull(inProgressTrick)
 		val currentMpHand = MpHand(
 			handNum     = mpHandNum - 1,
+			dealerSeat  = (mpHandNum - 1) % 4,
 			seatBids    = seatBids,
 			team0Bid    = currentHand?.teamBids?.getOrNull(0) ?: 0,
 			team1Bid    = currentHand?.teamBids?.getOrNull(1) ?: 0,
@@ -357,8 +356,12 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
 	// ── MP client state (guest only) ──────────────────────────────────────────
 
-	/** Apply an incoming GameObj from the host and update clientState. Guest only. */
+	/**
+	 * Apply an incoming GameObj from the host, update _state for standard view rendering,
+	 * and store lastGameObj for use in submitHumanPlay. Guest only.
+	 */
 	fun applyGameState(obj: GameObj, myRoomSeat: Int) {
+		mpLocalSeatIndex = myRoomSeat
 		// Sanitize: void any play slot whose token doesn't parse to a valid card.
 		val sanitized = run {
 			val trick = obj.currentTrick ?: return@run obj
@@ -375,20 +378,99 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			val updatedHands  = obj.hands.dropLast(1) + hand.copy(tricks = updatedTricks)
 			obj.copy(hands = updatedHands)
 		}
-		val dealtHand = sanitized.currentHand?.deal?.forSeat(myRoomSeat) ?: emptyList()
-		val playedCards = sanitized.currentHand?.tricks
-			?.filter { it.winner >= 0 }
-			?.mapNotNull { it.plays.getOrNull(myRoomSeat) }
-			?.filter { it.isNotBlank() }
-			.orEmpty()
-		val myHand = dealtHand.filter { it !in playedCards }
-		val waitingName = sanitized.seats.find { it.seatIndex == sanitized.waitingSeat }?.playerName ?: ""
-		_clientState.value = ClientDisplayState(
-			gameObj         = sanitized,
-			myRoomSeat      = myRoomSeat,
-			isMyTurn        = sanitized.waitingSeat == myRoomSeat,
-			myHand          = myHand,
-			waitingSeatName = waitingName
+
+		lastGameObj = sanitized
+
+		// ── Build GameState so the standard views (DiamondView, HandView, etc.) render ──
+		val canonicalIds = listOf("south", "west", "north", "east")
+		val isMyTurn = sanitized.waitingSeat == myRoomSeat
+
+		// Map room seats to canonical positions relative to this client (myRoomSeat → "south")
+		val hand = sanitized.currentHand
+		val completedTricks = hand?.tricks?.filter { it.winner >= 0 } ?: emptyList()
+		val inProgressTrick = hand?.tricks?.lastOrNull()?.takeIf { it.winner < 0 }
+
+		val perPlayer: Map<String, PlayerHandState> = (0..3).associate { visualPos ->
+			val roomSeat = (myRoomSeat + visualPos) % 4
+			val id = canonicalIds[visualPos]
+			val dealtCards = (hand?.deal?.forSeat(roomSeat) ?: emptyList()).mapNotNull { cardFromToken(it) }
+			val playedUids = completedTricks
+				.mapNotNull { t -> t.plays.getOrNull(roomSeat)?.takeIf { it.isNotBlank() } }
+				.mapNotNull { cardFromToken(it)?.uid }
+				.toSet()
+			val activeUid = inProgressTrick?.plays?.getOrNull(roomSeat)
+				?.takeIf { it.isNotBlank() }
+				?.let { cardFromToken(it)?.uid }
+			id to PlayerHandState(
+				hand = dealtCards.filter { it.uid !in playedUids && it.uid != activeUid },
+				bid = hand?.seatBids?.getOrNull(roomSeat) ?: 0,
+				tricksWon = completedTricks.count { it.winner == roomSeat }
+			)
+		}
+
+		val players = (0..3).map { visualPos ->
+			val roomSeat = (myRoomSeat + visualPos) % 4
+			val seatInfo = sanitized.seats.find { it.seatIndex == roomSeat }
+			val didBid = hand?.seatDidBid?.getOrNull(roomSeat) ?: false
+			Player(
+				id = canonicalIds[visualPos],
+				name = seatInfo?.playerName ?: canonicalIds[visualPos],
+				team = if (visualPos % 2 == 0) 0 else 1,
+				runtimeFlags = RuntimeFlags(seatIndex = visualPos, didBid = didBid)
+			)
+		}
+
+		val gamePhase = when (sanitized.phase) {
+			"bid"      -> if (isMyTurn) GamePhase.BidHuman else GamePhase.Bid
+			"trick"    -> if (isMyTurn) GamePhase.TrickHuman else GamePhase.Trick
+			"score"    -> GamePhase.Score
+			"endHand"  -> GamePhase.EndHand
+			"finished" -> GamePhase.Finished
+			else       -> GamePhase.Bid
+		}
+
+		val activeTrick = sanitized.currentTrick
+		val trickPlays: List<Play?> = if (activeTrick != null &&
+			gamePhase in listOf(GamePhase.Trick, GamePhase.TrickHuman)) {
+			(0..3).map { visualPos ->
+				val roomSeat = (myRoomSeat + visualPos) % 4
+				val token = activeTrick.plays.getOrNull(roomSeat) ?: ""
+				if (token.isBlank()) null
+				else cardFromToken(token)?.let { card -> Play(canonicalIds[visualPos], card) }
+			}
+		} else List(4) { null }
+
+		val myRoomTeam = sanitized.seats.find { it.seatIndex == myRoomSeat }?.team ?: 0
+		val score = Score(
+			points = mapOf(
+				"0" to if (myRoomTeam == 0) sanitized.team0Score else sanitized.team1Score,
+				"1" to if (myRoomTeam == 0) sanitized.team1Score else sanitized.team0Score
+			),
+			bags = mapOf(
+				"0" to if (myRoomTeam == 0) sanitized.team0Bags else sanitized.team1Bags,
+				"1" to if (myRoomTeam == 0) sanitized.team1Bags else sanitized.team0Bags
+			)
+		)
+
+		val originalDealHands = (0..3).associate { visualPos ->
+			val roomSeat = (myRoomSeat + visualPos) % 4
+			canonicalIds[visualPos] to (hand?.deal?.forSeat(roomSeat) ?: emptyList())
+				.mapNotNull { cardFromToken(it) }
+		}
+
+		val team0Bid = (perPlayer["south"]?.bid ?: 0) + (perPlayer["north"]?.bid ?: 0)
+		val team1Bid = (perPlayer["west"]?.bid ?: 0) + (perPlayer["east"]?.bid ?: 0)
+		val dealHand = Hand(perPlayer = perPlayer, teamBids = listOf(team0Bid, team1Bid))
+
+		_state.value = _state.value.copy(
+			players          = players,
+			phase            = gamePhase,
+			currentTrick     = Trick(plays = trickPlays),
+			phaseHands       = mapOf(GamePhase.Deal to listOf(dealHand)),
+			score            = score,
+			originalDealHands = originalDealHands,
+			isMultiplayer    = true,
+			gameType         = GameType.HOUSE_RULES
 		)
 	}
 
@@ -483,9 +565,12 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	 * CPU partner's individual bid. Stores the team bid and hands control to the engine.
 	 */
 	fun submitHumanTeamBid(teamId: Int, bid: Int, localPlayerId: String) {
-		submitBid(localPlayerId, bid, false)
-		if (_state.value.isMultiplayer && !jmotley.com.jspades.data.MPSession.isHost)
+		if (_state.value.isMultiplayer && !jmotley.com.jspades.data.MPSession.isHost) {
 			jmotley.com.jspades.data.MPSession.session?.sendPlayerBid(bid)
+			advancePhase(GamePhase.Bid)
+			return
+		}
+		submitBid(localPlayerId, bid, false)
 		setTeamBid(teamId, bid)
 		advancePhase(GamePhase.Bid)
 		phaseManager.execute()
@@ -743,9 +828,12 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	 * CPU bidders or move directly to the next phase.
 	 */
 	fun submitHumanBid(bid: Int, localPlayerId: String, isBlind: Boolean = false) {
-		submitBid(playerId = localPlayerId, bid = bid, isBlind = isBlind)
-		if (_state.value.isMultiplayer && !jmotley.com.jspades.data.MPSession.isHost)
+		if (_state.value.isMultiplayer && !jmotley.com.jspades.data.MPSession.isHost) {
 			jmotley.com.jspades.data.MPSession.session?.sendPlayerBid(bid)
+			advancePhase(GamePhase.Bid)
+			return
+		}
+		submitBid(playerId = localPlayerId, bid = bid, isBlind = isBlind)
 		advancePhase(GamePhase.Bid)
 		phaseManager.execute()
 	}
@@ -871,9 +959,18 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	 * Removes the card from hand, advances to [GamePhase.Trick].
 	 */
 	fun submitHumanPlay(card: Card, localPlayerId: String) {
+		if (_state.value.isMultiplayer && !jmotley.com.jspades.data.MPSession.isHost) {
+			val obj = lastGameObj
+			val trickNum   = obj?.currentTrick?.trickNum ?: 0
+			val leaderSeat = obj?.currentTrick?.leader ?: 0
+			jmotley.com.jspades.data.MPSession.session?.sendPlayCard(
+				card.toToken(), mpLocalSeatIndex, mpHandNum, trickNum, leaderSeat
+			)
+			advancePhase(GamePhase.Trick)
+			return
+		}
 		playCard(localPlayerId, card)
 		removeCardFromHand(localPlayerId, card)
-		// TODO: client sends playCard to host (new game object architecture)
 		advancePhase(GamePhase.Trick)
 		phaseManager.execute()
 	}

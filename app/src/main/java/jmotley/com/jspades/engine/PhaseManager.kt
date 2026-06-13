@@ -777,9 +777,17 @@ class PhaseManager(
             }
 
             if (!humanOnTeam) {
-                val teamBid = teamPlayers.sumOf { player ->
+                val remoteHuman = teamPlayers.firstOrNull { viewModel.isRemoteHumanCanonicalId(it.id) }
+                val teamBid = if (remoteHuman != null) {
+                    // In House Rules, the remote human's bid is the team total.
+                    // The CPU partner's individual bid is shown for reference only — don't add it.
                     s.phaseHands[GamePhase.Deal]?.lastOrNull()
-                        ?.perPlayer?.get(player.id)?.bid ?: 0
+                        ?.perPlayer?.get(remoteHuman.id)?.bid ?: 0
+                } else {
+                    teamPlayers.sumOf { player ->
+                        s.phaseHands[GamePhase.Deal]?.lastOrNull()
+                            ?.perPlayer?.get(player.id)?.bid ?: 0
+                    }
                 }.coerceAtLeast(s.effectiveMinBid)
                 viewModel.setTeamBid(teamId, teamBid)
             }

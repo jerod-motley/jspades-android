@@ -52,7 +52,8 @@ data class MpHandDeal(
 @Serializable
 data class MpHand(
     val handNum: Int,
-    val seatBids: List<Int>,      // indexed by room seat
+    val dealerSeat: Int,           // room seat index of the dealer for this hand
+    val seatBids: List<Int>,       // indexed by room seat
     val team0Bid: Int,
     val team1Bid: Int,
     val team0Tricks: Int,
@@ -307,6 +308,7 @@ private fun tryParseIosLegacyGameState(obj: JsonObject): GameObj? = runCatching 
 
             MpHand(
                 handNum     = hand["number"]?.jsonPrimitive?.intOrNull ?: handIdx,
+                dealerSeat  = hand["dealerSeatIndex"]?.jsonPrimitive?.intOrNull ?: 0,
                 seatBids    = seatBids,
                 team0Bid    = team0Bid,
                 team1Bid    = team1Bid,
@@ -534,9 +536,10 @@ fun gameObjToIosJson(
     fun handUuid(handNum: Int): String =
         UUID.nameUUIDFromBytes("$gameId/$handNum".toByteArray()).toString()
 
+    val waitingIsHuman = gameObj.seats.find { it.seatIndex == gameObj.waitingSeat }?.isHuman == true
     val iosPhase = when (gameObj.phase) {
-        "bid"              -> if (gameObj.waitingSeat >= 0) "bidHuman" else "bid"
-        "trick"            -> if (gameObj.waitingSeat >= 0) "trickHuman" else "trick"
+        "bid"              -> if (gameObj.waitingSeat >= 0 && waitingIsHuman) "bidHuman" else "bid"
+        "trick"            -> if (gameObj.waitingSeat >= 0 && waitingIsHuman) "trickHuman" else "trick"
         "score", "endHand" -> "endHand"
         "finished"         -> "gameFinished"
         else               -> gameObj.phase
@@ -600,12 +603,25 @@ fun gameObjToIosJson(
                     val currentLeader   = inProgress?.leader
                         ?: if (gameObj.waitingSeat >= 0) gameObj.waitingSeat else 0
 
+                    // Derive dealer team and bid order from the actual dealer seat.
+                    val dealerTeam    = gameObj.seats.find { it.seatIndex == hand.dealerSeat }?.team ?: 0
+                    val nonDealerTeam = 1 - dealerTeam
+                    // teamBidOrder: non-dealer team always bids first.
+                    // currentTeamBidIndex must reflect who is actually waiting to bid:
+                    //   0 → nonDealerTeam is bidding, 1 → dealerTeam is bidding, 2 → done.
+                    val waitingTeam = if (gameObj.phase == "bid" && gameObj.waitingSeat >= 0)
+                        gameObj.seats.find { it.seatIndex == gameObj.waitingSeat }?.team
+                    else null
+                    val currentTeamBidIndex = when (waitingTeam) {
+                        nonDealerTeam -> 0; dealerTeam -> 1; else -> 2
+                    }
+
                     put("id",                  handUuid(hand.handNum))
                     put("number",              hand.handNum)
-                    put("dealerSeatIndex",     0)
+                    put("dealerSeatIndex",     hand.dealerSeat)
                     put("currentLeaderSeat",   currentLeader)
                     put("currentBidderIndex",  0)
-                    put("currentTeamBidIndex", 0)
+                    put("currentTeamBidIndex", currentTeamBidIndex)
                     put("spadesBroken",        false)
                     put("numOfTrumpPlayed",    0)
                     put("cardOnHeadPlayed",    false)
@@ -615,7 +631,7 @@ fun gameObjToIosJson(
                     putJsonArray("pickDeck")  {}
                     putJsonArray("teamBlind") { add(false); add(false) }
                     putJsonArray("teamBids")  { add(hand.team0Bid); add(hand.team1Bid) }
-                    putJsonArray("teamBidOrder") { add(1); add(0) }
+                    putJsonArray("teamBidOrder") { add(nonDealerTeam); add(dealerTeam) }
                     putJsonObject("highestRemainingRank") {
                         put("0", 12); put("1", 12); put("2", 12); put("3", 15)
                     }
