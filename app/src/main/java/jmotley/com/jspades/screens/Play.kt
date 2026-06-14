@@ -547,6 +547,21 @@ fun PlayScreen(
                         .align(Alignment.TopCenter)
                         .padding(top = 28.dp, start = 16.dp, end = 16.dp)
                 )
+                // Show whose turn it is when waiting on a network/CPU bidder.
+                if (state.phase == GamePhase.Bid) {
+                    val n = state.players.size
+                    val activeBidder = (0 until n)
+                        .map { offset -> state.players[(state.leaderIndex + offset) % n] }
+                        .firstOrNull { !it.runtimeFlags.didBid }
+                    if (activeBidder != null) {
+                        Text(
+                            text = "Waiting for ${activeBidder.displayName}…",
+                            color = Color(0xFFCCCCCC),
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+                }
             }
 
             // ── Deuce reveal (kitty mode, pre-bid) ───────────────────────────
@@ -665,8 +680,9 @@ fun PlayScreen(
                         viewModel              = viewModel,
                         localPlayerId          = localPlayerId,
                         onNavigateBack         = onNavigateBack,
+                        onNextHand             = if (isOnlineClient) null else {{ viewModel.onNextHand() }},
                         onReplayHand           = if (state.lastHandReplay != null) {{ showReplay = true }} else null,
-                        canReplayLastHand      = !viewModel.usedReplayLastHandThisGame && !isChallengeActive && humanWasSet,
+                        canReplayLastHand      = !isOnlineClient && !viewModel.usedReplayLastHandThisGame && !isChallengeActive && humanWasSet,
                         onReplayLastHandAccepted = {
                             val activity = context as? Activity
                             if (activity != null) {

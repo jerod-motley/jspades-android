@@ -120,7 +120,7 @@ class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
         val rawNames = (0..3).map { i ->
             val seat = lobby.seats.find { it.seatIndex == i }
             when {
-                seat == null || seat.kind == SeatKind.Open -> "CPU"
+                seat == null || seat.kind == SeatKind.Open -> seat?.displayName ?: "Player"
                 seat.playerId == lobby.localPlayerId -> lobby.localDisplayName
                 else -> seat.displayName ?: "Player"
             }

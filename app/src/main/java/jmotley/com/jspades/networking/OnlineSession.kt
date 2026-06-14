@@ -483,12 +483,15 @@ class OnlineSession(
         scope.launch {
             val pid  = state.localPlayerId
             val room = state.roomId
+            val openSeats = state.seats.filter { it.kind == SeatKind.Open }
+            val cpuNames  = Constants.generateCpuNames(openSeats.size)
+            var cpuIdx    = 0
             val finalSeats = state.seats.map { seat ->
                 if (seat.kind == SeatKind.Open) {
                     seat.copy(
-                        playerId = "cpu-${seat.seatIndex}",
-                        displayName = "CPU",
-                        kind = SeatKind.Cpu
+                        playerId    = "cpu-${seat.seatIndex}",
+                        displayName = cpuNames[cpuIdx++],
+                        kind        = SeatKind.Cpu
                     )
                 } else {
                     seat

@@ -68,6 +68,45 @@ object Constants {
         "Don't forget to wear a mask so people won't see you renege."
     )
 
+    /**
+     * Generates [count] unique CPU player names using the same pool and pairing rules as the
+     * offline lobby. The first name may trigger a pair, forcing the second name to its partner.
+     */
+    fun generateCpuNames(count: Int): List<String> {
+        if (count <= 0) return emptyList()
+        val offline  = OFFLINE_PLAYER_NAMES
+        val pairKeys = NAME_PAIRS.keys.toList()
+        val combined = offline.size + pairKeys.size
+        val used     = mutableSetOf<String>()
+        val names    = mutableListOf<String>()
+        val rng      = kotlin.random.Random.Default
+
+        val wi = rng.nextInt(combined)
+        val firstName: String
+        val forcedSecond: String?
+        if (wi < offline.size) {
+            firstName    = offline[wi]
+            forcedSecond = null
+        } else {
+            firstName    = pairKeys[wi - offline.size]
+            forcedSecond = NAME_PAIRS[firstName]!!
+        }
+        used += firstName
+        forcedSecond?.let { used += it }
+        names += firstName
+
+        if (count >= 2) {
+            val second = forcedSecond ?: offline.filter { it !in used }.random(rng)
+            used += second
+            names += second
+        }
+        if (count >= 3) {
+            val third = offline.filter { it !in used }.random(rng)
+            names += third
+        }
+        return names
+    }
+
     // Helper function to reset renege counter for testing
     fun resetRenegeCounter(context: android.content.Context) {
         val prefs = context.getSharedPreferences("app_prefs", android.content.Context.MODE_PRIVATE)

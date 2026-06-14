@@ -393,16 +393,24 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		val perPlayer: Map<String, PlayerHandState> = (0..3).associate { visualPos ->
 			val roomSeat = (myRoomSeat + visualPos) % 4
 			val id = canonicalIds[visualPos]
-			val dealtCards = (hand?.deal?.forSeat(roomSeat) ?: emptyList()).mapNotNull { cardFromToken(it) }
-			val playedUids = completedTricks
-				.mapNotNull { t -> t.plays.getOrNull(roomSeat)?.takeIf { it.isNotBlank() } }
-				.mapNotNull { cardFromToken(it)?.uid }
-				.toSet()
-			val activeUid = inProgressTrick?.plays?.getOrNull(roomSeat)
-				?.takeIf { it.isNotBlank() }
-				?.let { cardFromToken(it)?.uid }
+			val currentHandTokens = hand?.seatCurrentHands?.getOrNull(roomSeat)
+			val handCards = if (currentHandTokens != null) {
+				// iOS state: perPlayer.hand already has played cards removed — use directly
+				currentHandTokens.mapNotNull { cardFromToken(it) }
+			} else {
+				// Android-native state: reconstruct from deal minus completed/active trick plays
+				val dealtCards = (hand?.deal?.forSeat(roomSeat) ?: emptyList()).mapNotNull { cardFromToken(it) }
+				val playedUids = completedTricks
+					.mapNotNull { t -> t.plays.getOrNull(roomSeat)?.takeIf { it.isNotBlank() } }
+					.mapNotNull { cardFromToken(it)?.uid }
+					.toSet()
+				val activeUid = inProgressTrick?.plays?.getOrNull(roomSeat)
+					?.takeIf { it.isNotBlank() }
+					?.let { cardFromToken(it)?.uid }
+				dealtCards.filter { it.uid !in playedUids && it.uid != activeUid }
+			}
 			id to PlayerHandState(
-				hand = dealtCards.filter { it.uid !in playedUids && it.uid != activeUid },
+				hand = handCards,
 				bid = hand?.seatBids?.getOrNull(roomSeat) ?: 0,
 				tricksWon = completedTricks.count { it.winner == roomSeat }
 			)
@@ -421,12 +429,20 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		}
 
 		val gamePhase = when (sanitized.phase) {
-			"bid"      -> if (isMyTurn) GamePhase.BidHuman else GamePhase.Bid
-			"trick"    -> if (isMyTurn) GamePhase.TrickHuman else GamePhase.Trick
-			"score"    -> GamePhase.Score
-			"endHand"  -> GamePhase.EndHand
-			"finished" -> GamePhase.Finished
-			else       -> GamePhase.Bid
+			"bid"               -> {
+				// Also show bid UI when waitingSeat is the local player's CPU teammate:
+				// in MP, the human bids for the whole team and sees the CPU partner's bid first.
+				val waitingInfo = sanitized.seats.find { it.seatIndex == sanitized.waitingSeat }
+				val cpuTeammateWaiting = waitingInfo != null && !waitingInfo.isHuman &&
+					(sanitized.waitingSeat + 2) % 4 == myRoomSeat
+				if (isMyTurn || cpuTeammateWaiting) GamePhase.BidHuman else GamePhase.Bid
+			}
+			"trick"             -> if (isMyTurn) GamePhase.TrickHuman else GamePhase.Trick
+			// "score" is the iOS host's terminal hand phase; it carries all the same data
+			// as "endHand" and the client has everything it needs locally — treat both the same.
+			"score", "endHand"  -> GamePhase.EndHand
+			"finished"          -> GamePhase.Finished
+			else                -> GamePhase.Bid
 		}
 
 		val activeTrick = sanitized.currentTrick
@@ -966,6 +982,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 			jmotley.com.jspades.data.MPSession.session?.sendPlayCard(
 				card.toToken(), mpLocalSeatIndex, mpHandNum, trickNum, leaderSeat
 			)
+			// Show the card immediately — don't wait for the host's echo.
+			playCard(localPlayerId, card)
+			removeCardFromHand(localPlayerId, card)
 			advancePhase(GamePhase.Trick)
 			return
 		}

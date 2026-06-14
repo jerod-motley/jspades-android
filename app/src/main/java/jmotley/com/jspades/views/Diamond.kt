@@ -83,6 +83,16 @@ fun DiamondView(
         state.players[(state.leaderIndex - 1 + state.players.size) % state.players.size].id
     else null
 
+    // Active trick player: first null slot in plays, starting from the leader.
+    val isTrickPhase = state.phase == GamePhase.Trick || state.phase == GamePhase.TrickHuman
+    val activeTrickPlayerId: String? = if (isTrickPhase) {
+        val n = state.players.size
+        val firstNullIdx = state.currentTrick.plays.indexOfFirst { it == null }
+        if (firstNullIdx >= 0 && n > 0)
+            state.players[(state.leaderIndex + firstNullIdx) % n].id
+        else null
+    } else null
+
     // Map playerId → card played this trick.
     // During TrickResolve animation, currentTrick is already cleared so we
     // fall back to frozenPlays (the snapshot captured before collectTrick ran).
@@ -116,6 +126,7 @@ fun DiamondView(
                 hasTrickWinner     = hasTrickWinner,
                 kittyBadge         = kittyWinnerId == player.id,
                 dealerBadge        = dealerId == player.id,
+                isActivePlayer     = activeTrickPlayerId == player.id,
                 initialCardOffset  = Offset(0f, -slotH * 1.5f),  // slides in from above
                 modifier           = Modifier.align(Alignment.TopCenter)
             )
@@ -132,6 +143,7 @@ fun DiamondView(
                 hasTrickWinner     = hasTrickWinner,
                 kittyBadge         = kittyWinnerId == player.id,
                 dealerBadge        = dealerId == player.id,
+                isActivePlayer     = activeTrickPlayerId == player.id,
                 initialCardOffset  = Offset(0f, slotH * 1.5f),   // slides in from below
                 modifier           = Modifier.align(Alignment.BottomCenter)
             )
@@ -147,6 +159,7 @@ fun DiamondView(
                 hasTrickWinner     = hasTrickWinner,
                 kittyBadge         = kittyWinnerId == player.id,
                 dealerBadge        = dealerId == player.id,
+                isActivePlayer     = activeTrickPlayerId == player.id,
                 initialCardOffset  = Offset(-slotW * 1.5f, 0f),  // slides in from left
                 modifier           = Modifier.align(Alignment.CenterStart)
             )
@@ -162,6 +175,7 @@ fun DiamondView(
                 hasTrickWinner     = hasTrickWinner,
                 kittyBadge         = kittyWinnerId == player.id,
                 dealerBadge        = dealerId == player.id,
+                isActivePlayer     = activeTrickPlayerId == player.id,
                 initialCardOffset  = Offset(slotW * 1.5f, 0f),   // slides in from right
                 modifier           = Modifier.align(Alignment.CenterEnd)
             )
@@ -179,6 +193,7 @@ private fun PlayerSlot(
     hasTrickWinner: Boolean = false,
     kittyBadge: Boolean = false,
     dealerBadge: Boolean = false,
+    isActivePlayer: Boolean = false,
     /**
      * Pixel offset the card starts from before animating into position.
      * (0,0) = no animation; otherwise the card slides from this offset to rest.
@@ -243,18 +258,18 @@ private fun PlayerSlot(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // ── Card slot (with optional winner border) ──────────────────────────
+        // ── Card slot (winner border takes priority over active-player border) ──
         Box(
             modifier = Modifier
                 .size(SLOT_W + 16.dp, SLOT_H + 8.dp)
                 .then(
-                    if (winnerBorderAlpha > 0f)
-                        Modifier.border(
-                            width = 2.dp,
-                            color = Color(0xFFFFD700).copy(alpha = winnerBorderAlpha),
-                            shape = RoundedCornerShape(10.dp)
-                        )
-                    else Modifier
+                    when {
+                        winnerBorderAlpha > 0f ->
+                            Modifier.border(2.dp, Color(0xFFFFD700).copy(alpha = winnerBorderAlpha), RoundedCornerShape(10.dp))
+                        isActivePlayer && !hasTrickWinner ->
+                            Modifier.border(2.dp, Color(0xFFFFE040), RoundedCornerShape(10.dp))
+                        else -> Modifier
+                    }
                 ),
             contentAlignment = Alignment.Center
         ) {

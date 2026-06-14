@@ -60,7 +60,8 @@ data class MpHand(
     val team1Tricks: Int,
     val deal: MpHandDeal,
     val tricks: List<MpTrick>,
-    val seatDidBid: List<Boolean> = emptyList()  // indexed by room seat; empty = unknown
+    val seatDidBid: List<Boolean> = emptyList(),     // indexed by room seat; empty = unknown
+    val seatCurrentHands: List<List<String>> = emptyList() // indexed by room seat; empty = not from iOS state
 )
 
 @Serializable
@@ -147,11 +148,11 @@ sealed class SpadesMPMessage {
     data class PlayerDisconnected(val personId: String) : SpadesMPMessage()
     data class PlayerReconnected(val personId: String) : SpadesMPMessage()
     data class RoomFull(val roomId: String) : SpadesMPMessage()
-    data class GameState(val personId: String, val roomId: String, val cmdId: String, val data: GameObj) : SpadesMPMessage()
+    data class GameState(val personId: String, val roomId: String, val cmdId: String, val sequence: Int, val data: GameObj) : SpadesMPMessage()
     data class Unknown(val raw: String) : SpadesMPMessage()
 }
 
-private data class IosPlayerInfo(val uuid: String, val seat: Int, val team: Int, val name: String)
+private data class IosPlayerInfo(val uuid: String, val seat: Int, val team: Int, val name: String, val isHuman: Boolean)
 
 /**
  * Parses an iOS-format `gameState` message (payload: {json: "..."}) and converts it to
@@ -176,10 +177,11 @@ private fun tryParseIosLegacyGameState(obj: JsonObject): GameObj? = runCatching 
         runCatching {
             val po = p.jsonObject
             IosPlayerInfo(
-                uuid = po["id"]!!.jsonPrimitive.content,
-                seat = po["seatIndex"]!!.jsonPrimitive.intOrNull!!,
-                team = po["team"]!!.jsonPrimitive.intOrNull!!,
-                name = po["name"]?.jsonPrimitive?.content ?: ""
+                uuid    = po["id"]!!.jsonPrimitive.content,
+                seat    = po["seatIndex"]!!.jsonPrimitive.intOrNull!!,
+                team    = po["team"]!!.jsonPrimitive.intOrNull!!,
+                name    = po["name"]?.jsonPrimitive?.content ?: "",
+                isHuman = po["isHuman"]?.jsonPrimitive?.booleanOrNull ?: false
             )
         }.getOrNull()
     }
@@ -190,7 +192,7 @@ private fun tryParseIosLegacyGameState(obj: JsonObject): GameObj? = runCatching 
     val seatToUuid = players.associate { it.seat to it.uuid }
     val canonIds   = listOf("south", "west", "north", "east")
     val seats = players.map { p ->
-        MpSeatInfo(p.seat, canonIds.getOrElse(p.seat) { "seat${p.seat}" }, p.name, p.team)
+        MpSeatInfo(p.seat, canonIds.getOrElse(p.seat) { "seat${p.seat}" }, p.name, p.team, p.isHuman)
     }
 
     // ── Phase ─────────────────────────────────────────────────────────────────
@@ -290,32 +292,44 @@ private fun tryParseIosLegacyGameState(obj: JsonObject): GameObj? = runCatching 
                 }.getOrNull()
             } ?: emptyList()
 
+            // Current hands from perPlayer[uuid].hand — iOS removes played cards, making this authoritative
+            val seatCurrentHands = (0..3).map { seat ->
+                val uuid = seatToUuid[seat] ?: return@map emptyList()
+                perPlayer[uuid]?.get("hand")?.jsonArray?.mapNotNull { c ->
+                    runCatching {
+                        val co = c.jsonObject
+                        "${co["rank"]!!.jsonPrimitive.intOrNull!!}_${co["suit"]!!.jsonPrimitive.intOrNull!!}"
+                    }.getOrNull()
+                } ?: emptyList()
+            }
+
             // Current in-progress trick reconstructed from perPlayer[uuid].currentPlay
             val leaderSeat = hand["currentLeaderSeat"]?.jsonPrimitive?.intOrNull ?: 0
             val curPlays   = MutableList(4) { "" }
-            var hasCurPlay = false
             perPlayer.forEach { (uuid, state) ->
                 runCatching {
                     val cp   = state["currentPlay"]?.jsonObject ?: return@runCatching
                     val seat = uuidToSeat[uuid]!!
                     curPlays[seat] = "${cp["rank"]!!.jsonPrimitive.intOrNull}_${cp["suit"]!!.jsonPrimitive.intOrNull}"
-                    hasCurPlay = true
                 }
             }
-            val allTricks = if (hasCurPlay && androidPhase == "trick")
+            // In trick phase always append a current-trick sentinel so currentTrick.trickNum
+            // reflects the actual trick index (pastTricks.size), even before anyone has played.
+            val allTricks = if (androidPhase == "trick")
                 pastTricks + MpTrick(pastTricks.size, leaderSeat, curPlays, -1)
             else pastTricks
 
             MpHand(
-                handNum     = hand["number"]?.jsonPrimitive?.intOrNull ?: handIdx,
-                dealerSeat  = hand["dealerSeatIndex"]?.jsonPrimitive?.intOrNull ?: 0,
-                seatBids    = seatBids,
-                team0Bid    = team0Bid,
-                team1Bid    = team1Bid,
-                team0Tricks = team0Tricks,
-                team1Tricks = team1Tricks,
-                deal        = deal,
-                tricks      = allTricks
+                handNum          = hand["number"]?.jsonPrimitive?.intOrNull ?: handIdx,
+                dealerSeat       = hand["dealerSeatIndex"]?.jsonPrimitive?.intOrNull ?: 0,
+                seatBids         = seatBids,
+                team0Bid         = team0Bid,
+                team1Bid         = team1Bid,
+                team0Tricks      = team0Tricks,
+                team1Tricks      = team1Tricks,
+                deal             = deal,
+                tricks           = allTricks,
+                seatCurrentHands = seatCurrentHands
             )
         }.getOrNull()
     }
@@ -477,14 +491,15 @@ fun parseIncoming(raw: String): SpadesMPMessage = try {
             message = payload["message"] ?: ""
         )
         "gameState" -> {
+            val sequence = obj["sequence"]?.jsonPrimitive?.intOrNull ?: 0
             if (obj.containsKey("data")) {
                 // Android format: top-level "data" object with GameObj
                 val envelope = json.decodeFromString<GameStateEnvelope>(raw)
-                SpadesMPMessage.GameState(envelope.playerId, envelope.roomId, envelope.cmdId, envelope.data)
+                SpadesMPMessage.GameState(envelope.playerId, envelope.roomId, envelope.cmdId, sequence, envelope.data)
             } else {
                 // iOS legacy format: payload: {json: "..."} — attempt conversion to GameObj
                 val gameObj = tryParseIosLegacyGameState(obj)
-                if (gameObj != null) SpadesMPMessage.GameState(personId, roomId, cmdId, gameObj)
+                if (gameObj != null) SpadesMPMessage.GameState(personId, roomId, cmdId, sequence, gameObj)
                 else SpadesMPMessage.Unknown(raw)
             }
         }

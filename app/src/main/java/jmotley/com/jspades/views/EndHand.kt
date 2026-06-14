@@ -58,6 +58,7 @@ fun EndHandView(
     viewModel: GameViewModel,
     localPlayerId: String,
     onNavigateBack: () -> Unit,
+    onNextHand: (() -> Unit)? = { viewModel.onNextHand() },
     onReplayHand: (() -> Unit)? = null,
     canReplayLastHand: Boolean = false,
     onReplayLastHandAccepted: (() -> Unit)? = null,
@@ -114,11 +115,20 @@ fun EndHandView(
                     ) {
                         Text("Home", color = Color.White)
                     }
-                    Button(
-                        onClick  = { viewModel.onNextHand() },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Next Hand")
+                    if (onNextHand != null) {
+                        Button(
+                            onClick  = onNextHand,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Next Hand")
+                        }
+                    } else {
+                        Box(
+                            modifier = Modifier.weight(1f),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("Waiting for host…", color = Color(0xFF888888), style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
                 if (onReplayHand != null) {
