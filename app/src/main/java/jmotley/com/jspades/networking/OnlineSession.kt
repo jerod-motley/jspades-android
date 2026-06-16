@@ -69,17 +69,16 @@ class OnlineSession(
 
     private lateinit var socket: GameSocketClient
     private val seenCmdIds = mutableSetOf<String>()
+    private var mpLoggingEnabled = false
 
     // ── Connect / disconnect ──────────────────────────────────────────────────
 
     fun createRoom(personId: String, displayName: String) {
         val roomId = generateRoomCode()
-        Log.i(TAG, "createRoom roomId=$roomId personId=${personId.takeLast(8)} name=$displayName")
         initSession(personId, displayName, roomId, isHost = true)
     }
 
     fun joinRoom(personId: String, displayName: String, roomCode: String) {
-        Log.i(TAG, "joinRoom code=$roomCode personId=${personId.takeLast(8)} name=$displayName")
         initSession(personId, displayName, roomCode.uppercase().trim(), isHost = false)
     }
 
@@ -111,18 +110,19 @@ class OnlineSession(
             onMessage = ::onRawMessage,
             onStateChange = { state ->
                 _socketState.value = state
-                Log.i(TAG, "socketState → $state")
+                logI("socketState → $state")
                 if (state == SocketState.Connected) {
-                    Log.i(TAG, "sending joinRoom roomId=$roomId playerId=${personId.takeLast(8)}")
+                    logI("sending joinRoom roomId=$roomId playerId=${personId.takeLast(8)}")
                     socket.send(buildJoinRoom(roomId, personId))
                 }
-            }
+            },
+            isLoggingEnabled = { mpLoggingEnabled }
         )
         socket.connect()
     }
 
     fun disconnect() {
-        Log.i(TAG, "session disconnect")
+        logI("session disconnect")
         if (::socket.isInitialized) socket.disconnect()
         _lobby.value = null
         _chat.value = emptyList()
@@ -141,6 +141,7 @@ class OnlineSession(
         seatUuidMap.clear()
         mpGameId = java.util.UUID.randomUUID().toString()
         sendSeq = 0
+        mpLoggingEnabled = false
     }
 
     // ── Sending ───────────────────────────────────────────────────────────────
@@ -157,16 +158,16 @@ class OnlineSession(
                     else -> java.util.UUID.randomUUID().toString()
                 }
             }
-            Log.i(TAG, "seatUuidMap initialized: $seatUuidMap")
+            logI("seatUuidMap initialized: $seatUuidMap")
         }
         val seq = ++sendSeq
-        Log.i(TAG, "sendGameState phase=${gameObj.phase} waitingSeat=${gameObj.waitingSeat} seq=$seq hands=${gameObj.hands.size}")
+        logI("sendGameState phase=${gameObj.phase} waitingSeat=${gameObj.waitingSeat} seq=$seq hands=${gameObj.hands.size}")
         socket.send(buildGameState(state.localPlayerId, state.roomId, gameObj, seatUuidMap, mpGameId, seq))
     }
 
     fun sendChat(text: String) {
         val state = _lobby.value ?: return
-        Log.d(TAG, "sendChat from=${state.localDisplayName} text=$text")
+        logD("sendChat from=${state.localDisplayName} text=$text")
         socket.send(buildChat(state.localPlayerId, state.roomId, state.localDisplayName, text))
         addChat(state.localPlayerId, state.localDisplayName, text, isLocal = true)
     }
@@ -176,7 +177,7 @@ class OnlineSession(
     private fun sendLobbySnapshot() {
         val state = _lobby.value ?: return
         if (!state.isHost) return
-        Log.d(TAG, "sendLobbySnapshot seats=${state.seats.map { "${it.seatIndex}:${it.kind}" }}")
+        logD("sendLobbySnapshot seats=${state.seats.map { "${it.seatIndex}:${it.kind}" }}")
         socket.send(buildLobbySnapshot(state.localPlayerId, state.roomId, state.seats))
     }
 
@@ -196,13 +197,13 @@ class OnlineSession(
 
         if (cmdId != null) {
             if (seenCmdIds.contains(cmdId)) {
-                Log.d(TAG, "DEDUP dropped cmdId=$cmdId type=${msg::class.simpleName}")
+                logD("DEDUP dropped cmdId=$cmdId type=${msg::class.simpleName}")
                 return
             }
             seenCmdIds.add(cmdId)
         }
 
-        Log.i(TAG, "DISPATCH ${msg::class.simpleName}")
+        logI("DISPATCH ${msg::class.simpleName}")
 
         when (msg) {
             is SpadesMPMessage.RoomJoined   -> onRoomJoined(msg)
@@ -215,20 +216,21 @@ class OnlineSession(
             is SpadesMPMessage.StartCountdown -> onStartCountdown(msg)
             is SpadesMPMessage.StartGame      -> onStartGame(msg)
             is SpadesMPMessage.PlayerDisconnected -> onPlayerDisconnected(msg)
-            is SpadesMPMessage.PlayerReconnected  -> Log.i(TAG, "← PlayerReconnected ${msg.personId.takeLast(8)}")
-            is SpadesMPMessage.Unknown        -> Log.w(TAG, "UNKNOWN message: ${msg.raw.take(200)}")
+            is SpadesMPMessage.PlayerReconnected  -> logI("← PlayerReconnected ${msg.personId.takeLast(8)}")
+            is SpadesMPMessage.Unknown        -> logW("UNKNOWN message: ${msg.raw.take(200)}")
 
             // Game protocol messages — full game object from host; card/bid inputs from clients
             is SpadesMPMessage.GameState -> {
                 val gs = msg.data
+                enableMpLogging()
                 if (gs.phase == "bid" && gs.waitingSeat < 0) {
-                    Log.i(TAG, "GameState: all bids in — awaiting trick-phase state from host")
+                    logI("GameState: all bids in — awaiting trick-phase state from host")
                 }
                 _pendingGameState.value = gs
                 // iOS hosts may send gameState without a prior startGame/startCountdown.
                 // Treat the first gameState as the implicit start signal so the guest navigates.
                 if (!startGameReceived) {
-                    Log.i(TAG, "GameState received before startGame — treating as implicit start")
+                    logI("GameState received before startGame — treating as implicit start")
                     startGameReceived = true
                     _startGameReady.value = true
                     if (!countdownStarted) {
@@ -246,8 +248,6 @@ class OnlineSession(
             is SpadesMPMessage.TrickResult,
             is SpadesMPMessage.HandScore,
             is SpadesMPMessage.GameFinished -> logReceived(msg)
-
-            else -> Unit
         }
     }
 
@@ -260,9 +260,9 @@ class OnlineSession(
 
     private fun onRoomJoined(msg: SpadesMPMessage.RoomJoined) {
         val state = _lobby.value ?: return
-        Log.i(TAG, "ROOM JOINED roomId=${msg.roomId} myPlayerId=${msg.myPlayerId.takeLast(8)}")
+        logI("ROOM JOINED roomId=${msg.roomId} myPlayerId=${msg.myPlayerId.takeLast(8)}")
         if (!state.isHost) {
-            Log.i(TAG, "ROOM JOINED → sending playerInfo displayName=${state.localDisplayName}")
+            logI("ROOM JOINED → sending playerInfo displayName=${state.localDisplayName}")
             socket.send(buildPlayerInfo(state.localPlayerId, state.roomId, state.localDisplayName))
         }
     }
@@ -270,7 +270,7 @@ class OnlineSession(
     private fun onPlayerJoined(msg: SpadesMPMessage.PlayerJoined) {
         val state = _lobby.value ?: return
         if (!state.isHost) return
-        Log.i(TAG, "PLAYER JOINED playerId=${msg.playerId.takeLast(8)} seatIndex=${msg.seatIndex}")
+        logI("PLAYER JOINED playerId=${msg.playerId.takeLast(8)} seatIndex=${msg.seatIndex}")
         val updated = state.seats.map { seat ->
             if (seat.seatIndex == msg.seatIndex)
                 seat.copy(playerId = msg.playerId, displayName = "Player ${msg.playerId.takeLast(4).uppercase()}", kind = SeatKind.Human)
@@ -283,13 +283,13 @@ class OnlineSession(
     private fun onPlayerInfo(msg: SpadesMPMessage.PlayerInfo) {
         val state = _lobby.value ?: return
         if (!state.isHost) return
-        Log.i(TAG, "PLAYER INFO personId=${msg.personId.takeLast(8)} displayName=${msg.displayName}")
+        logI("PLAYER INFO personId=${msg.personId.takeLast(8)} displayName=${msg.displayName}")
         val updated = state.seats.map { seat ->
             if (seat.playerId == msg.personId) seat.copy(displayName = msg.displayName)
             else seat
         }
         if (updated == state.seats) {
-            Log.w(TAG, "PLAYER INFO no seat matched personId=${msg.personId.takeLast(8)} — queued name will apply on join")
+            logW("PLAYER INFO no seat matched personId=${msg.personId.takeLast(8)} — queued name will apply on join")
             return
         }
         _lobby.value = state.copy(seats = updated)
@@ -299,11 +299,11 @@ class OnlineSession(
     private fun onSnapShot(msg: SpadesMPMessage.SnapShot) {
         val state = _lobby.value ?: return
         if (state.isHost) {
-            Log.d(TAG, "SNAPSHOT received but we are host — ignored")
+            logD("SNAPSHOT received but we are host — ignored")
             return
         }
         if (msg.sequence > 0 && msg.sequence <= lastAppliedSnapshotSeq) {
-            Log.d(TAG, "SNAPSHOT seq=${msg.sequence} skipped (already applied seq=$lastAppliedSnapshotSeq)")
+            logD("SNAPSHOT seq=${msg.sequence} skipped (already applied seq=$lastAppliedSnapshotSeq)")
             return
         }
         if (msg.sequence > 0) lastAppliedSnapshotSeq = msg.sequence
@@ -322,11 +322,11 @@ class OnlineSession(
             val incomingName = incoming.displayName
             if (existing != null && existing != "Guest" && existing != "Open"
                 && (incomingName == "Guest" || incomingName == "Open")) {
-                Log.w(TAG, "SNAPSHOT seq=${msg.sequence} rejected — would downgrade seat ${incoming.seatIndex} '$existing' → '$incomingName'")
+                logW("SNAPSHOT seq=${msg.sequence} rejected — would downgrade seat ${incoming.seatIndex} '$existing' → '$incomingName'")
                 return
             }
         }
-        Log.i(TAG, "SNAPSHOT applied: ${seats.map { "${it.seatIndex}:${it.kind}:${it.displayName}" }}")
+        logI("SNAPSHOT applied: ${seats.map { "${it.seatIndex}:${it.kind}:${it.displayName}" }}")
 
         _lobby.value = state.copy(
             seats = seats,
@@ -336,17 +336,17 @@ class OnlineSession(
 
     private fun onChat(msg: SpadesMPMessage.Chat) {
         val local = _lobby.value?.localPlayerId
-        Log.d(TAG, "CHAT from=${msg.displayName}: ${msg.message}")
+        logD("CHAT from=${msg.displayName}: ${msg.message}")
         addChat(msg.personId, msg.displayName, msg.message, isLocal = msg.personId == local)
     }
 
     private fun onRoomFull() {
-        Log.w(TAG, "ROOM FULL")
+        logW("ROOM FULL")
         addChat("system", "System", "This room is full.", isLocal = false)
     }
 
     private fun onPlayerDisconnected(msg: SpadesMPMessage.PlayerDisconnected) {
-        Log.w(TAG, "← PlayerDisconnected ${msg.personId.takeLast(8)}")
+        logW("← PlayerDisconnected ${msg.personId.takeLast(8)}")
         _disconnectedPlayer.value = msg.personId
     }
 
@@ -360,7 +360,7 @@ class OnlineSession(
         val lobby = _lobby.value ?: return
         if (msg.personId == lobby.localPlayerId) return
         if (!lobby.isHost) return
-        Log.i(TAG, "HOST ← playerBid seat=${msg.seatIndex} bid=${msg.bidAmount}")
+        logI("HOST ← playerBid seat=${msg.seatIndex} bid=${msg.bidAmount}")
         onRemotePlayerBid?.invoke(msg.seatIndex, msg.bidAmount)
     }
 
@@ -368,20 +368,22 @@ class OnlineSession(
     fun sendPlayerBid(bidAmount: Int) {
         val state = _lobby.value ?: return
         val localSeat = state.localSeatIndex.coerceAtLeast(0)
-        Log.i(TAG, "SEND playerBid seat=$localSeat bid=$bidAmount")
+        logI("SEND playerBid seat=$localSeat bid=$bidAmount")
         socket.send(buildPlayerBid(state.localPlayerId, state.roomId, localSeat, bidAmount))
     }
 
     private fun onStartCountdown(msg: SpadesMPMessage.StartCountdown) {
         if (_lobby.value?.isHost == true) return   // host drives its own countdown
-        Log.i(TAG, "COUNTDOWN ${msg.seconds}s — guest starting")
+        enableMpLogging()
+        logI("COUNTDOWN ${msg.seconds}s — guest starting")
         countdownStarted = true
-        Log.d(TAG, "COUNTDOWN coroutine launch seconds=${msg.seconds}")
+        logD("COUNTDOWN coroutine launch seconds=${msg.seconds}")
         scope.launch { runCountdownThenNavigate(msg.seconds) }
     }
 
     private fun onStartGame(msg: SpadesMPMessage.StartGame) {
-        Log.i(TAG, "START GAME from=${msg.personId.takeLast(8)}")
+        enableMpLogging()
+        logI("START GAME from=${msg.personId.takeLast(8)}")
         startGameReceived = true
         _startGameReady.value = true
         val state = _lobby.value
@@ -398,10 +400,10 @@ class OnlineSession(
                     val kind    = when (kindStr) { "human" -> SeatKind.Human; "cpu" -> SeatKind.Cpu; else -> SeatKind.Open }
                     OnlineSeat(i, id, name, isHost = i == 0, kind = kind)
                 }
-                Log.i(TAG, "START GAME seats: ${seats.map { "${it.seatIndex}:${it.kind}:${it.displayName}" }}")
+                logI("START GAME seats: ${seats.map { "${it.seatIndex}:${it.kind}:${it.displayName}" }}")
                 _lobby.value = state.copy(seats = seats, status = LobbyStatus.Starting)
             } else {
-                Log.i(TAG, "START GAME — no seat keys in payload, preserving snapshot seat layout")
+                logI("START GAME — no seat keys in payload, preserving snapshot seat layout")
                 _lobby.value = state.copy(status = LobbyStatus.Starting)
             }
         }
@@ -409,7 +411,7 @@ class OnlineSession(
         // Falls back to 5 s for iOS hosts that omit countdownSeconds from their payload.
         if (!countdownStarted) {
             val seconds = msg.payload["countdownSeconds"]?.toIntOrNull() ?: 5
-            Log.i(TAG, "START GAME — starting countdown seconds=$seconds")
+            logI("START GAME — starting countdown seconds=$seconds")
             countdownStarted = true
             scope.launch { runCountdownThenNavigate(seconds) }
         }
@@ -419,7 +421,7 @@ class OnlineSession(
         val lobby = _lobby.value ?: return
         if (msg.personId == lobby.localPlayerId) return
         if (!lobby.isHost) return
-        Log.i(TAG, "HOST ← playCard seat=${msg.seatIndex} card=${msg.card}")
+        logI("HOST ← playCard seat=${msg.seatIndex} card=${msg.card}")
         onRemotePlayCard?.invoke(msg.seatIndex, msg.card)
     }
 
@@ -434,19 +436,19 @@ class OnlineSession(
             seatIndex  = roomSeatIndex,
             card       = token
         )
-        Log.d(TAG, "SEND playCard seat=$roomSeatIndex card=$token trickNum=$trickNum leadSeat=$leadSeat")
+        logD("SEND playCard seat=$roomSeatIndex card=$token trickNum=$trickNum leadSeat=$leadSeat")
         socket.send(msg)
     }
 
     /** Ticks the shared countdown display and fires gameStartSignal when it reaches 0. */
     private suspend fun runCountdownThenNavigate(seconds: Int) {
         for (i in seconds downTo 1) {
-            Log.d(TAG, "COUNTDOWN tick=$i")
+            logD("COUNTDOWN tick=$i")
             _countdown.value = i
             delay(1000L)
         }
         _countdown.value = 0
-        Log.i(TAG, "COUNTDOWN complete — emitting gameStartSignal")
+        logI("COUNTDOWN complete — emitting gameStartSignal")
         _gameStartSignal.emit(Unit)
     }
 
@@ -463,7 +465,7 @@ class OnlineSession(
                 else  -> s
             }
         }
-        Log.i(TAG, "SWAP seats $seatA ↔ $seatB")
+        logI("SWAP seats $seatA ↔ $seatB")
         _lobby.value = state.copy(seats = newSeats)
         sendLobbySnapshot()
     }
@@ -476,10 +478,11 @@ class OnlineSession(
     fun startRealGame() {
         val state = _lobby.value ?: return
         if (!state.isHost) {
-            Log.w(TAG, "startRealGame called on non-host — ignored")
+            logW("startRealGame called on non-host — ignored")
             return
         }
-        Log.i(TAG, "========== START REAL GAME ==========")
+        enableMpLogging()
+        logI("========== START REAL GAME ==========")
         scope.launch {
             val pid  = state.localPlayerId
             val room = state.roomId
@@ -522,16 +525,33 @@ class OnlineSession(
         _chat.value = _chat.value + ChatMessage(senderId, name, text, isLocal)
     }
 
+    private fun enableMpLogging() {
+        mpLoggingEnabled = true
+    }
+
+    private fun logD(message: String) {
+        if (mpLoggingEnabled) Log.d(TAG, message)
+    }
+
+    private fun logI(message: String) {
+        if (mpLoggingEnabled) Log.i(TAG, message)
+    }
+
+    private fun logW(message: String) {
+        if (mpLoggingEnabled) Log.w(TAG, message)
+    }
+
     // ── Mock protocol ─────────────────────────────────────────────────────────
 
     fun startMockProtocol() {
         val state = _lobby.value ?: return
         if (!state.isHost) {
-            Log.w(TAG, "startMockProtocol called on non-host — ignored")
+            logW("startMockProtocol called on non-host — ignored")
             return
         }
         if (_mockRunning.value) return
-        Log.i(TAG, "========== MOCK PROTOCOL START ==========")
+        enableMpLogging()
+        logI("========== MOCK PROTOCOL START ==========")
         _mockRunning.value = true
         _mockLog.value = emptyList()
         scope.launch { runMockSequence(state) }
@@ -563,7 +583,7 @@ class OnlineSession(
 
         repeat(3) { trickIdx ->
             val trickNum = trickIdx + 1
-            Log.i(TAG, "--- trick $trickNum lead=seat$lead ---")
+            logI("--- trick $trickNum lead=seat$lead ---")
             val played = mutableMapOf<Int, String>()
             for (offset in 0..3) {
                 val seat = (lead + offset) % 4
@@ -577,7 +597,7 @@ class OnlineSession(
             val winner = determineWinner(played, lead)
             val winTeam = winner % 2
             trickTally[winTeam]++
-            Log.i(TAG, "trick $trickNum winner=seat$winner team$winTeam tally=${trickTally.toList()}")
+            logI("trick $trickNum winner=seat$winner team$winTeam tally=${trickTally.toList()}")
             sendAndLog("trickResult", "trick=$trickNum winner=seat$winner") {
                 buildTrickResult(pid, room, 1, trickNum, lead, winner, played)
             }
@@ -600,13 +620,13 @@ class OnlineSession(
             buildGameFinished(pid, room, 1, winner, total0, total1)
         }
 
-        Log.i(TAG, "========== MOCK PROTOCOL COMPLETE ==========")
+        logI("========== MOCK PROTOCOL COMPLETE ==========")
         _mockRunning.value = false
     }
 
     private fun sendAndLog(type: String, summary: String, builder: () -> String) {
         val json = builder()
-        Log.i(TAG, "MOCK SEND → $type | $summary")
+        logI("MOCK SEND → $type | $summary")
         socket.send(json)
         addLog(LogDirection.Sent, type, summary)
     }
@@ -624,7 +644,7 @@ class OnlineSession(
             is SpadesMPMessage.GameFinished -> "gameFinished" to "winner=${msg.winnerTeam} hand=${msg.handNum}"
             else -> "?" to ""
         }
-        Log.i(TAG, "MOCK RECV ← $type | $summary")
+        logI("MOCK RECV ← $type | $summary")
         addLog(LogDirection.Received, type, summary)
     }
 

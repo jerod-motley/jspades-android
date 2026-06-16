@@ -235,6 +235,9 @@ private fun tryParseIosLegacyGameState(obj: JsonObject): GameObj? = runCatching 
             val seatBids = (0..3).map { seat ->
                 perPlayer[seatToUuid[seat] ?: ""]?.get("bid")?.jsonPrimitive?.intOrNull ?: 0
             }
+            val seatDidBid = (0..3).map { seat ->
+                perPlayer[seatToUuid[seat] ?: ""]?.get("didBid")?.jsonPrimitive?.booleanOrNull ?: false
+            }
             val teamBidsArr = hand["teamBids"]?.jsonArray
             val team0Bid    = teamBidsArr?.getOrNull(0)?.jsonPrimitive?.intOrNull ?: 0
             val team1Bid    = teamBidsArr?.getOrNull(1)?.jsonPrimitive?.intOrNull ?: 0
@@ -323,6 +326,7 @@ private fun tryParseIosLegacyGameState(obj: JsonObject): GameObj? = runCatching 
                 handNum          = hand["number"]?.jsonPrimitive?.intOrNull ?: handIdx,
                 dealerSeat       = hand["dealerSeatIndex"]?.jsonPrimitive?.intOrNull ?: 0,
                 seatBids         = seatBids,
+                seatDidBid       = seatDidBid,
                 team0Bid         = team0Bid,
                 team1Bid         = team1Bid,
                 team0Tricks      = team0Tricks,

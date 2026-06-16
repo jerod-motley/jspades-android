@@ -32,6 +32,7 @@ import jmotley.com.jspades.data.HandReplay
 import jmotley.com.jspades.data.GameLength
 import jmotley.com.jspades.data.ReplayEvent
 import jmotley.com.jspades.data.AppConfig*/
+import jmotley.com.jspades.engine.BidEngine
 import jmotley.com.jspades.engine.PhaseManager
 import jmotley.com.jspades.logging.PlayLogger
 import jmotley.com.jspades.networking.GameObj
@@ -446,10 +447,23 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 		}
 
 		val activeTrick = sanitized.currentTrick
+
+		// Visual index of the trick leader (who plays first clockwise).
+		// Must match the play-order layout used by the offline engine so Diamond.kt's
+		// activeTrickPlayerId formula (leaderIndex + firstNullIdx) stays correct.
+		val visualLeaderIndex: Int = if (activeTrick != null) {
+			(activeTrick.leader - myRoomSeat + 4) % 4
+		} else {
+			_state.value.leaderIndex
+		}
+
+		// Build plays in sequential play-order starting from the leader (offset 0 = leader,
+		// offset 1 = next clockwise, etc.) so firstNullIdx == number of plays already made.
 		val trickPlays: List<Play?> = if (activeTrick != null &&
 			gamePhase in listOf(GamePhase.Trick, GamePhase.TrickHuman)) {
-			(0..3).map { visualPos ->
-				val roomSeat = (myRoomSeat + visualPos) % 4
+			(0..3).map { offset ->
+				val visualPos = (visualLeaderIndex + offset) % 4
+				val roomSeat  = (myRoomSeat + visualPos) % 4
 				val token = activeTrick.plays.getOrNull(roomSeat) ?: ""
 				if (token.isBlank()) null
 				else cardFromToken(token)?.let { card -> Play(canonicalIds[visualPos], card) }
@@ -474,13 +488,49 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 				.mapNotNull { cardFromToken(it) }
 		}
 
-		val team0Bid = (perPlayer["south"]?.bid ?: 0) + (perPlayer["north"]?.bid ?: 0)
-		val team1Bid = (perPlayer["west"]?.bid ?: 0) + (perPlayer["east"]?.bid ?: 0)
-		val dealHand = Hand(perPlayer = perPlayer, teamBids = listOf(team0Bid, team1Bid))
+		// iOS host skips the CPU teammate's individual bid (the human bids for the whole team).
+		// If we're entering BidHuman and the teammate at visualPos=2 ("north") hasn't bid yet,
+		// compute their bid locally from their dealt hand so the bid hint shows in the UI.
+		val (perPlayerFinal, playersFinal) = if (gamePhase == GamePhase.BidHuman) {
+			val teammatePhs      = perPlayer["north"]
+			val teammatePlayer   = players[2]
+			val teammateRoomSeat = (myRoomSeat + 2) % 4
+			val teammateIsCpu    = sanitized.seats.find { it.seatIndex == teammateRoomSeat }?.isHuman == false
+			if (teammatePhs != null && !teammatePlayer.runtimeFlags.didBid &&
+					teammatePhs.hand.isNotEmpty() && teammateIsCpu) {
+				val computedBid = BidEngine.computeCpuBid(
+					hand   = teammatePhs.hand,
+					player = teammatePlayer,
+					state  = _state.value.copy(gameType = GameType.HOUSE_RULES)
+				).bid
+				(perPlayer + ("north" to teammatePhs.copy(bid = computedBid))) to
+					players.mapIndexed { i, p ->
+						if (i == 2) p.copy(runtimeFlags = p.runtimeFlags.copy(didBid = true)) else p
+					}
+			} else perPlayer to players
+		} else perPlayer to players
+
+		// All 4 plays are in but host hasn't officially resolved the trick yet (winner == -1).
+		// Compute the winner locally so tricksWon updates immediately without waiting for the host.
+		val perPlayerTricks = if (activeTrick != null && activeTrick.winner < 0 && trickPlays.all { it != null }) {
+			val winnerId = runCatching {
+				jmotley.com.jspades.engine.PlayEngine.computeTrickWinner(trickPlays).playerId
+			}.getOrNull()
+			if (winnerId != null) {
+				val phs = perPlayerFinal[winnerId]
+				if (phs != null) perPlayerFinal + (winnerId to phs.copy(tricksWon = phs.tricksWon + 1))
+				else perPlayerFinal
+			} else perPlayerFinal
+		} else perPlayerFinal
+
+		val team0Bid = (perPlayerTricks["south"]?.bid ?: 0) + (perPlayerTricks["north"]?.bid ?: 0)
+		val team1Bid = (perPlayerTricks["west"]?.bid ?: 0) + (perPlayerTricks["east"]?.bid ?: 0)
+		val dealHand = Hand(perPlayer = perPlayerTricks, teamBids = listOf(team0Bid, team1Bid))
 
 		_state.value = _state.value.copy(
-			players          = players,
+			players          = playersFinal,
 			phase            = gamePhase,
+			leaderIndex      = visualLeaderIndex,
 			currentTrick     = Trick(plays = trickPlays),
 			phaseHands       = mapOf(GamePhase.Deal to listOf(dealHand)),
 			score            = score,
