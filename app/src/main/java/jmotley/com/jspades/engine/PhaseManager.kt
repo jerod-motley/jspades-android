@@ -944,6 +944,7 @@ class PhaseManager(
         // Remote human player — wait for their card over the network
         if (viewModel.isRemoteHumanCanonicalId(nextPlayer)) {
             val remoteSeat = listOf("south", "west", "north", "east").indexOf(nextPlayer)
+            viewModel.sendMpGameState("trick", remoteSeat)
             val cardToken  = viewModel.awaitRemoteHumanPlay(remoteSeat)
             val remoteCard = cardFromToken(cardToken)
             val playCard   = if (remoteCard != null) remoteCard else {

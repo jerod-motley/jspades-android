@@ -556,9 +556,13 @@ fun gameObjToIosJson(
         UUID.nameUUIDFromBytes("$gameId/$handNum".toByteArray()).toString()
 
     val waitingIsHuman = gameObj.seats.find { it.seatIndex == gameObj.waitingSeat }?.isHuman == true
+    // Seat 0 is always the Android host in host-originated broadcasts. The host handles its own
+    // human turns locally and never needs to signal remote clients to act. Only promote to
+    // bidHuman/trickHuman for remote human seats (waitingSeat > 0).
+    val waitingIsRemoteHuman = waitingIsHuman && gameObj.waitingSeat > 0
     val iosPhase = when (gameObj.phase) {
-        "bid"              -> if (gameObj.waitingSeat >= 0 && waitingIsHuman) "bidHuman" else "bid"
-        "trick"            -> if (gameObj.waitingSeat >= 0 && waitingIsHuman) "trickHuman" else "trick"
+        "bid"              -> if (gameObj.waitingSeat >= 0 && waitingIsRemoteHuman) "bidHuman" else "bid"
+        "trick"            -> if (gameObj.waitingSeat >= 0 && waitingIsRemoteHuman) "trickHuman" else "trick"
         "score", "endHand" -> "endHand"
         "finished"         -> "gameFinished"
         else               -> gameObj.phase
