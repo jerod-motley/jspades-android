@@ -71,12 +71,15 @@ data class RuntimeFlags(
 )
 
 /** Player includes team assignment and runtime flags. */
+enum class PlayerType { HUMAN, CPU, MP }
+
 data class Player(
     val id: String,
     val name: String,
     val displayName: String = name,
     /** Team id: 0 or 1 for team games; use 0 for non-team games. */
     val team: Int = 0,
+    val playerType: PlayerType = PlayerType.CPU,
     val runtimeFlags: RuntimeFlags = RuntimeFlags()
 )
 
@@ -217,7 +220,7 @@ enum class GameType(
 }
 
 /** High-level phases used by the engine to drive UI and side-effects. */
-enum class GamePhase { Lobby, Deal, DealHuman, DeuceReveal, KittyReveal, Kitty, KittyHuman, BlindBid, BlindBidHuman, BlindExchange, BlindExchangeHuman, Bid, BidHuman, BidReview, Trick, TrickHuman, TrickResolve, Score, EndHand, Finished }
+enum class GamePhase { Lobby, Deal, DealHuman, DeuceReveal, KittyReveal, Kitty, KittyHuman, BlindBid, BlindBidHuman, BlindExchange, BlindExchangeHuman, Bid, BidHuman, BidMP, BidReview, Trick, TrickHuman, TrickMP, TrickResolve, Score, EndHand, Finished }
 
 /** Controls the score threshold required to win the game. */
 enum class GameLength { SHORT, MEDIUM, LONG, TEST }
@@ -331,6 +334,9 @@ data class GameState(
  * (House Rules, Three Man Solo, Two Man Solo), raising it to 5.
  * All other game types use their hardcoded [GameType.minimumBid].
  */
+fun GameState.playerTypeById(id: String): PlayerType =
+    players.find { it.id == id }?.playerType ?: PlayerType.CPU
+
 val GameState.effectiveMinBid: Int get() {
     val base = gameType.minimumBid
     return if (minBidFive && base == 4) 5 else base
@@ -373,7 +379,8 @@ fun defaultPlayers(ids: List<String>, names: List<String>, gameType: GameType): 
     require(ids.size == gameType.playerCount && names.size == gameType.playerCount)
     return ids.mapIndexed { i, id ->
         val team = if (gameType.useTeams && i % 2 == 1) 1 else 0
-        Player(id = id, name = names[i], team = team, runtimeFlags = RuntimeFlags(seatIndex = i))
+        val type = if (id == "south") PlayerType.HUMAN else PlayerType.CPU
+        Player(id = id, name = names[i], team = team, playerType = type, runtimeFlags = RuntimeFlags(seatIndex = i))
     }
 }
 

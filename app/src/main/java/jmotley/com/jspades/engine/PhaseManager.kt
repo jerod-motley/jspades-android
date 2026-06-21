@@ -11,6 +11,8 @@ import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.data.Hand
 import jmotley.com.jspades.data.Play
 import jmotley.com.jspades.data.PlayerHandState
+import jmotley.com.jspades.data.PlayerType
+import jmotley.com.jspades.data.playerTypeById
 import jmotley.com.jspades.data.Rank
 import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.data.AnimationEvent
@@ -101,6 +103,7 @@ class PhaseManager(
             GamePhase.DeuceReveal -> handleDeuceReveal()
             GamePhase.Bid         -> handleBid()
             GamePhase.BidHuman    -> { /* UI owns this phase — waits for submitBid() */ }
+            GamePhase.BidMP       -> { /* adapter owns this phase — waits for Phase 5 applyRemoteBid() */ }
             GamePhase.BidReview   -> { /* UI owns this phase — waits for submitBidReview() */ }
             GamePhase.KittyReveal -> handleKittyReveal()
             GamePhase.Kitty       -> handleKitty()
@@ -111,6 +114,7 @@ class PhaseManager(
             GamePhase.BlindExchangeHuman -> { /* UI owns this phase — waits for submitHumanBlindExchange() */ }
             GamePhase.Trick       -> handleTrick()
             GamePhase.TrickHuman  -> { /* UI owns this phase — waits for playCard() */ }
+            GamePhase.TrickMP     -> { /* adapter owns this phase — waits for Phase 5 applyRemotePlay() */ }
             GamePhase.TrickResolve-> handleTrickResolve()
             GamePhase.Score       -> handleScore()
             GamePhase.EndHand     -> handleEndHand()
@@ -268,7 +272,7 @@ class PhaseManager(
     private fun dealTwoManAlternate(shuffled: MutableList<Card>, ids: List<String>, gt: GameType) {
         val deck = shuffled.toMutableList()
         val s    = viewModel.state.value
-        val nonDealerIsHuman = s.players.getOrNull(s.leaderIndex)?.id == "south"
+        val nonDealerIsHuman = s.players.getOrNull(s.leaderIndex)?.playerType == PlayerType.HUMAN
 
         val cpuHand = mutableListOf<Card>()
         if (!nonDealerIsHuman) pickOneCard(deck, cpuHand) // CPU is non-dealer: pre-pick
@@ -476,7 +480,7 @@ class PhaseManager(
             val player = s.players[(s.leaderIndex + offset) % n]
             if (player.runtimeFlags.didBlindDecide) continue
 
-            if (player.id == "south") {
+            if (player.playerType == PlayerType.HUMAN) {
                 // Check eligibility before showing UI
                 val eligible = if (s.gameType.useTeams) {
                     val myScore  = (s.score.points[player.team.toString()] ?: 0) + (s.score.bags[player.team.toString()] ?: 0)
@@ -550,7 +554,7 @@ class PhaseManager(
             // Skip if already exchanged
             if (p1.runtimeFlags.didBlindExchange && p2.runtimeFlags.didBlindExchange) continue
 
-            val humanOnTeam = teamPlayers.any { it.id == "south" }
+            val humanOnTeam = teamPlayers.any { it.playerType == PlayerType.HUMAN }
             if (humanOnTeam) {
                 viewModel.advancePhase(GamePhase.BlindExchangeHuman)
                 dispatch()
@@ -610,7 +614,7 @@ class PhaseManager(
         for (offset in 0 until n) {
             val player = s.players[(s.leaderIndex + offset) % n]
             if (!player.runtimeFlags.didBid) {
-                if (player.id == "south") {
+                if (player.playerType == PlayerType.HUMAN) {
                     // Challenge may lock south out of bidding (e.g. run_boston_partner_bid)
                     val allowBid = AchievementsRepo.getActiveChallengeAllowBid(context)
                     if (allowBid != null && allowBid != "south") {
@@ -619,6 +623,11 @@ class PhaseManager(
                         return
                     }
                     viewModel.advancePhase(GamePhase.BidHuman)
+                    dispatch()
+                    return
+                }
+                if (player.playerType == PlayerType.MP) {
+                    viewModel.advancePhase(GamePhase.BidMP)
                     dispatch()
                     return
                 }
@@ -657,8 +666,8 @@ class PhaseManager(
 
         for (teamId in teamOrder) {
             val teamPlayers    = s.players.filter { it.team == teamId }
-            val humanOnTeam    = teamPlayers.any { it.id == "south" }
-            val humanAlreadyBid = s.players.find { it.id == "south" }?.runtimeFlags?.didBid ?: false
+            val humanOnTeam    = teamPlayers.any { it.playerType == PlayerType.HUMAN }
+            val humanAlreadyBid = s.players.find { it.playerType == PlayerType.HUMAN }?.runtimeFlags?.didBid ?: false
 
             // Check if this team is already committed to a blind bid (set by a previous CPU on the team)
             val teamAlreadyBlind = s.phaseHands[GamePhase.Deal]?.lastOrNull()
@@ -675,7 +684,7 @@ class PhaseManager(
                 // fall through to next team
             } else {
                 // Find the next unbidd CPU player on this team
-                val nextCpu = teamPlayers.firstOrNull { !it.runtimeFlags.didBid && it.id != "south" }
+                val nextCpu = teamPlayers.firstOrNull { !it.runtimeFlags.didBid && it.playerType == PlayerType.CPU }
                 if (nextCpu != null) {
                     val hand   = getPlayerHand(s, nextCpu.id)
                     val result = BidEngine.computeCpuBid(hand, nextCpu, s)
@@ -698,7 +707,15 @@ class PhaseManager(
                     return
                 }
 
-                // All CPUs on this team have bid
+                // Yield for the next unbidd MP player on this team
+                val nextMp = teamPlayers.firstOrNull { !it.runtimeFlags.didBid && it.playerType == PlayerType.MP }
+                if (nextMp != null) {
+                    viewModel.advancePhase(GamePhase.BidMP)
+                    dispatch()
+                    return
+                }
+
+                // All CPUs and MP players on this team have bid
                 if (humanOnTeam && !humanAlreadyBid) {
                     val allowBid = AchievementsRepo.getActiveChallengeAllowBid(context)
                     if (allowBid != null && allowBid != "south") {
@@ -818,7 +835,7 @@ class PhaseManager(
             viewModel.currentTrickStartSnapshot = viewModel.state.value.toSnapshot()
         }
 
-        if (playedCount > 0 && s.currentTrick.plays[playedCount - 1]?.playerId == "south") {
+        if (playedCount > 0 && s.playerTypeById(s.currentTrick.plays[playedCount - 1]?.playerId ?: "") == PlayerType.HUMAN) {
             delay(1000)
         }
 
@@ -832,8 +849,14 @@ class PhaseManager(
 
         val nextPlayer = nextPlayerInTrick(s.currentTrick.plays, s.players.map { it.id }, s.leaderIndex)
 
-        if (nextPlayer == "south") {
+        if (s.playerTypeById(nextPlayer) == PlayerType.HUMAN) {
             viewModel.advancePhase(GamePhase.TrickHuman)
+            dispatch()
+            return
+        }
+
+        if (s.playerTypeById(nextPlayer) == PlayerType.MP) {
+            viewModel.advancePhase(GamePhase.TrickMP)
             dispatch()
             return
         }
@@ -948,7 +971,7 @@ class PhaseManager(
             // Bag forgiveness: offer before scoring when human team is already at >= 8 bags.
             // Only offered once per game, and never during challenge mode.
             if (!viewModel.usedBagForgivenessThisGame && AchievementsRepo.getActiveChallenge(context) == null) {
-                val humanBagKey = s.players.firstOrNull { it.id == "south" }?.let { p ->
+                val humanBagKey = s.players.firstOrNull { it.playerType == PlayerType.HUMAN }?.let { p ->
                     if (s.gameType.useTeams) p.team.toString() else p.id
                 }
                 val currentBags = if (humanBagKey != null) s.score.bags[humanBagKey] ?: 0 else 0

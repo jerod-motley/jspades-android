@@ -42,6 +42,7 @@ import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.engine.ChallengeResult
 import jmotley.com.jspades.models.GameViewModel
 import jmotley.com.jspades.data.DealMode
+import jmotley.com.jspades.data.PlayerType
 import jmotley.com.jspades.views.BidView
 import jmotley.com.jspades.views.BlindBidView
 import jmotley.com.jspades.views.BlindExchangeView
@@ -485,6 +486,33 @@ fun PlayScreen(
                 )
             }
 
+            // BidMP: same layout as bid phases but no bid selector — waiting for remote player
+            GamePhase.BidMP -> {
+                val waitingBidder = state.players
+                    .firstOrNull { !it.runtimeFlags.didBid && it.playerType == PlayerType.MP }
+                    ?.displayName ?: "opponent"
+                Column(modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) {
+                    Spacer(Modifier.height(10.dp))
+                    GameInfoView(state = state, viewModel = viewModel, localPlayerId = localPlayerId)
+                    HandView(state = state, viewModel = viewModel, localPlayerId = localPlayerId)
+                    Spacer(Modifier.height(10.dp))
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .fillMaxWidth()
+                        .background(Color(0xCC1A3A5C), RoundedCornerShape(0.dp))
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "Waiting for $waitingBidder to bid…",
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+
             // ── Deuce reveal (kitty mode, pre-bid) ───────────────────────────
             // Show which player holds the 2♠ for 2 seconds, then proceed to bidding
             GamePhase.DeuceReveal -> {
@@ -531,7 +559,8 @@ fun PlayScreen(
             // never move. Cards are non-interactive during Trick and TrickResolve.
             GamePhase.Trick,
             GamePhase.TrickResolve,
-            GamePhase.TrickHuman -> {
+            GamePhase.TrickHuman,
+            GamePhase.TrickMP -> {
                 DiamondView(
                     state = state, viewModel = viewModel, localPlayerId = localPlayerId,
                     trickWinner = trickWinner,
@@ -549,6 +578,20 @@ fun PlayScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Text("Tap again to play", color = Color.White, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                    if (state.phase == GamePhase.TrickMP) {
+                        val n = state.players.size
+                        val playedCount = state.currentTrick.plays.count { it != null }
+                        val waitingPlayer = state.players[(state.leaderIndex + playedCount) % n].displayName
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xCC1A3A5C), RoundedCornerShape(0.dp))
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("Waiting for $waitingPlayer…", color = Color.White, style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                     renegeJokeText?.let { joke ->
