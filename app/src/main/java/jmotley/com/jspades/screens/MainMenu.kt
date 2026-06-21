@@ -49,6 +49,7 @@ fun MainMenuScreen(
     onNavigateToRenegeJokes: () -> Unit = {},
     onNavigateToStandings: () -> Unit = {},
     onNavigateToSettings: () -> Unit = {},
+    onNavigateToOnlineLobby: (mode: String) -> Unit = {},
     vm: MainMenuViewModel = viewModel()
 ) {
     var currentMenu by remember { mutableStateOf(SubMenu.None) }
@@ -110,10 +111,12 @@ fun MainMenuScreen(
                     else onNavigateToChallenges(tapped)
                 }
                 SubMenu.Online -> SubButtons(
-                    labels = listOf("Messages", "Suggestions", "Renege Jokes", "Return"),
+                    labels = listOf("Host Game", "Join Game", "Messages", "Suggestions", "Renege Jokes", "Return"),
                     font = jennasue
                 ) { tapped ->
                     when (tapped) {
+                        "Host Game"    -> onNavigateToOnlineLobby("host")
+                        "Join Game"    -> onNavigateToOnlineLobby("join")
                         "Messages"     -> onNavigateToMessages()
                         "Suggestions"  -> onNavigateToSuggestions()
                         "Renege Jokes" -> onNavigateToRenegeJokes()
