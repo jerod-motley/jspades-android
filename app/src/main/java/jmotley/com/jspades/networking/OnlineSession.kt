@@ -132,6 +132,7 @@ class OnlineSession(
         _startGameReady.value = false
         _disconnectedPlayer.value = null
         _pendingGameState.value = null
+        rawMessageHook = null
         onRemotePlayerBid = null
         onRemotePlayCard = null
         countdownStarted = false
@@ -183,7 +184,18 @@ class OnlineSession(
 
     // ── Incoming message dispatch ─────────────────────────────────────────────
 
+    /**
+     * Set by PlayScreen when entering an MP game. Every raw socket message is forwarded
+     * here so [MPAdapter] can parse the new-protocol [WireMessage] types independently of
+     * the legacy [SpadesMPMessage] path below. Clear on disconnect to avoid leaking the adapter.
+     */
+    var rawMessageHook: ((String) -> Unit)? = null
+
+    /** Provides the live [GameSocketClient] to [MPAdapter] so they share a single socket. */
+    fun getGameSocketClient(): GameSocketClient? = if (::socket.isInitialized) socket else null
+
     private fun onRawMessage(raw: String) {
+        rawMessageHook?.invoke(raw)
         val msg = parseIncoming(raw)
 
         val cmdId = (msg as? SpadesMPMessage.PlayerBid)?.cmdId

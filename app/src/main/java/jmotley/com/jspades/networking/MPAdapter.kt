@@ -259,6 +259,12 @@ class MPAdapter(
             handNum = handNum, accepted = accepted))
     }
 
+    /** Send a blind response on behalf of a CPU seat (host-proxied). */
+    fun sendBlindResponse(actingSeat: Int, actingPlayerId: String, accepted: Boolean, handNum: Int) {
+        dispatch(BlindResponseMessage(cmdId = nextCmdId(), seat = actingSeat, playerId = actingPlayerId,
+            handNum = handNum, accepted = accepted))
+    }
+
     /**
      * Send a bid. [actingSeat] and [actingPlayerId] identify the seat that placed the bid —
      * the local human seat for human bids, or the CPU seat for host-proxied CPU bids.

@@ -69,6 +69,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color as ComposeColor
+import jmotley.com.jspades.data.MPSession
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -127,6 +128,7 @@ fun PlayScreen(
         onDispose {
             AchievementsRepo.clearActiveChallenge(context)
             AdManager.hideBanner()
+            MPSession.session?.rawMessageHook = null
         }
     }
 
@@ -172,6 +174,13 @@ fun PlayScreen(
             delay(3000L)
             renegeJokeText = null
         }
+    }
+
+    // ── MP session bootstrap ──────────────────────────────────────────────────
+    // Fires once on entry. If an MP game is pending in MPStateHolder, wires the adapter
+    // and (for the host) starts dealing. Non-hosts wait for the incoming gameConfig.
+    LaunchedEffect("mp-init") {
+        viewModel.startMPSessionIfPending(resolvedGameType)
     }
 
     // ── Video event collector ─────────────────────────────────────────────────

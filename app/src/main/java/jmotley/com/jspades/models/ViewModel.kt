@@ -35,6 +35,7 @@ import jmotley.com.jspades.engine.PhaseManager
 import jmotley.com.jspades.logging.PlayLogger
 import jmotley.com.jspades.networking.MPAdapter
 import jmotley.com.jspades.networking.MPAdapterDelegate
+import jmotley.com.jspades.networking.gameTypeToWireString
 import jmotley.com.jspades.networking.wireStringToGameType
 import android.util.Log
 
@@ -232,6 +233,15 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			if (p.id == localPlayerId) p.copy(runtimeFlags = p.runtimeFlags.copy(didBid = true)) else p
 		}
 		_state.value = _state.value.copy(players = players)
+		// Send the human's individual contribution, not the team total.
+		// Remote clients sum all individual bids in handleBidHouseRules (!humanOnTeam path).
+		mpAdapter?.let { adapter ->
+			val s2 = _state.value
+			val partnerBidSum = s2.players
+				.filter { it.team == teamId && it.id != localPlayerId }
+				.sumOf { p -> s2.phaseHands[GamePhase.Deal]?.lastOrNull()?.perPlayer?.get(p.id)?.bid ?: 0 }
+			adapter.sendBid(localMPSeat, localWirePlayerId, (bid - partnerBidSum).coerceAtLeast(0), false, mpCurrentHandNum)
+		}
 		advancePhase(GamePhase.Bid)
 		phaseManager.execute()
 	}
@@ -485,6 +495,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	 */
 	fun submitHumanBid(bid: Int, localPlayerId: String, isBlind: Boolean = false) {
 		submitBid(playerId = localPlayerId, bid = bid, isBlind = isBlind)
+		// Every MP client sends its own human action (not host-only); CPU actions are host-only.
+		if (mpAdapter != null && mpCurrentHandNum >= 0) {
+			mpAdapter!!.sendBid(localMPSeat, localWirePlayerId, bid, isBlind, mpCurrentHandNum)
+		}
 		advancePhase(GamePhase.Bid)
 		phaseManager.execute()
 	}
@@ -524,6 +538,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			submitBid(localPlayerId, blindBid, isBlind = true)
 		}
 		markBlindDecision(localPlayerId)
+		// Every MP client sends its own human action (not host-only); CPU actions are host-only.
+		if (mpAdapter != null && mpCurrentHandNum >= 0) {
+			mpAdapter!!.sendBlindResponse(goBlind, mpCurrentHandNum)
+		}
 		advancePhase(GamePhase.BlindBid)
 		phaseManager.execute()
 	}
@@ -610,8 +628,17 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	 * Removes the card from hand, advances to [GamePhase.Trick].
 	 */
 	fun submitHumanPlay(card: Card, localPlayerId: String) {
+		// Capture trick position before playCard mutates currentTrick.
+		val s            = _state.value
+		val n            = s.players.size.coerceAtLeast(1)
+		val trickNum     = s.discard.size / n + 1
+		val trickPlayNum = s.currentTrick.plays.count { it != null } + 1
 		playCard(localPlayerId, card)
 		removeCardFromHand(localPlayerId, card)
+		// Every MP client sends its own human action (not host-only); CPU actions are host-only.
+		if (mpAdapter != null && mpCurrentHandNum >= 0) {
+			mpAdapter!!.sendPlayCard(localMPSeat, localWirePlayerId, card, mpCurrentHandNum, trickNum, trickPlayNum)
+		}
 		advancePhase(GamePhase.Trick)
 		phaseManager.execute()
 	}
@@ -885,6 +912,15 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	/** Host-assigned hand number of the current deal; −1 before the first deal arrives. */
 	private var mpCurrentHandNum: Int = -1
 
+	/** True if this device is the game host (deals, proxies CPUs, broadcasts all host actions). */
+	var isMPHost: Boolean = false
+
+	/** Room-seat-indexed player identity map; populated by the host in [onMPHostLobbyComplete]. */
+	private var mpRoomSeatPlayers: Map<String, WireSeatPlayer> = emptyMap()
+
+	/** The local player's host-assigned wire playerId; set in [onGameConfig] and [onMPHostLobbyComplete]. */
+	private var localWirePlayerId: String = ""
+
 	private fun roomSeatToCanonicalId(roomSeat: Int): String {
 		val n = _state.value.players.size.coerceAtLeast(4)
 		return listOf("south", "west", "north", "east")
@@ -895,6 +931,249 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	fun attachMPAdapter(adapter: MPAdapter, localSeat: Int) {
 		mpAdapter = adapter
 		localMPSeat = localSeat
+	}
+
+	/**
+	 * Host entry point — called once all seats are confirmed and [MPAdapter] is attached.
+	 * Sends [gameConfig] to remote clients, then sets up local state and starts dealing.
+	 *
+	 * @param remoteHumanSeats Room seat indices (not canonical) that belong to remote humans.
+	 *   These seats get [PlayerType.MP]; the host's own seat gets [PlayerType.HUMAN];
+	 *   all others get [PlayerType.CPU].
+	 */
+	fun onMPHostLobbyComplete(
+		seatPlayers: Map<String, WireSeatPlayer>,
+		config: WireGameConfig,
+		ids: List<String>,
+		names: List<String>,
+		gameType: GameType,
+		remoteHumanSeats: Set<Int>
+	) {
+		isMPHost = true
+		mpRoomSeatPlayers = seatPlayers
+		localWirePlayerId = seatPlayers[localMPSeat.toString()]?.playerId ?: ""
+		mpCurrentHandNum = 0  // broadcastDeal() increments to 1 before first sendDeal
+
+		// Seed the canonical map so the host can look up canonical IDs from wire playerIds.
+		val n2 = gameType.playerCount
+		val canonicalIds2 = listOf("south", "west", "north", "east")
+		mpPlayerIdToCanonical = buildMap {
+			seatPlayers.forEach { (seatKey, wirePlayer) ->
+				val roomSeat = seatKey.toIntOrNull() ?: return@forEach
+				val canonicalIdx = (roomSeat - localMPSeat + n2) % n2
+				put(wirePlayer.playerId, canonicalIds2.getOrElse(canonicalIdx) { "seat$roomSeat" })
+			}
+		}
+
+		mpAdapter?.sendGameConfig(config, seatPlayers)
+
+		// Build players with correct types: host seat = HUMAN, remote human seats = MP, rest = CPU.
+		val n = gameType.playerCount
+		val players = (0 until n).map { canonicalIdx ->
+			val roomSeat = (canonicalIdx + localMPSeat) % n
+			val wirePlayer = seatPlayers[roomSeat.toString()]
+			val playerType = when {
+				roomSeat == localMPSeat -> PlayerType.HUMAN
+				roomSeat in remoteHumanSeats -> PlayerType.MP
+				else -> PlayerType.CPU
+			}
+			Player(
+				id          = ids.getOrElse(canonicalIdx) { "player$canonicalIdx" },
+				name        = names.getOrElse(canonicalIdx) { wirePlayer?.displayName ?: "Player $canonicalIdx" },
+				team        = if (gameType.useTeams && canonicalIdx % 2 == 1) 1 else 0,
+				playerType  = playerType,
+				runtimeFlags = RuntimeFlags(seatIndex = canonicalIdx)
+			)
+		}
+
+		// Apply config from wire (same values remote clients will receive) rather than local prefs.
+		_state.value = _state.value.copy(
+			players          = players,
+			phase            = GamePhase.Deal,
+			gameType         = gameType,
+			leaderIndex      = 1,
+			handLeaderIndex  = 1,
+			currentTrick     = Trick(plays = List(n) { null }),
+			twoOfSpadesJoker     = config.twoOfSpadesJoker,
+			twoOfDiamondsJoker   = config.twoOfDiamondsJoker,
+			enableDoubleBidBonus = config.enableDoubleBidBonus,
+			spadesMustBreak      = config.spadesMustBreak,
+			minBidFive           = config.minBidFive,
+			enableSandbagPenalty = config.enableSandbagPenalty,
+			allowNilBid          = config.allowNilBid,
+			allowBlindExchange   = config.allowBlindExchange,
+			gameLength           = runCatching { GameLength.valueOf(config.gameLength) }.getOrElse { GameLength.MEDIUM }
+		)
+		phaseManager.execute()
+	}
+
+	// ── MP session bootstrap ──────────────────────────────────────────────────────
+
+	/**
+	 * Called from PlayScreen once on entry. If an MP game is pending in [MPStateHolder],
+	 * creates an [MPAdapter] backed by the live [OnlineSession] socket, registers it as the
+	 * raw-message hook, and (for the host) kicks off the game via [onMPHostLobbyComplete].
+	 * Non-host clients wait for the [WireMessage] gameConfig to arrive via the hook.
+	 */
+	fun startMPSessionIfPending(gameType: GameType) {
+		val mpConfig = MPStateHolder.consume() ?: return
+		val session  = MPSession.session ?: return
+		val socket   = session.getGameSocketClient() ?: return
+		val lobby    = session.lobby.value ?: return
+
+		val localSeat      = mpConfig.localSeatIndex
+		val localWireId    = lobby.localPlayerId
+
+		val adapter = MPAdapter(
+			socket      = socket,
+			delegate    = this,
+			localSeat   = localSeat,
+			localPlayerId = localWireId,
+			scope       = viewModelScope
+		)
+		session.rawMessageHook = adapter::receive
+		attachMPAdapter(adapter, localSeat)
+
+		if (MPSession.isHost) {
+			val seatPlayers = buildMap<String, WireSeatPlayer> {
+				(0 until 4).forEach { i ->
+					val seat = lobby.seats.find { it.seatIndex == i }
+					put("$i", WireSeatPlayer(
+						playerId    = seat?.playerId ?: "cpu-$i",
+						displayName = seat?.displayName ?: "CPU $i"
+					))
+				}
+			}
+			val prefs = context.getSharedPreferences("jspades_prefs", Context.MODE_PRIVATE)
+			val wireConfig = WireGameConfig(
+				gameType             = gameTypeToWireString(gameType),
+				spadesMustBreak      = prefs.getBoolean("spades_must_break", false),
+				minBidFive           = prefs.getBoolean("min_bid_five", false),
+				enableSandbagPenalty = prefs.getBoolean("count_overs", true),
+				allowNilBid          = gameType == GameType.TEAM_CLASSIC,
+				allowBlindExchange   = gameType == GameType.TEAM_CLASSIC && prefs.getBoolean("blind_nil_exchange", false),
+				gameLength           = if (AppConfig.TEST_MODE) GameLength.TEST.name
+				                       else prefs.getString("game_length", GameLength.MEDIUM.name) ?: GameLength.MEDIUM.name
+			)
+			onMPHostLobbyComplete(
+				seatPlayers      = seatPlayers,
+				config           = wireConfig,
+				ids              = mpConfig.playerIds,
+				names            = mpConfig.playerNames,
+				gameType         = gameType,
+				remoteHumanSeats = mpConfig.remoteHumanSeats
+			)
+		}
+		// Non-host: adapter is live and will receive the host's gameConfig message via the hook.
+	}
+
+	// ── Host-to-wire conversion helpers ──────────────────────────────────────────
+
+	/** Canonical player list index (0=south…) → room seat number. */
+	internal fun canonicalIdxToRoomSeat(canonicalIdx: Int): Int {
+		val n = _state.value.players.size.coerceAtLeast(4)
+		return (canonicalIdx + localMPSeat) % n
+	}
+
+	/** Wire playerId for a given room seat (host-only; reads [mpRoomSeatPlayers]). Null when the seat is not mapped. */
+	private fun roomSeatToWirePlayerId(roomSeat: Int): String? =
+		mpRoomSeatPlayers[roomSeat.toString()]?.playerId
+
+	// ── Host broadcast methods (all no-ops when [isMPHost] is false) ─────────────
+
+	/**
+	 * Broadcast the current hand's deal to all remote clients.
+	 * Called by PhaseManager immediately after the deal algorithms populate phaseHands.
+	 * No-op when not the host or when mpAdapter is null.
+	 */
+	internal fun broadcastDeal() {
+		val adapter = mpAdapter ?: return
+		if (!isMPHost) return
+		val s = _state.value
+		val n = s.players.size
+		val hand = s.phaseHands[GamePhase.Deal]?.lastOrNull() ?: return
+
+		mpCurrentHandNum++
+
+		val dealerCanonicalIdx = (s.handLeaderIndex - 1 + n) % n
+		val dealerRoomSeat     = canonicalIdxToRoomSeat(dealerCanonicalIdx)
+		val seatOrder = (0 until n).mapNotNull { roomSeat ->
+			roomSeatToWirePlayerId(roomSeat) ?: run {
+				Log.w("GameViewModel", "broadcastDeal: missing playerId for roomSeat=$roomSeat — aborting")
+				return
+			}
+		}
+
+		val handsBySeat = buildMap<String, List<Card>> {
+			s.players.forEachIndexed { canonicalIdx, player ->
+				put(canonicalIdxToRoomSeat(canonicalIdx).toString(), hand.perPlayer[player.id]?.hand ?: emptyList())
+			}
+		}
+
+		val kittyCards = s.kitty?.perPlayer?.get("kitty")?.hand
+		val kittyWinnerId = s.kittyWinnerId?.let { cId ->
+			val idx = listOf("south", "west", "north", "east").indexOf(cId)
+			if (idx >= 0) roomSeatToWirePlayerId(canonicalIdxToRoomSeat(idx)) else null
+		}
+
+		adapter.sendDeal(mpCurrentHandNum, dealerRoomSeat, seatOrder, handsBySeat, kittyCards, kittyWinnerId)
+	}
+
+	/** Broadcast a CPU player's computed bid. Host only. */
+	internal fun broadcastCPUBid(canonicalId: String, amount: Int, isBlind: Boolean) {
+		val adapter = mpAdapter ?: return
+		if (!isMPHost) return
+		val idx = listOf("south", "west", "north", "east").indexOf(canonicalId)
+		if (idx < 0) return
+		val roomSeat     = canonicalIdxToRoomSeat(idx)
+		val wirePlayerId = roomSeatToWirePlayerId(roomSeat) ?: run {
+			Log.w("GameViewModel", "broadcastCPUBid: missing playerId for seat $roomSeat — skipping")
+			return
+		}
+		adapter.sendBid(roomSeat, wirePlayerId, amount, isBlind, mpCurrentHandNum)
+	}
+
+	/**
+	 * Broadcast a CPU player's selected card play.
+	 * MUST be called BEFORE [playCard] so trickPlayNum reflects the pre-play slot count.
+	 * Host only.
+	 */
+	internal fun broadcastCPUPlay(canonicalId: String, card: Card) {
+		val adapter = mpAdapter ?: return
+		if (!isMPHost) return
+		val s = _state.value
+		val n = s.players.size.coerceAtLeast(1)
+		val idx = listOf("south", "west", "north", "east").indexOf(canonicalId)
+		if (idx < 0) return
+		val roomSeat     = canonicalIdxToRoomSeat(idx)
+		val wirePlayerId = roomSeatToWirePlayerId(roomSeat) ?: run {
+			Log.w("GameViewModel", "broadcastCPUPlay: missing playerId for seat $roomSeat — skipping")
+			return
+		}
+		val trickNum     = s.discard.size / n + 1
+		val trickPlayNum = s.currentTrick.plays.count { it != null } + 1
+		adapter.sendPlayCard(roomSeat, wirePlayerId, card, mpCurrentHandNum, trickNum, trickPlayNum)
+	}
+
+	/** Broadcast a blind offer to all clients. Host only. */
+	internal fun broadcastBlindOffer(teamSeats: List<Int>, decidingSeats: List<Int>) {
+		val adapter = mpAdapter ?: return
+		if (!isMPHost) return
+		adapter.sendBlindOffer(mpCurrentHandNum, teamSeats, decidingSeats)
+	}
+
+	/** Broadcast a CPU player's blind-bid decision. Host only. */
+	internal fun broadcastCPUBlindResponse(canonicalId: String, accepted: Boolean) {
+		val adapter = mpAdapter ?: return
+		if (!isMPHost) return
+		val idx = listOf("south", "west", "north", "east").indexOf(canonicalId)
+		if (idx < 0) return
+		val roomSeat     = canonicalIdxToRoomSeat(idx)
+		val wirePlayerId = roomSeatToWirePlayerId(roomSeat) ?: run {
+			Log.w("GameViewModel", "broadcastCPUBlindResponse: missing playerId for seat $roomSeat — skipping")
+			return
+		}
+		adapter.sendBlindResponse(roomSeat, wirePlayerId, accepted, mpCurrentHandNum)
 	}
 
 	// ── MPAdapterDelegate ─────────────────────────────────────────────────────────
@@ -924,6 +1203,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 				put(wirePlayer.playerId, canonicalIds.getOrElse(canonicalIdx) { "seat$roomSeat" })
 			}
 		}
+
+		localWirePlayerId = seatPlayers[localMPSeat.toString()]?.playerId ?: ""
 
 		_state.value = _state.value.copy(
 			players              = players,

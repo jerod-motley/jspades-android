@@ -184,6 +184,9 @@ class PhaseManager(
             DealMode.TWO_MAN_ALTERNATE   -> dealTwoManAlternate(shuffled, ids, gt)
         }
 
+        // 6. Host broadcasts the deal to remote clients
+        viewModel.broadcastDeal()
+
         // Log game type and dealt hands for debugging
         PlayLogger.logGameType(viewModel.state.value)
         PlayLogger.logDealtHands(viewModel.state.value)
@@ -476,6 +479,30 @@ class PhaseManager(
         val s = viewModel.state.value
         val n = s.players.size
 
+        // Host broadcasts blind offer once, before any per-player decisions are processed.
+        val noneDecidedYet = s.players.none { it.runtimeFlags.didBlindDecide }
+        if (noneDecidedYet && viewModel.isMPHost && s.gameType.useTeams) {
+            val canonicalIds = listOf("south", "west", "north", "east")
+            for (teamId in listOf(0, 1)) {
+                val myScore  = (s.score.points[teamId.toString()] ?: 0) + (s.score.bags[teamId.toString()] ?: 0)
+                val oppScore = (s.score.points[(1 - teamId).toString()] ?: 0) + (s.score.bags[(1 - teamId).toString()] ?: 0)
+                if (oppScore - myScore < 100) continue
+                val teamPlayers = s.players.filter { it.team == teamId }
+                val teamRoomSeats = teamPlayers.mapNotNull { p ->
+                    val idx = canonicalIds.indexOf(p.id)
+                    if (idx >= 0) viewModel.canonicalIdxToRoomSeat(idx) else null
+                }
+                val decidingRoomSeats = teamPlayers
+                    .filter { it.playerType == PlayerType.HUMAN || it.playerType == PlayerType.MP }
+                    .mapNotNull { p ->
+                        val idx = canonicalIds.indexOf(p.id)
+                        if (idx >= 0) viewModel.canonicalIdxToRoomSeat(idx) else null
+                    }
+                viewModel.broadcastBlindOffer(teamRoomSeats, decidingRoomSeats)
+                break  // at most one team can be 100 behind at a time
+            }
+        }
+
         for (offset in 0 until n) {
             val player = s.players[(s.leaderIndex + offset) % n]
             if (player.runtimeFlags.didBlindDecide) continue
@@ -508,6 +535,7 @@ class PhaseManager(
             if (blindResult != null) {
                 viewModel.submitBid(player.id, blindResult.bid, blindResult.isBlind)
             }
+            viewModel.broadcastCPUBlindResponse(player.id, blindResult != null)
             viewModel.markBlindDecision(player.id)
         }
 
@@ -639,6 +667,7 @@ class PhaseManager(
                     isKittyWinner = s.kittyWinnerId == player.id
                 )
                 viewModel.submitBid(player.id, result.bid, result.isBlind)
+                viewModel.broadcastCPUBid(player.id, result.bid, result.isBlind)
                 // Fire-and-forget: emit event, return; animation completion calls execute()
                 viewModel.emitAnimation(AnimationEvent.BidPlaced(player.id, result.bid))
                 return
@@ -692,8 +721,10 @@ class PhaseManager(
                     if (result.isBlind) {
                         // Team goes blind: commit combined bid of 7, auto-fill all teammates
                         viewModel.submitBid(nextCpu.id, 0, false)
+                        viewModel.broadcastCPUBid(nextCpu.id, 7, isBlind = true)
                         teamPlayers.filter { it.id != nextCpu.id }.forEach { p ->
                             viewModel.submitBid(p.id, 0, false)
+                            viewModel.broadcastCPUBid(p.id, 0, isBlind = false)
                         }
                         viewModel.setTeamBid(teamId, 7)
                         viewModel.setTeamBlind(teamId, true)
@@ -702,6 +733,7 @@ class PhaseManager(
                     }
 
                     viewModel.submitBid(nextCpu.id, result.bid, result.isBlind)
+                    viewModel.broadcastCPUBid(nextCpu.id, result.bid, result.isBlind)
                     // Fire-and-forget: one CPU bid per execute() call
                     viewModel.emitAnimation(AnimationEvent.BidPlaced(nextCpu.id, result.bid))
                     return
@@ -862,6 +894,7 @@ class PhaseManager(
         }
 
         val card = PlayEngine.selectCard(nextPlayer, s)
+        viewModel.broadcastCPUPlay(nextPlayer, card)  // before playCard: trickPlayNum uses pre-play slot count
         viewModel.playCard(nextPlayer, card)
         viewModel.removeCardFromHand(nextPlayer, card)
 
