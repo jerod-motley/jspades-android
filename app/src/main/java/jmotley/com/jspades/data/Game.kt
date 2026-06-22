@@ -79,7 +79,7 @@ data class Player(
     val displayName: String = name,
     /** Team id: 0 or 1 for team games; use 0 for non-team games. */
     val team: Int = 0,
-    val playerType: PlayerType = PlayerType.CPU,
+    val playerType: PlayerType,
     val runtimeFlags: RuntimeFlags = RuntimeFlags()
 )
 

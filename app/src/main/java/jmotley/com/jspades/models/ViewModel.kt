@@ -33,9 +33,12 @@ import jmotley.com.jspades.data.ReplayEvent
 import jmotley.com.jspades.data.AppConfig*/
 import jmotley.com.jspades.engine.PhaseManager
 import jmotley.com.jspades.logging.PlayLogger
+import jmotley.com.jspades.networking.MPAdapter
+import jmotley.com.jspades.networking.MPAdapterDelegate
+import jmotley.com.jspades.networking.wireStringToGameType
 import android.util.Log
 
-class GameViewModel(application: Application) : AndroidViewModel(application) {
+class GameViewModel(application: Application) : AndroidViewModel(application), MPAdapterDelegate {
 	private val context: Context get() = getApplication<Application>().applicationContext
 
 	private val _state = MutableStateFlow(GameState())
@@ -867,6 +870,185 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 	/** Called by PhaseManager to suspend until UI responds to the bag forgiveness offer. */
 	suspend fun awaitBagForgivenessResponse(): Boolean =
 		_bagForgivenessResponse.first()
+
+	// ── Multiplayer ───────────────────────────────────────────────────────────────
+
+	/** Non-null when this session is an online multiplayer game. */
+	var mpAdapter: MPAdapter? = null
+
+	/** Room seat index of the local player (0–3). Set by [attachMPAdapter]. */
+	private var localMPSeat: Int = 0
+
+	/** Maps host-assigned playerId → canonical id ("south"/"west"/"north"/"east"). Built in [onGameConfig]. */
+	private var mpPlayerIdToCanonical: Map<String, String> = emptyMap()
+
+	/** Host-assigned hand number of the current deal; −1 before the first deal arrives. */
+	private var mpCurrentHandNum: Int = -1
+
+	private fun roomSeatToCanonicalId(roomSeat: Int): String {
+		val n = _state.value.players.size.coerceAtLeast(4)
+		return listOf("south", "west", "north", "east")
+			.getOrElse((roomSeat - localMPSeat + n) % n) { "seat$roomSeat" }
+	}
+
+	/** Attach an [MPAdapter], activating the MP receive path. Call once from the online lobby. */
+	fun attachMPAdapter(adapter: MPAdapter, localSeat: Int) {
+		mpAdapter = adapter
+		localMPSeat = localSeat
+	}
+
+	// ── MPAdapterDelegate ─────────────────────────────────────────────────────────
+
+	override fun onGameConfig(config: WireGameConfig, seatPlayers: Map<String, WireSeatPlayer>) {
+		val gameType = wireStringToGameType(config.gameType) ?: GameType.HOUSE_RULES
+		val n = gameType.playerCount
+		val canonicalIds = listOf("south", "west", "north", "east")
+
+		val players = (0 until n).map { roomSeat ->
+			val canonicalIdx = (roomSeat - localMPSeat + n) % n
+			val canonicalId  = canonicalIds[canonicalIdx]
+			val wirePlayer   = seatPlayers[roomSeat.toString()]
+			Player(
+				id           = canonicalId,
+				name         = wirePlayer?.displayName ?: canonicalId,
+				team         = if (gameType.useTeams && canonicalIdx % 2 == 1) 1 else 0,
+				playerType   = if (roomSeat == localMPSeat) PlayerType.HUMAN else PlayerType.MP,
+				runtimeFlags = RuntimeFlags(seatIndex = canonicalIdx)
+			)
+		}
+
+		mpPlayerIdToCanonical = buildMap {
+			seatPlayers.forEach { (seatKey, wirePlayer) ->
+				val roomSeat     = seatKey.toIntOrNull() ?: return@forEach
+				val canonicalIdx = (roomSeat - localMPSeat + n) % n
+				put(wirePlayer.playerId, canonicalIds.getOrElse(canonicalIdx) { "seat$roomSeat" })
+			}
+		}
+
+		_state.value = _state.value.copy(
+			players              = players,
+			gameType             = gameType,
+			leaderIndex          = 1,
+			handLeaderIndex      = 1,
+			currentTrick         = Trick(plays = List(n) { null }),
+			twoOfSpadesJoker     = config.twoOfSpadesJoker,
+			twoOfDiamondsJoker   = config.twoOfDiamondsJoker,
+			enableDoubleBidBonus = config.enableDoubleBidBonus,
+			spadesMustBreak      = config.spadesMustBreak,
+			minBidFive           = config.minBidFive,
+			enableSandbagPenalty = config.enableSandbagPenalty,
+			allowNilBid          = config.allowNilBid,
+			allowBlindExchange   = config.allowBlindExchange,
+			gameLength           = runCatching { GameLength.valueOf(config.gameLength) }.getOrElse { GameLength.MEDIUM }
+		)
+		// Phase stays at Lobby — wait for the host's `deal` message to start the hand.
+	}
+
+	override fun onDeal(
+		handNum: Int,
+		dealerSeat: Int,
+		seatOrder: List<String>,
+		handsBySeat: Map<String, List<Card>>,
+		kitty: List<Card>?,
+		kittyWinnerId: String?
+	) {
+		if (mpCurrentHandNum != -1 && handNum <= mpCurrentHandNum) {
+			Log.w("GameViewModel", "onDeal: stale handNum=$handNum current=$mpCurrentHandNum — dropping")
+			return
+		}
+		mpCurrentHandNum = handNum
+
+		val n = _state.value.players.size
+		val canonicalIds = listOf("south", "west", "north", "east")
+
+		if (_state.value.phase != GamePhase.Lobby) resetForNextHand()
+
+		val perPlayer = buildMap<String, PlayerHandState> {
+			for ((seatKey, cards) in handsBySeat) {
+				val roomSeat     = seatKey.toIntOrNull() ?: continue
+				val canonicalIdx = (roomSeat - localMPSeat + n) % n
+				val canonicalId  = canonicalIds.getOrElse(canonicalIdx) { "seat$roomSeat" }
+				val sorted = cards.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
+				put(canonicalId, PlayerHandState(hand = sorted))
+			}
+		}
+
+		applyDeal(Hand(perPlayer = perPlayer))
+
+		if (kitty != null) {
+			applyKitty(Hand(perPlayer = mapOf("kitty" to PlayerHandState(hand = kitty))))
+			val winnerId = kittyWinnerId?.let { mpPlayerIdToCanonical[it] }
+			if (winnerId != null) setKittyWinner(winnerId)
+		}
+
+		// Player after the dealer bids and leads first.
+		val firstBidderCanonicalIdx = ((dealerSeat + 1) - localMPSeat + n) % n
+		_state.value = _state.value.copy(
+			leaderIndex     = firstBidderCanonicalIdx,
+			handLeaderIndex = firstBidderCanonicalIdx
+		)
+
+		advancePhase(GamePhase.Bid)
+		phaseManager.execute()
+	}
+
+	override fun onBlindOffer(handNum: Int, teamSeats: List<Int>, decidingSeats: List<Int>) {
+		// Only advance if the local player is one of the designated deciding seats.
+		// If not, wait: onBlindResponse callbacks will drive the phase forward.
+		if (localMPSeat !in decidingSeats) return
+		advancePhase(GamePhase.BlindBid)
+		phaseManager.execute()
+	}
+
+	override fun onBlindResponse(seat: Int, accepted: Boolean, handNum: Int) {
+		val canonicalId = roomSeatToCanonicalId(seat)
+		markBlindDecision(canonicalId)
+		if (accepted) {
+			val blindBid = when (_state.value.gameType) {
+				GameType.TEAM_CLASSIC, GameType.SOLO_FOUR_MAN -> 0
+				else -> 7
+			}
+			submitBid(canonicalId, blindBid, isBlind = true)
+		}
+		advancePhase(GamePhase.BlindBid)
+		phaseManager.execute()
+	}
+
+	override fun onBid(seat: Int, amount: Int, isBlind: Boolean, handNum: Int) {
+		if (handNum != mpCurrentHandNum) {
+			Log.w("GameViewModel", "onBid: stale handNum=$handNum current=$mpCurrentHandNum — dropping")
+			return
+		}
+		submitBid(roomSeatToCanonicalId(seat), amount, isBlind)
+		advancePhase(GamePhase.Bid)
+		phaseManager.execute()
+	}
+
+	override fun onPlayCard(seat: Int, cardUid: String, handNum: Int, trickNum: Int, trickPlayNum: Int) {
+		if (handNum != mpCurrentHandNum) {
+			Log.w("GameViewModel", "onPlayCard: stale handNum=$handNum current=$mpCurrentHandNum — dropping")
+			return
+		}
+		val playedCount = _state.value.currentTrick.plays.count { it != null }
+		if (trickPlayNum - 1 != playedCount) {
+			Log.w("GameViewModel", "onPlayCard: out-of-order trickPlayNum=$trickPlayNum playedCount=$playedCount — dropping")
+			return
+		}
+		val canonicalId = roomSeatToCanonicalId(seat)
+		// phaseHands[Deal] is the LIVE hand (mutated by removeCardFromHand after each play),
+		// not the original deal snapshot — so a duplicate play for an already-played card
+		// yields null here and is safely dropped by the guard below.
+		val card = _state.value.phaseHands[GamePhase.Deal]?.lastOrNull()
+			?.perPlayer?.get(canonicalId)?.hand?.firstOrNull { it.uid == cardUid }
+		if (card == null) {
+			Log.w("GameViewModel", "onPlayCard: card $cardUid not found in live hand of $canonicalId")
+			return
+		}
+		playCard(canonicalId, card)
+		removeCardFromHand(canonicalId, card)
+		advancePhase(GamePhase.Trick)
+		phaseManager.execute()
+	}
 
 	/**
 	 * Called by the "Play Again" button on EndGameView.
