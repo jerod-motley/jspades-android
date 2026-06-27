@@ -58,11 +58,13 @@ data class WireGameConfig(
     val gameLength: String = "MEDIUM"
 )
 
-// ── Wire messages (discriminated by the "action" field) ───────────────────────
+// ── Wire messages (discriminated by the "type" field) ────────────────────────
+// "type" matches the relay envelope field used by both iOS and the WSS relay,
+// so incoming relay envelopes decode directly without stripping the outer wrapper.
 
 @OptIn(ExperimentalSerializationApi::class)
 @Serializable
-@JsonClassDiscriminator("action")
+@JsonClassDiscriminator("type")
 sealed class WireMessage {
     abstract val cmdId: String
     abstract val seat: Int

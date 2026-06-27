@@ -119,6 +119,9 @@ fun PlayScreen(
     var revealedCard by remember { mutableStateOf<jmotley.com.jspades.data.Card?>(null) }
     var showPeekDialog by remember { mutableStateOf(false) }
     var showRewardsDialog by remember { mutableStateOf(false) }
+    // Pending reward confirmation: label shown in the dialog and the action to run on confirm.
+    var pendingRewardLabel by remember { mutableStateOf("") }
+    var pendingRewardAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     val currentVideoAsset by viewModel.currentVideoAsset.collectAsState()
 
     // Always clear the active challenge when leaving the play screen, so a
@@ -192,6 +195,7 @@ fun PlayScreen(
     }
 
     val isChallengeActive = AchievementsRepo.getActiveChallenge(context) != null
+    val isMultiplayer = viewModel.mpAdapter != null
 
     Box(modifier = Modifier.fillMaxSize()) {
 
@@ -349,7 +353,7 @@ fun PlayScreen(
 
         // ── Rewards icon — persistent entry point for all reward ads ─────────────
         // Hidden in challenge mode. Will become context-aware (icon changes per opportunity).
-        if (!isChallengeActive) {
+        if (!isChallengeActive && !isMultiplayer) {
             val rewardPrefs = remember { context.getSharedPreferences("reward_prefs", android.content.Context.MODE_PRIVATE) }
             var rewardTapCount by remember { mutableStateOf(rewardPrefs.getInt("reward_tap_count", 0)) }
             RewardsIconButton(
@@ -654,7 +658,7 @@ fun PlayScreen(
                         localPlayerId          = localPlayerId,
                         onNavigateBack         = onNavigateBack,
                         onReplayHand           = if (state.lastHandReplay != null) {{ showReplay = true }} else null,
-                        canReplayLastHand      = !viewModel.usedReplayLastHandThisGame && !isChallengeActive && humanWasSet,
+                        canReplayLastHand      = !viewModel.usedReplayLastHandThisGame && !isChallengeActive && !isMultiplayer && humanWasSet,
                         onReplayLastHandAccepted = {
                             val activity = context as? Activity
                             if (activity != null) {
@@ -728,11 +732,14 @@ fun PlayScreen(
                         if (canUndo) {
                             TextButton(onClick = {
                                 showRewardsDialog = false
-                                if (activity != null) AdManager.showRewarded(
-                                    activity = activity,
-                                    placement = RewardedPlacement.UNDO_LAST_TRICK,
-                                    onReward = { viewModel.rewindToPreviousTrick() }
-                                )
+                                pendingRewardLabel = "Undo Last Trick"
+                                pendingRewardAction = {
+                                    if (activity != null) AdManager.showRewarded(
+                                        activity = activity,
+                                        placement = RewardedPlacement.UNDO_LAST_TRICK,
+                                        onReward = { viewModel.rewindToPreviousTrick() }
+                                    )
+                                }
                             }) { Text("↩ Undo Last Trick") }
                         }
                         if (canPeek) {
@@ -744,35 +751,63 @@ fun PlayScreen(
                         if (canExtraBook) {
                             TextButton(onClick = {
                                 showRewardsDialog = false
-                                if (activity != null) AdManager.showRewarded(
-                                    activity = activity,
-                                    placement = RewardedPlacement.EXTRA_BOOK,
-                                    onReward = { viewModel.grantExtraBook(localPlayerId) }
-                                )
+                                pendingRewardLabel = "Extra Book"
+                                pendingRewardAction = {
+                                    if (activity != null) AdManager.showRewarded(
+                                        activity = activity,
+                                        placement = RewardedPlacement.EXTRA_BOOK,
+                                        onReward = { viewModel.grantExtraBook(localPlayerId) }
+                                    )
+                                }
                             }) { Text("📖 Extra Book") }
                         }
                         if (canBidAdjust) {
                             TextButton(onClick = {
                                 showRewardsDialog = false
-                                if (activity != null) AdManager.showRewarded(
-                                    activity = activity,
-                                    placement = RewardedPlacement.BID_ADJUST,
-                                    onReward = { viewModel.adjustHumanBid(localPlayerId, jmotley.com.jspades.ads.BidAdjustDirection.MINUS_ONE) }
-                                )
+                                pendingRewardLabel = "Bid −1"
+                                pendingRewardAction = {
+                                    if (activity != null) AdManager.showRewarded(
+                                        activity = activity,
+                                        placement = RewardedPlacement.BID_ADJUST,
+                                        onReward = { viewModel.adjustHumanBid(localPlayerId, jmotley.com.jspades.ads.BidAdjustDirection.MINUS_ONE) }
+                                    )
+                                }
                             }) { Text("🎯 Bid −1") }
                             TextButton(onClick = {
                                 showRewardsDialog = false
-                                if (activity != null) AdManager.showRewarded(
-                                    activity = activity,
-                                    placement = RewardedPlacement.BID_ADJUST,
-                                    onReward = { viewModel.adjustHumanBid(localPlayerId, jmotley.com.jspades.ads.BidAdjustDirection.PLUS_ONE) }
-                                )
+                                pendingRewardLabel = "Bid +1"
+                                pendingRewardAction = {
+                                    if (activity != null) AdManager.showRewarded(
+                                        activity = activity,
+                                        placement = RewardedPlacement.BID_ADJUST,
+                                        onReward = { viewModel.adjustHumanBid(localPlayerId, jmotley.com.jspades.ads.BidAdjustDirection.PLUS_ONE) }
+                                    )
+                                }
                             }) { Text("🎯 Bid +1") }
                         }
                     }
                 },
                 confirmButton = {},
                 dismissButton = { TextButton(onClick = { showRewardsDialog = false }) { Text("Close") } }
+            )
+        }
+
+        // ── Reward confirmation dialog — shown after selecting a reward, before the ad plays ──
+        if (pendingRewardAction != null) {
+            AlertDialog(
+                onDismissRequest = { pendingRewardAction = null },
+                title = { Text("Watch an ad?") },
+                text = { Text("Watch a short ad to unlock: $pendingRewardLabel") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val action = pendingRewardAction
+                        pendingRewardAction = null
+                        action?.invoke()
+                    }) { Text("Watch Ad") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingRewardAction = null }) { Text("No Thanks") }
+                }
             )
         }
 
@@ -787,14 +822,19 @@ fun PlayScreen(
                         opponents.forEach { player ->
                             TextButton(onClick = {
                                 showPeekDialog = false
-                                val activity = context as? Activity ?: return@TextButton
-                                var peeked: jmotley.com.jspades.data.Card? = null
-                                AdManager.showRewarded(
-                                    activity = activity,
-                                    placement = RewardedPlacement.PEEK_ONE_CARD,
-                                    onReward = { peeked = viewModel.peekCardForPlayer(player.id) },
-                                    onClosed = { revealedCard = peeked }
-                                )
+                                pendingRewardLabel = "Peek at ${player.name}'s hand"
+                                val capturedActivity = context as? Activity
+                                pendingRewardAction = {
+                                    if (capturedActivity != null) {
+                                        var peeked: jmotley.com.jspades.data.Card? = null
+                                        AdManager.showRewarded(
+                                            activity = capturedActivity,
+                                            placement = RewardedPlacement.PEEK_ONE_CARD,
+                                            onReward = { peeked = viewModel.peekCardForPlayer(player.id) },
+                                            onClosed = { revealedCard = peeked }
+                                        )
+                                    }
+                                }
                             }) { Text(player.name) }
                         }
                     }

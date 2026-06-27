@@ -1,6 +1,7 @@
 package jmotley.com.jspades.engine
 
 import android.content.Context
+import android.util.Log
 import jmotley.com.jspades.logging.PlayLogger
 import jmotley.com.jspades.data.AchievementsRepo
 import jmotley.com.jspades.data.Card
@@ -26,7 +27,6 @@ import jmotley.com.jspades.networking.PlayLogApi
 import jmotley.com.jspades.networking.PlayLogGame
 import jmotley.com.jspades.networking.PlayLogPayload
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
@@ -44,6 +44,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * @param viewModel Shared game state owner.
  * @param scope     Coroutine scope tied to the ViewModel's lifetime (viewModelScope).
  */
+private const val MP_TAG = "WSSMP"
+
 class PhaseManager(
     private val viewModel: GameViewModel,
     private val scope: CoroutineScope,
@@ -498,6 +500,7 @@ class PhaseManager(
                         val idx = canonicalIds.indexOf(p.id)
                         if (idx >= 0) viewModel.canonicalIdxToRoomSeat(idx) else null
                     }
+                Log.d(MP_TAG, "handleBlindBid broadcasting offer team=$teamId teamRoomSeats=$teamRoomSeats decidingRoomSeats=$decidingRoomSeats")
                 viewModel.broadcastBlindOffer(teamRoomSeats, decidingRoomSeats)
                 break  // at most one team can be 100 behind at a time
             }
@@ -519,6 +522,7 @@ class PhaseManager(
                         .maxOfOrNull { p -> s.score.points[p.id] ?: 0 } ?: 0
                     topScore - myScore >= 100
                 }
+                Log.d(MP_TAG, "handleBlindBid HUMAN ${player.id} eligible=$eligible")
                 if (eligible) {
                     viewModel.advancePhase(GamePhase.BlindBidHuman)
                     dispatch()
@@ -532,6 +536,7 @@ class PhaseManager(
             // CPU player
             val hand = getPlayerHand(s, player.id)
             val blindResult = BidEngine.shouldCpuBidBlind(hand, player, s)
+            Log.d(MP_TAG, "handleBlindBid CPU ${player.id} blindResult=${if (blindResult != null) "bid=${blindResult.bid}" else "skip"}")
             if (blindResult != null) {
                 viewModel.submitBid(player.id, blindResult.bid, blindResult.isBlind)
             }
@@ -642,6 +647,7 @@ class PhaseManager(
         for (offset in 0 until n) {
             val player = s.players[(s.leaderIndex + offset) % n]
             if (!player.runtimeFlags.didBid) {
+                Log.d(MP_TAG, "handleBidIndividual nextBidder=${player.id} type=${player.playerType}")
                 if (player.playerType == PlayerType.HUMAN) {
                     // Challenge may lock south out of bidding (e.g. run_boston_partner_bid)
                     val allowBid = AchievementsRepo.getActiveChallengeAllowBid(context)
@@ -674,6 +680,7 @@ class PhaseManager(
             }
         }
         // All players have bid — compute team totals, then wait for human OK
+        Log.d(MP_TAG, "handleBidIndividual all done → BidReview")
         if (s.gameType.useTeams) finalizeTeamBids()
         viewModel.advancePhase(GamePhase.BidReview)
     }
@@ -692,6 +699,8 @@ class PhaseManager(
         val dealerIdx  = (s.leaderIndex - 1 + n) % n
         val dealerTeam = s.players[dealerIdx].team
         val teamOrder  = listOf(1 - dealerTeam, dealerTeam) // non-dealer first
+
+        Log.d(MP_TAG, "handleBidHouseRules dealerTeam=$dealerTeam teamOrder=$teamOrder")
 
         for (teamId in teamOrder) {
             val teamPlayers    = s.players.filter { it.team == teamId }
@@ -715,6 +724,7 @@ class PhaseManager(
                 // Find the next unbidd CPU player on this team
                 val nextCpu = teamPlayers.firstOrNull { !it.runtimeFlags.didBid && it.playerType == PlayerType.CPU }
                 if (nextCpu != null) {
+                    Log.d(MP_TAG, "handleBidHouseRules team=$teamId nextCPU=${nextCpu.id}")
                     val hand   = getPlayerHand(s, nextCpu.id)
                     val result = BidEngine.computeCpuBid(hand, nextCpu, s)
 
@@ -742,6 +752,7 @@ class PhaseManager(
                 // Yield for the next unbidd MP player on this team
                 val nextMp = teamPlayers.firstOrNull { !it.runtimeFlags.didBid && it.playerType == PlayerType.MP }
                 if (nextMp != null) {
+                    Log.d(MP_TAG, "handleBidHouseRules team=$teamId nextMP=${nextMp.id} → BidMP")
                     viewModel.advancePhase(GamePhase.BidMP)
                     dispatch()
                     return
@@ -749,6 +760,7 @@ class PhaseManager(
 
                 // All CPUs and MP players on this team have bid
                 if (humanOnTeam && !humanAlreadyBid) {
+                    Log.d(MP_TAG, "handleBidHouseRules team=$teamId → BidHuman")
                     val allowBid = AchievementsRepo.getActiveChallengeAllowBid(context)
                     if (allowBid != null && allowBid != "south") {
                         viewModel.submitBid("south", 0, false)
@@ -766,6 +778,7 @@ class PhaseManager(
                         s.phaseHands[GamePhase.Deal]?.lastOrNull()
                             ?.perPlayer?.get(player.id)?.bid ?: 0
                     }.coerceAtLeast(s.effectiveMinBid)
+                    Log.d(MP_TAG, "handleBidHouseRules team=$teamId finalizedBid=$teamBid (CPU-only) → next team")
                     viewModel.setTeamBid(teamId, teamBid)
                 }
                 // fall through to next team
@@ -855,11 +868,18 @@ class PhaseManager(
     private suspend fun handleTrick() {
         val s          = viewModel.state.value
         val n          = s.players.size
-
-        // If the human just played (South's card is the most recent play), pause so
-        // South's card animation has time to land before the next CPU reacts.
-        // plays[] is filled in sequence order, so plays[playedCount-1] = last play.
         val playedCount = s.currentTrick.plays.count { it != null }
+
+        Log.d(MP_TAG, "handleTrick playedCount=$playedCount")
+
+        // Guard first: if the trick is already complete, resolve immediately.
+        // This must be checked before any player-routing logic and before any delay,
+        // so that a stale animation callback or a late MP play cannot cause a double-advance.
+        if (playedCount == n) {
+            viewModel.advancePhase(GamePhase.TrickResolve)
+            dispatch()
+            return
+        }
 
         // Shift trick checkpoints only at the start of a new trick (before anyone has played)
         if (playedCount == 0) {
@@ -867,19 +887,9 @@ class PhaseManager(
             viewModel.currentTrickStartSnapshot = viewModel.state.value.toSnapshot()
         }
 
-        if (playedCount > 0 && s.playerTypeById(s.currentTrick.plays[playedCount - 1]?.playerId ?: "") == PlayerType.HUMAN) {
-            delay(1000)
-        }
-
-        // Guard: if the trick is already complete (e.g. human played last),
-        // go straight to TrickResolve instead of selecting another card.
-        if (s.currentTrick.plays.count { it != null } == n) {
-            viewModel.advancePhase(GamePhase.TrickResolve)
-            dispatch()
-            return
-        }
-
         val nextPlayer = nextPlayerInTrick(s.currentTrick.plays, s.players.map { it.id }, s.leaderIndex)
+
+        Log.d(MP_TAG, "handleTrick nextPlayer=$nextPlayer type=${s.playerTypeById(nextPlayer)}")
 
         if (s.playerTypeById(nextPlayer) == PlayerType.HUMAN) {
             viewModel.advancePhase(GamePhase.TrickHuman)
@@ -888,12 +898,14 @@ class PhaseManager(
         }
 
         if (s.playerTypeById(nextPlayer) == PlayerType.MP) {
+            Log.d(MP_TAG, "handleTrick MP wait → TrickMP")
             viewModel.advancePhase(GamePhase.TrickMP)
             dispatch()
             return
         }
 
         val card = PlayEngine.selectCard(nextPlayer, s)
+        Log.d(MP_TAG, "handleTrick CPU $nextPlayer selected card=${card.uid}")
         viewModel.broadcastCPUPlay(nextPlayer, card)  // before playCard: trickPlayNum uses pre-play slot count
         viewModel.playCard(nextPlayer, card)
         viewModel.removeCardFromHand(nextPlayer, card)
@@ -946,6 +958,10 @@ class PhaseManager(
         }
 
         viewModel.awardTrick(winnerId)
+
+        val booksAfterAward = viewModel.state.value.phaseHands[GamePhase.Deal]?.lastOrNull()
+            ?.perPlayer?.mapValues { it.value.tricksWon } ?: emptyMap()
+        Log.d(MP_TAG, "handleTrickResolve winner=$winnerId cards=${plays.map { it.card.uid }} nextLeader=$winnerId books=$booksAfterAward")
 
         // Evaluate per-trick challenge constraints before collecting (currentTrick still intact)
         for (result in ChallengeEvaluation.evaluatePerTrick(viewModel.state.value, context)) {

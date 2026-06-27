@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import jmotley.com.jspades.BuildConfig
 import jmotley.com.jspades.R
 import jmotley.com.jspades.data.*
 import jmotley.com.jspades.models.LobbyUiState
@@ -95,7 +96,7 @@ fun OnlineLobbyScreen(
             is LobbyUiState.Connecting -> ConnectingView(
                 onCancel = { vm.disconnect(); onNavigateBack() }
             )
-            is LobbyUiState.InLobby -> if (state.mockRunning || state.mockLog.isNotEmpty()) {
+            is LobbyUiState.InLobby -> if (BuildConfig.DEBUG && (state.mockRunning || state.mockLog.isNotEmpty())) {
                 MockLogView(
                     state = state,
                     onSendChat = vm::sendChat,
@@ -311,12 +312,14 @@ private fun LobbyView(
                             ) {
                                 Text("Start Game", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                             }
-                            Button(
-                                onClick = onStartMock,
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF546E7A))
-                            ) {
-                                Text("Protocol Test", fontWeight = FontWeight.Medium)
+                            if (BuildConfig.DEBUG) {
+                                Button(
+                                    onClick = onStartMock,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF546E7A))
+                                ) {
+                                    Text("Protocol Test", fontWeight = FontWeight.Medium)
+                                }
                             }
                         }
                     }

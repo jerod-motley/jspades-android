@@ -71,6 +71,13 @@ class OnlineSession(
     private val seenCmdIds = mutableSetOf<String>()
     private var mpLoggingEnabled = false
 
+    // ── Pre-hook message buffer ───────────────────────────────────────────────
+    // Raw socket messages that arrive while rawMessageHook is null are buffered here
+    // so the MPAdapter (attached later, on PlayScreen entry) can still process them.
+    private val bufferLock = Any()
+    private val preHookBuffer = mutableListOf<String>()
+    private var _rawMessageHook: ((String) -> Unit)? = null
+
     // ── Connect / disconnect ──────────────────────────────────────────────────
 
     fun createRoom(personId: String, displayName: String) {
@@ -83,6 +90,7 @@ class OnlineSession(
     }
 
     private fun initSession(personId: String, displayName: String, roomId: String, isHost: Boolean) {
+        enableMpLogging()
         val seatIndex = if (isHost) 0 else -1
 
         val initialSeats = if (isHost) {
@@ -188,14 +196,41 @@ class OnlineSession(
      * Set by PlayScreen when entering an MP game. Every raw socket message is forwarded
      * here so [MPAdapter] can parse the new-protocol [WireMessage] types independently of
      * the legacy [SpadesMPMessage] path below. Clear on disconnect to avoid leaking the adapter.
+     *
+     * Setting this to a non-null value immediately replays any messages that arrived while
+     * it was null, so the adapter never misses gameConfig or deal from a fast iOS host.
      */
-    var rawMessageHook: ((String) -> Unit)? = null
+    var rawMessageHook: ((String) -> Unit)?
+        get() = _rawMessageHook
+        set(value) {
+            val buffered: List<String>
+            synchronized(bufferLock) {
+                _rawMessageHook = value
+                buffered = preHookBuffer.toList()
+                preHookBuffer.clear()
+            }
+            if (value != null) {
+                logI("rawMessageHook attached — replaying ${buffered.size} buffered messages")
+                buffered.forEach { value.invoke(it) }
+            }
+        }
 
     /** Provides the live [GameSocketClient] to [MPAdapter] so they share a single socket. */
-    fun getGameSocketClient(): GameSocketClient? = if (::socket.isInitialized) socket else null
+    fun getGameSocketClient(): GameSocketClient? {
+        val client = if (::socket.isInitialized) socket else null
+        Log.d(TAG, "getGameSocketClient → ${if (client != null) "live" else "null"}")
+        return client
+    }
 
     private fun onRawMessage(raw: String) {
-        rawMessageHook?.invoke(raw)
+        // Forward to MPAdapter hook, or buffer if it isn't attached yet.
+        val hookSnapshot: ((String) -> Unit)?
+        synchronized(bufferLock) {
+            hookSnapshot = _rawMessageHook
+            if (hookSnapshot == null) preHookBuffer.add(raw)
+        }
+        hookSnapshot?.invoke(raw)
+        Log.d(TAG, "onRawMessage hook=${if (hookSnapshot != null) "MPAdapter" else "buffered(${preHookBuffer.size})"}")
         val msg = parseIncoming(raw)
 
         val cmdId = (msg as? SpadesMPMessage.PlayerBid)?.cmdId
@@ -229,7 +264,17 @@ class OnlineSession(
             is SpadesMPMessage.StartGame      -> onStartGame(msg)
             is SpadesMPMessage.PlayerDisconnected -> onPlayerDisconnected(msg)
             is SpadesMPMessage.PlayerReconnected  -> logI("← PlayerReconnected ${msg.personId.takeLast(8)}")
-            is SpadesMPMessage.Unknown        -> logW("UNKNOWN message: ${msg.raw.take(200)}")
+            is SpadesMPMessage.Unknown        -> {
+                // Suppress warning for types owned by MPAdapter — they arrive here via the
+                // legacy parseIncoming path but are already handled before this point.
+                val adapterTypes = setOf("gameConfig", "deal", "bid", "playCard", "blindOffer", "blindResponse")
+                val rawType = msg.raw.substringAfter("\"type\":\"").substringBefore("\"").takeIf { it.isNotEmpty() }
+                if (rawType in adapterTypes) {
+                    logD("← $rawType (adapter-owned, legacy-path no-op)")
+                } else {
+                    logW("UNKNOWN message: ${msg.raw.take(200)}")
+                }
+            }
 
             // Game protocol messages — full game object from host; card/bid inputs from clients
             is SpadesMPMessage.GameState -> {
@@ -259,7 +304,12 @@ class OnlineSession(
             is SpadesMPMessage.Bid,
             is SpadesMPMessage.TrickResult,
             is SpadesMPMessage.HandScore,
-            is SpadesMPMessage.GameFinished -> logReceived(msg)
+            is SpadesMPMessage.GameFinished -> {
+                // Only log during an active mock protocol test. Game messages that arrive
+                // before the MPAdapter is attached (e.g. during the countdown) must not
+                // pollute mockLog — that would flip the lobby to MockLogView mid-countdown.
+                if (hookSnapshot == null && _mockRunning.value) logReceived(msg)
+            }
         }
     }
 
@@ -392,6 +442,10 @@ class OnlineSession(
 
     private fun onStartCountdown(msg: SpadesMPMessage.StartCountdown) {
         if (_lobby.value?.isHost == true) return   // host drives its own countdown
+        if (countdownStarted) {
+            logI("COUNTDOWN already started — ignoring duplicate startCountdown")
+            return
+        }
         enableMpLogging()
         logI("COUNTDOWN ${msg.seconds}s — guest starting")
         countdownStarted = true

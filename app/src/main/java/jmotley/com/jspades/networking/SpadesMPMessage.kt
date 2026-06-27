@@ -955,7 +955,7 @@ fun androidToWireCard(token: String): String {
 }
 
 fun buildChat(personId: String, roomId: String, displayName: String, message: String) =
-    MpEnvelope(type = "chatMessage", playerId = personId, roomId = roomId, cmdId = cmdId(), payload = mapOf(
+    MpEnvelope(type = "chat", playerId = personId, roomId = roomId, cmdId = cmdId(), payload = mapOf(
         "displayName" to displayName,
         "message" to message
     )).toJson()
