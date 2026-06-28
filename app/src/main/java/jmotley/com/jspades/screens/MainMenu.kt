@@ -1,5 +1,6 @@
 package jmotley.com.jspades.screens
 
+import android.content.Context
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
@@ -12,8 +13,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -24,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -55,6 +59,27 @@ fun MainMenuScreen(
     var currentMenu by remember { mutableStateOf(SubMenu.None) }
     val jennasue = FontFamily(Font(R.font.jenna_sue))
     val tickerText by vm.tickerText.collectAsState()
+    val context = LocalContext.current
+    var showRegistrationPrompt by remember { mutableStateOf(false) }
+
+    if (showRegistrationPrompt) {
+        AlertDialog(
+            onDismissRequest = { showRegistrationPrompt = false },
+            title = { Text("Registration Required") },
+            text = { Text("You need to register before playing online. Please complete your profile to continue.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRegistrationPrompt = false
+                    onNavigateToProfile()
+                }) { Text("Register") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRegistrationPrompt = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val maxH = this.maxHeight
@@ -115,8 +140,14 @@ fun MainMenuScreen(
                     font = jennasue
                 ) { tapped ->
                     when (tapped) {
-                        "Host Game"    -> onNavigateToOnlineLobby("host")
-                        "Join Game"    -> onNavigateToOnlineLobby("join")
+                        "Host Game"    -> {
+                            if (isRegistered(context)) onNavigateToOnlineLobby("host")
+                            else showRegistrationPrompt = true
+                        }
+                        "Join Game"    -> {
+                            if (isRegistered(context)) onNavigateToOnlineLobby("join")
+                            else showRegistrationPrompt = true
+                        }
                         "Messages"     -> onNavigateToMessages()
                         "Suggestions"  -> onNavigateToSuggestions()
                         "Renege Jokes" -> onNavigateToRenegeJokes()
@@ -186,4 +217,9 @@ private fun MenuButton(text: String, font: FontFamily, onClick: () -> Unit) {
             textAlign = TextAlign.Center
         )
     }
+}
+
+private fun isRegistered(context: Context): Boolean {
+    return context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        .getBoolean("player_registered", false)
 }
