@@ -219,7 +219,7 @@ private fun MenuButton(text: String, font: FontFamily, onClick: () -> Unit) {
     }
 }
 
-private fun isRegistered(context: Context): Boolean {
+internal fun isRegistered(context: Context): Boolean {
     return context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
         .getBoolean("player_registered", false)
 }

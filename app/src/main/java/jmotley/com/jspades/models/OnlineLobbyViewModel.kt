@@ -46,7 +46,9 @@ class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
     private var playTransitionStarted = false
 
     val personId: String = getOrCreatePersonId(app)
-    val displayName: String = "Player ${personId.takeLast(4).uppercase()}"
+    val displayName: String = app.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        .getString("player_username", null)
+        ?: "Player ${personId.takeLast(4).uppercase()}"
 
     init {
         // Keep InLobby state in sync with session flows
@@ -173,9 +175,18 @@ class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
 
     fun submitJoin() {
         val current = _uiState.value as? LobbyUiState.JoinEntry ?: return
-        val code = current.codeInput.trim()
+        startJoin(current.codeInput)
+    }
+
+    /** Auto-join from a deep-link invite, bypassing the manual JoinEntry step. */
+    fun joinRoomCode(roomCode: String) {
+        startJoin(roomCode)
+    }
+
+    private fun startJoin(rawCode: String) {
+        val code = rawCode.trim()
         if (code.length < 4) {
-            _uiState.value = current.copy(error = "Enter a valid room code")
+            _uiState.value = LobbyUiState.JoinEntry(codeInput = rawCode, error = "Enter a valid room code")
             return
         }
         playTransitionStarted = false

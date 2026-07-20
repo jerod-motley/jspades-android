@@ -481,6 +481,22 @@ class PhaseManager(
         val s = viewModel.state.value
         val n = s.players.size
 
+        // Blind bidding is disabled for multiplayer games — the host/guest offer-response
+        // protocol isn't reliably synchronized with the deal flow yet, so skip straight
+        // through without offering or deciding blind bids for anyone.
+        if (viewModel.mpAdapter != null) {
+            s.players.forEach { viewModel.markBlindDecision(it.id) }
+            if (s.gameType.dealMode == DealMode.TWO_MAN_ALTERNATE) {
+                viewModel.advancePhase(GamePhase.DealHuman)
+                dispatch()
+            } else {
+                val cardCount = s.phaseHands[GamePhase.Deal]?.lastOrNull()
+                    ?.perPlayer?.values?.firstOrNull()?.hand?.size ?: 13
+                viewModel.emitAnimation(AnimationEvent.DealComplete(cardCount))
+            }
+            return
+        }
+
         // Host broadcasts blind offer once, before any per-player decisions are processed.
         val noneDecidedYet = s.players.none { it.runtimeFlags.didBlindDecide }
         if (noneDecidedYet && viewModel.isMPHost && s.gameType.useTeams) {

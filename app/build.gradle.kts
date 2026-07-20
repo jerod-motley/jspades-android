@@ -142,8 +142,8 @@ android {
         applicationId = "jmotley.com.jspades"
         minSdk = 29
         targetSdk = 36
-        versionCode = 107
-        versionName = "2.1.4"
+        versionCode = 108
+        versionName = "2.1.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "BASE_API_URL",

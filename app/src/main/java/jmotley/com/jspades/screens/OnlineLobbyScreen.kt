@@ -56,6 +56,7 @@ private val DividerColor = Color(0x44FFFFFF)
 @Composable
 fun OnlineLobbyScreen(
     startMode: String = "host",
+    initialRoomCode: String? = null,
     onNavigateBack: () -> Unit,
     onNavigateToPlay: () -> Unit = {},
     vm: OnlineLobbyViewModel = viewModel()
@@ -66,10 +67,10 @@ fun OnlineLobbyScreen(
         vm.navigateToPlay.collect { onNavigateToPlay() }
     }
 
-    LaunchedEffect(startMode) {
+    LaunchedEffect(startMode, initialRoomCode) {
         when (startMode) {
             "host" -> vm.chooseHost()
-            "join" -> vm.chooseJoin()
+            "join" -> if (initialRoomCode != null) vm.joinRoomCode(initialRoomCode) else vm.chooseJoin()
         }
     }
 
@@ -221,6 +222,7 @@ private fun LobbyView(
     val lobby = state.lobby
     val countdown = state.countdownSeconds
     val counting = countdown > 0
+    val context = LocalContext.current
 
     // Seat swap selection — locked during countdown
     var selectedSeat by remember { mutableStateOf<Int?>(null) }
@@ -278,6 +280,28 @@ private fun LobbyView(
         ) {
             Column {
                 HorizontalDivider(color = DividerColor)
+
+                if (lobby.isHost) {
+                    Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        Button(
+                            onClick = {
+                                val inviteUrl = "${AppConfig.WEB_URL}invite/jspades?room=${lobby.inviteCode}"
+                                val text = "${lobby.localDisplayName} wants to play jSpades with you.\n$inviteUrl"
+                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_TEXT, text)
+                                }
+                                context.startActivity(Intent.createChooser(intent, "Invite via"))
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)
+                        ) {
+                            Text("Invite Players", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                        }
+                    }
+                    HorizontalDivider(color = DividerColor)
+                }
+
                 ChatSection(
                     messages = state.chat,
                     modifier = Modifier.heightIn(min = 100.dp, max = 200.dp),
@@ -559,7 +583,8 @@ private fun LobbyHeader(lobby: OnlineLobbyState, onBack: () -> Unit) {
                     ) { Text("Copy", color = AccentBlue, fontSize = 11.sp) }
                     TextButton(
                         onClick = {
-                            val text = "Join my jSpades game!\nRoom code: ${lobby.inviteCode}\nDownload: https://d1orsmzfx5anf1.cloudfront.net/support"
+                            val inviteUrl = "${AppConfig.WEB_URL}invite/jspades?room=${lobby.inviteCode}"
+                            val text = "Join my jSpades game: $inviteUrl\nRoom code: ${lobby.inviteCode}"
                             val intent = Intent(Intent.ACTION_SEND).apply {
                                 type = "text/plain"
                                 putExtra(Intent.EXTRA_TEXT, text)

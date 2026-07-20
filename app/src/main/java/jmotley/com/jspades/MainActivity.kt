@@ -1,5 +1,7 @@
 package jmotley.com.jspades
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -47,9 +49,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 
 import jmotley.com.jspades.ads.AdManager
 import jmotley.com.jspades.data.AchievementsRepo
@@ -66,6 +71,7 @@ import jmotley.com.jspades.screens.RenegeJokesScreen
 import jmotley.com.jspades.screens.SettingsScreen
 import jmotley.com.jspades.screens.StandingsScreen
 import jmotley.com.jspades.screens.SuggestionsScreen
+import jmotley.com.jspades.screens.isRegistered
 import jmotley.com.jspades.ui.theme.JSpadesTheme
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -77,6 +83,12 @@ class MainActivity : ComponentActivity() {
 
     private var adsReady by mutableStateOf(false)
 
+    /** Room code from an invite deep link, pending navigation until the join route can handle it. */
+    private var pendingInviteRoom by mutableStateOf<String?>(null)
+
+    /** Guards against repeatedly forcing the user back to registration on every return to the menu. */
+    private var inviteRegistrationPromptShown by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
@@ -84,9 +96,26 @@ class MainActivity : ComponentActivity() {
         AdManager.start(this) { adsReady = true }
         enableEdgeToEdge()
         AchievementsRepo.init(this)
+        extractInviteRoomCode(intent)?.let { pendingInviteRoom = it }
         setContent {
             JSpadesTheme {
                 val navController = rememberNavController()
+                val currentBackStackEntry by navController.currentBackStackEntryAsState()
+                val context = LocalContext.current
+
+                LaunchedEffect(pendingInviteRoom, currentBackStackEntry) {
+                    val room = pendingInviteRoom ?: return@LaunchedEffect
+                    if (currentBackStackEntry?.destination?.route != "menu") return@LaunchedEffect
+                    if (isRegistered(context)) {
+                        pendingInviteRoom = null
+                        inviteRegistrationPromptShown = false
+                        navController.navigate("lobby/invite/${Uri.encode(room)}")
+                    } else if (!inviteRegistrationPromptShown) {
+                        inviteRegistrationPromptShown = true
+                        navController.navigate("profile")
+                    }
+                }
+
                 Scaffold(
                     containerColor = Color.Black,
                     contentWindowInsets = WindowInsets.safeDrawing.only(
@@ -170,10 +199,28 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToPlay = { navController.navigate("play/${URLEncoder.encode("House Rules", "utf-8")}") }
                             )
                         }
+                        composable(
+                            route = "lobby/invite/{code}",
+                            arguments = listOf(navArgument("code") { type = NavType.StringType })
+                        ) { backStackEntry ->
+                            val code = backStackEntry.arguments?.getString("code")
+                            OnlineLobbyScreen(
+                                startMode = "join",
+                                initialRoomCode = code,
+                                onNavigateBack = { navController.popBackStack() },
+                                onNavigateToPlay = { navController.navigate("play/${URLEncoder.encode("House Rules", "utf-8")}") }
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        extractInviteRoomCode(intent)?.let { pendingInviteRoom = it }
     }
 
     override fun onResume() {
@@ -184,6 +231,14 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         AdManager.onActivityPause(this)
+    }
+
+    /** Reads the "room" query param off an invite deep link (`/invite/jspades?room=CODE`). */
+    private fun extractInviteRoomCode(intent: Intent?): String? {
+        val data = intent?.data ?: return null
+        if (intent.action != Intent.ACTION_VIEW) return null
+        if (data.path?.startsWith("/invite") != true) return null
+        return data.getQueryParameter("room")?.takeIf { it.isNotBlank() }
     }
 }
 
