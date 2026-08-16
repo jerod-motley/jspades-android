@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -11,6 +12,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.receiveAsFlow
 import jmotley.com.jspades.data.*
 /*import jmotley.com.jspades.data.AchievementsRepo
 import jmotley.com.jspades.data.AnimationEvent
@@ -51,14 +53,15 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	/**
 	 * One-shot animation events emitted by [PhaseManager] after each CPU action.
 	 * UI collects these, plays the animation, then calls [phaseManager].execute().
-	 * Buffer of 8 ensures no events are dropped between coroutine scheduling gaps.
+	 * A buffered channel retains events emitted before PlayScreen's collector starts. This is
+	 * required for an MP host, which deals immediately while the screen is being composed.
 	 */
-	private val _animationEvents = MutableSharedFlow<AnimationEvent>(extraBufferCapacity = 8)
-	val animationEvents: SharedFlow<AnimationEvent> = _animationEvents
+	private val _animationEvents = Channel<AnimationEvent>(capacity = Channel.BUFFERED)
+	val animationEvents = _animationEvents.receiveAsFlow()
 
 	/** Emit an animation event from the engine. Called only by [PhaseManager]. */
 	suspend fun emitAnimation(event: AnimationEvent) {
-		_animationEvents.emit(event)
+		_animationEvents.send(event)
 	}
 
 	/**
@@ -231,21 +234,20 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	 * CPU partner's individual bid. Stores the team bid and hands control to the engine.
 	 */
 	fun submitHumanTeamBid(teamId: Int, bid: Int, localPlayerId: String) {
-		setTeamBid(teamId, bid)
+		val turn = currentTeamBidTurn(teamId) ?: return
+		if (turn.first.id != localPlayerId) return
+		val isTeamTotal = turn.second
+		if (isTeamTotal) setTeamBid(teamId, bid)
 		val players = _state.value.players.map { p ->
 			if (p.id == localPlayerId) p.copy(runtimeFlags = p.runtimeFlags.copy(didBid = true)) else p
 		}
 		_state.value = _state.value.copy(players = players)
-		// Send the human's individual contribution, not the team total.
-		// Remote clients sum all individual bids in handleBidHouseRules (!humanOnTeam path).
+		// The first teammate's bid is preliminary. The second teammate (preferably human)
+		// commits the complete team contract.
 		mpAdapter?.let { adapter ->
-			val s2 = _state.value
-			val partnerBidSum = s2.players
-				.filter { it.team == teamId && it.id != localPlayerId }
-				.sumOf { p -> s2.phaseHands[GamePhase.Deal]?.lastOrNull()?.perPlayer?.get(p.id)?.bid ?: 0 }
-			val individualContribution = (bid - partnerBidSum).coerceAtLeast(0)
-			Log.d(MP_TAG, "submitHumanTeamBid teamId=$teamId teamBid=$bid partnerBidSum=$partnerBidSum sending=$individualContribution hand=$mpCurrentHandNum")
-			adapter.sendBid(localMPSeat, localWirePlayerId, individualContribution, false, mpCurrentHandNum)
+			Log.d(MP_TAG, "submitHumanTeamBid teamId=$teamId amount=$bid isTeamTotal=$isTeamTotal hand=$mpCurrentHandNum")
+			adapter.sendBid(localMPSeat, localWirePlayerId, bid, false, mpCurrentHandNum,
+				isTeamTotal = isTeamTotal)
 		}
 		advancePhase(GamePhase.Bid)
 		phaseManager.execute()
@@ -933,6 +935,29 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	/** The local player's host-assigned wire playerId; set in [onGameConfig] and [onMPHostLobbyComplete]. */
 	private var localWirePlayerId: String = ""
 
+	/** Next bidder for a team-total contract. The second bidder commits the total. */
+	internal fun currentTeamBidTurn(teamId: Int): Pair<Player, Boolean>? {
+		val s = _state.value
+		val ordered = (s.players.indices)
+			.map { offset -> s.players[(s.leaderIndex + offset) % s.players.size] }
+			.filter { it.team == teamId }
+			.toMutableList()
+		if (ordered.size != 2) return null
+		fun isRosterCpu(player: Player): Boolean {
+			val canonicalIdx = listOf("south", "west", "north", "east").indexOf(player.id)
+			val roomSeat = if (canonicalIdx >= 0) canonicalIdxToRoomSeat(canonicalIdx) else -1
+			return mpRoomSeatPlayers[roomSeat.toString()]?.kind == "cpu" ||
+				(mpRoomSeatPlayers.isEmpty() && player.playerType == PlayerType.CPU)
+		}
+		if (ordered.count(::isRosterCpu) == 1) {
+			ordered.sortWith(compareByDescending(::isRosterCpu))
+		}
+		val first = ordered[0]
+		if (!first.runtimeFlags.didBid) return first to false
+		val final = ordered[1]
+		return if (!final.runtimeFlags.didBid) final to true else null
+	}
+
 	private fun roomSeatToCanonicalId(roomSeat: Int): String {
 		val n = _state.value.players.size.coerceAtLeast(4)
 		return listOf("south", "west", "north", "east")
@@ -1012,10 +1037,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			twoOfDiamondsJoker   = config.twoOfDiamondsJoker,
 			enableDoubleBidBonus = config.enableDoubleBidBonus,
 			spadesMustBreak      = config.spadesMustBreak,
-			minBidFive           = config.minBidFive,
+			minimumBidOverride   = config.minimumBid,
 			enableSandbagPenalty = config.enableSandbagPenalty,
 			allowNilBid          = config.allowNilBid,
-			allowBlindExchange   = config.allowBlindExchange,
+			allowBlindExchange   = config.blindNilExchangeEnabled,
 			gameLength           = runCatching { GameLength.valueOf(config.gameLength) }.getOrElse { GameLength.MEDIUM }
 		)
 		phaseManager.execute()
@@ -1061,20 +1086,24 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 					val seat = lobby.seats.find { it.seatIndex == i }
 					put("$i", WireSeatPlayer(
 						playerId    = seat?.playerId ?: "cpu-$i",
-						displayName = seat?.displayName ?: "CPU $i"
+						displayName = seat?.displayName ?: "CPU $i",
+						kind        = if (seat?.kind == SeatKind.Human) "human" else "cpu"
 					))
 				}
 			}
 			val prefs = context.getSharedPreferences("jspades_prefs", Context.MODE_PRIVATE)
+			val minBidFiveOn = prefs.getBoolean("min_bid_five", false)
 			val wireConfig = WireGameConfig(
-				gameType             = gameTypeToWireString(gameType),
-				spadesMustBreak      = prefs.getBoolean("spades_must_break", false),
-				minBidFive           = prefs.getBoolean("min_bid_five", false),
-				enableSandbagPenalty = prefs.getBoolean("count_overs", true),
-				allowNilBid          = gameType == GameType.TEAM_CLASSIC,
-				allowBlindExchange   = gameType == GameType.TEAM_CLASSIC && prefs.getBoolean("blind_nil_exchange", false),
-				gameLength           = if (AppConfig.TEST_MODE) GameLength.TEST.name
-				                       else prefs.getString("game_length", GameLength.MEDIUM.name) ?: GameLength.MEDIUM.name
+				gameType                = gameTypeToWireString(gameType),
+				twoOfSpadesJoker        = prefs.getBoolean("two_of_spades_joker", false),
+				twoOfDiamondsJoker      = prefs.getBoolean("two_of_diamonds_joker", false),
+				spadesMustBreak         = prefs.getBoolean("spades_must_break", false),
+				minimumBid              = if (minBidFiveOn && gameType.minimumBid == 4) 5 else gameType.minimumBid,
+				enableSandbagPenalty    = prefs.getBoolean("count_overs", true),
+				allowNilBid             = gameType == GameType.TEAM_CLASSIC,
+				blindNilExchangeEnabled = gameType == GameType.TEAM_CLASSIC && prefs.getBoolean("blind_nil_exchange", false),
+				gameLength              = if (AppConfig.TEST_MODE) GameLength.TEST.name
+				                          else prefs.getString("game_length", GameLength.MEDIUM.name) ?: GameLength.MEDIUM.name
 			)
 			onMPHostLobbyComplete(
 				seatPlayers      = seatPlayers,
@@ -1132,17 +1161,20 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		}
 
 		val kittyCards = s.kitty?.perPlayer?.get("kitty")?.hand
-		val kittyWinnerId = s.kittyWinnerId?.let { cId ->
+		val kittyOwnerSeat = s.kittyWinnerId?.let { cId ->
 			val idx = listOf("south", "west", "north", "east").indexOf(cId)
-			if (idx >= 0) roomSeatToWirePlayerId(canonicalIdxToRoomSeat(idx)) else null
+			if (idx >= 0) canonicalIdxToRoomSeat(idx) else null
 		}
 
 		Log.d(MP_TAG, "broadcastDeal handNum=$mpCurrentHandNum dealer=$dealerRoomSeat seatOrder=$seatOrder handSizes=${handsBySeat.mapValues { it.value.size }} kittyCount=${kittyCards?.size ?: 0}")
-		adapter.sendDeal(mpCurrentHandNum, dealerRoomSeat, seatOrder, handsBySeat, kittyCards, kittyWinnerId)
+		adapter.sendDeal(mpCurrentHandNum, dealerRoomSeat, seatOrder, handsBySeat, kittyCards, kittyOwnerSeat)
 	}
 
 	/** Broadcast a CPU player's computed bid. Host only. */
-	internal fun broadcastCPUBid(canonicalId: String, amount: Int, isBlind: Boolean) {
+	internal fun broadcastCPUBid(
+		canonicalId: String, amount: Int, isBlind: Boolean,
+		isTeamTotal: Boolean = false
+	) {
 		val adapter = mpAdapter ?: return
 		if (!isMPHost) return
 		val idx = listOf("south", "west", "north", "east").indexOf(canonicalId)
@@ -1153,7 +1185,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			return
 		}
 		Log.d(MP_TAG, "broadcastCPUBid canonicalId=$canonicalId → roomSeat=$roomSeat amount=$amount blind=$isBlind hand=$mpCurrentHandNum")
-		adapter.sendBid(roomSeat, wirePlayerId, amount, isBlind, mpCurrentHandNum)
+		adapter.sendBid(roomSeat, wirePlayerId, amount, isBlind, mpCurrentHandNum, isTeamTotal)
 	}
 
 	/**
@@ -1206,6 +1238,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 
 	override fun onGameConfig(config: WireGameConfig, seatPlayers: Map<String, WireSeatPlayer>) {
 		val gameType = wireStringToGameType(config.gameType) ?: GameType.HOUSE_RULES
+		mpRoomSeatPlayers = seatPlayers
 		val n = gameType.playerCount
 		val canonicalIds = listOf("south", "west", "north", "east")
 
@@ -1246,10 +1279,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			twoOfDiamondsJoker   = config.twoOfDiamondsJoker,
 			enableDoubleBidBonus = config.enableDoubleBidBonus,
 			spadesMustBreak      = config.spadesMustBreak,
-			minBidFive           = config.minBidFive,
+			minimumBidOverride   = config.minimumBid,
 			enableSandbagPenalty = config.enableSandbagPenalty,
 			allowNilBid          = config.allowNilBid,
-			allowBlindExchange   = config.allowBlindExchange,
+			allowBlindExchange   = config.blindNilExchangeEnabled,
 			gameLength           = runCatching { GameLength.valueOf(config.gameLength) }.getOrElse { GameLength.MEDIUM }
 		)
 		// Phase stays at Lobby — wait for the host's `deal` message to start the hand.
@@ -1261,7 +1294,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		seatOrder: List<String>,
 		handsBySeat: Map<String, List<Card>>,
 		kitty: List<Card>?,
-		kittyWinnerId: String?
+		kittyOwnerSeat: Int?
 	) {
 		if (mpCurrentHandNum != -1 && handNum <= mpCurrentHandNum) {
 			Log.w(MP_TAG, "onDeal DROPPED stale handNum=$handNum current=$mpCurrentHandNum")
@@ -1289,7 +1322,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 
 		if (kitty != null) {
 			applyKitty(Hand(perPlayer = mapOf("kitty" to PlayerHandState(hand = kitty))))
-			val winnerId = kittyWinnerId?.let { mpPlayerIdToCanonical[it] }
+			val winnerId = kittyOwnerSeat?.let { seat ->
+				val canonicalIdx = (seat - localMPSeat + n) % n
+				canonicalIds.getOrNull(canonicalIdx)
+			}
 			if (winnerId != null) setKittyWinner(winnerId)
 		}
 
@@ -1331,15 +1367,29 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		phaseManager.execute()
 	}
 
-	override fun onBid(seat: Int, amount: Int, isBlind: Boolean, handNum: Int) {
+	override fun onBid(seat: Int, amount: Int, isBlind: Boolean, isTeamTotal: Boolean, handNum: Int) {
 		if (handNum != mpCurrentHandNum) {
 			Log.w(MP_TAG, "onBid DROPPED stale handNum=$handNum current=$mpCurrentHandNum seat=$seat")
 			return
 		}
 		val canonicalId = roomSeatToCanonicalId(seat)
+		val remotePlayer = _state.value.players.find { it.id == canonicalId } ?: return
+		if (_state.value.gameType in setOf(GameType.HOUSE_RULES, GameType.TEAM_KITTY)) {
+			val turn = currentTeamBidTurn(remotePlayer.team)
+			if (turn == null || turn.first.id != canonicalId || turn.second != isTeamTotal) {
+				Log.w(MP_TAG, "onBid DROPPED unexpected team bidder seat=$seat amount=$amount isTeamTotal=$isTeamTotal")
+				return
+			}
+		}
 		val didBid = _state.value.players.find { it.id == canonicalId }?.runtimeFlags?.didBid
 		Log.d(MP_TAG, "onBid ACCEPTED seat=$seat canonicalId=$canonicalId amount=$amount blind=$isBlind didBid=$didBid")
 		submitBid(canonicalId, amount, isBlind)
+		// CPU bids are shown to the human as guidance. A human bid is the final team
+		// contract, so retain it verbatim instead of adding it to the partner's bid.
+		if (_state.value.gameType in setOf(GameType.HOUSE_RULES, GameType.TEAM_KITTY) && isTeamTotal) {
+			val teamId = _state.value.players.find { it.id == canonicalId }?.team
+			if (teamId != null) setTeamBid(teamId, amount)
+		}
 		advancePhase(GamePhase.Bid)
 		phaseManager.execute()
 	}

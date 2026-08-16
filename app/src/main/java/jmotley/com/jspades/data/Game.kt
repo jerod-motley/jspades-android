@@ -280,8 +280,17 @@ data class GameState(
     /**
      * Optional rule: House Rules minimum bid is raised from 4 to 5.
      * Only applies to [GameType.HOUSE_RULES]. Defaults off.
+     * Ignored when [minimumBidOverride] is set.
      */
     val minBidFive: Boolean = false,
+    /**
+     * Exact minimum bid received from a multiplayer host's `gameConfig`. When non-null,
+     * [effectiveMinBid] returns this verbatim instead of deriving from [minBidFive] —
+     * the wire sends the host's already-resolved integer, which may not be representable
+     * as [GameType.minimumBid] plus the House-Rules-only minBidFive bump (e.g. a future
+     * solo variant with a non-4/5 minimum). Null for local, non-MP games.
+     */
+    val minimumBidOverride: Int? = null,
     /**
      * Optional rule: every 10 accumulated sandbags costs −100 points.
      * Defaults on per standard Spades rules; toggled from the settings screen.
@@ -338,6 +347,7 @@ fun GameState.playerTypeById(id: String): PlayerType =
     players.find { it.id == id }?.playerType ?: PlayerType.CPU
 
 val GameState.effectiveMinBid: Int get() {
+    minimumBidOverride?.let { return it }
     val base = gameType.minimumBid
     return if (minBidFive && base == 4) 5 else base
 }

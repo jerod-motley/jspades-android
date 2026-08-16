@@ -302,12 +302,15 @@ fun PlayScreen(
                         // Wait for the last card's slide-in: (cardCount-1)×50ms stagger + 320ms.
                         // Uses the same constants as CardTile so we track the real animation end.
                         delay(((event.cardCount - 1) * 50 + 320).toLong())
-                        val anyBlindBid = state.phaseHands[GamePhase.Deal]?.lastOrNull()
+                        // This collector lives for the whole composition, so read current state
+                        // instead of the snapshot captured when LaunchedEffect first started.
+                        val liveState = viewModel.state.value
+                        val anyBlindBid = liveState.phaseHands[GamePhase.Deal]?.lastOrNull()
                             ?.perPlayer?.values?.any { it.isBlind } ?: false
                         when {
-                            state.gameType == GameType.TEAM_KITTY ->
+                            liveState.gameType == GameType.TEAM_KITTY ->
                                 viewModel.advancePhase(GamePhase.DeuceReveal)
-                            state.allowBlindExchange && state.gameType == GameType.TEAM_CLASSIC && anyBlindBid ->
+                            liveState.allowBlindExchange && liveState.gameType == GameType.TEAM_CLASSIC && anyBlindBid ->
                                 viewModel.advancePhase(GamePhase.BlindExchange)
                             else ->
                                 viewModel.advancePhase(GamePhase.Bid)

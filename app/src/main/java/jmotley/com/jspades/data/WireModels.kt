@@ -35,7 +35,9 @@ data class WireCard(
 @Serializable
 data class WireSeatPlayer(
     val playerId: String,
-    val displayName: String
+    val displayName: String,
+    /** Roster identity, independent of which device executes the seat. */
+    val kind: String
 )
 
 /**
@@ -51,10 +53,11 @@ data class WireGameConfig(
     val twoOfDiamondsJoker: Boolean = false,
     val enableDoubleBidBonus: Boolean = false,
     val spadesMustBreak: Boolean = false,
-    val minBidFive: Boolean = false,
+    /** Effective minimum bid for this hand (already accounts for the minBidFive setting). */
+    val minimumBid: Int = 4,
     val enableSandbagPenalty: Boolean = true,
     val allowNilBid: Boolean = false,
-    val allowBlindExchange: Boolean = false,
+    val blindNilExchangeEnabled: Boolean = false,
     val gameLength: String = "MEDIUM"
 )
 
@@ -105,8 +108,8 @@ data class DealMessage(
     val hands: Map<String, List<WireCard>>,
     /** Kitty cards — non-null only for game types with a kitty (e.g. TEAM_KITTY). */
     val kitty: List<WireCard>? = null,
-    /** PlayerId of the player who won the kitty (holds 2♠); null for non-kitty game types. */
-    val kittyWinnerId: String? = null
+    /** Room seat of the player who won the kitty (holds 2♠); null for non-kitty game types. */
+    val kittyOwnerSeat: Int? = null
 ) : WireMessage()
 
 /**
@@ -151,7 +154,9 @@ data class BidMessage(
     override val playerId: String,
     val handNum: Int,
     val amount: Int,
-    val isBlind: Boolean
+    val isBlind: Boolean,
+    /** True only when this bid commits the complete team contract. */
+    val isTeamTotal: Boolean
 ) : WireMessage()
 
 /**

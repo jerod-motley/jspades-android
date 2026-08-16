@@ -100,11 +100,11 @@ interface MPAdapterDelegate {
         seatOrder: List<String>,
         handsBySeat: Map<String, List<Card>>,
         kitty: List<Card>?,
-        kittyWinnerId: String?
+        kittyOwnerSeat: Int?
     )
     fun onBlindOffer(handNum: Int, teamSeats: List<Int>, decidingSeats: List<Int>)
     fun onBlindResponse(seat: Int, accepted: Boolean, handNum: Int)
-    fun onBid(seat: Int, amount: Int, isBlind: Boolean, handNum: Int)
+    fun onBid(seat: Int, amount: Int, isBlind: Boolean, isTeamTotal: Boolean, handNum: Int)
     fun onPlayCard(seat: Int, cardUid: String, handNum: Int, trickNum: Int, trickPlayNum: Int)
 }
 
@@ -218,7 +218,9 @@ class MPAdapter(
         preConfigQueue.clear()
         for (qMsg in queued) {
             val expected = seatPlayerMap[qMsg.seat.toString()]
-            if (expected != null && expected.playerId != qMsg.playerId) {
+            // Require a known seat that matches, not just "no mismatch" — an absent seat
+            // must reject too, matching the live-message check in receive() (see mp-fix.md P1).
+            if (expected == null || expected.playerId != qMsg.playerId) {
                 Log.w(TAG, "preConfigQueue identity FAIL seat=${qMsg.seat} cmdId=${qMsg.cmdId.take(8)}")
                 continue
             }
@@ -245,7 +247,7 @@ class MPAdapter(
             }
         }
         Log.d(TAG, "handleDeal handNum=${msg.handNum} dealer=${msg.dealerSeat} handSizes=${handsBySeat.mapValues { it.value.size }} kittyCount=${kitty?.size ?: 0}")
-        delegate.onDeal(msg.handNum, msg.dealerSeat, msg.seatOrder, handsBySeat, kitty, msg.kittyWinnerId)
+        delegate.onDeal(msg.handNum, msg.dealerSeat, msg.seatOrder, handsBySeat, kitty, msg.kittyOwnerSeat)
     }
 
     private fun handleBlindOffer(msg: BlindOfferMessage) {
@@ -258,7 +260,7 @@ class MPAdapter(
 
     private fun handleBid(msg: BidMessage) {
         Log.d(TAG, "handleBid seat=${msg.seat} amount=${msg.amount} isBlind=${msg.isBlind} handNum=${msg.handNum}")
-        delegate.onBid(msg.seat, msg.amount, msg.isBlind, msg.handNum)
+        delegate.onBid(msg.seat, msg.amount, msg.isBlind, msg.isTeamTotal, msg.handNum)
     }
 
     private fun handlePlayCard(msg: PlayCardMessage) {
@@ -285,13 +287,13 @@ class MPAdapter(
         seatOrder: List<String>,
         handsBySeat: Map<String, List<Card>>,
         kitty: List<Card>? = null,
-        kittyWinnerId: String? = null
+        kittyOwnerSeat: Int? = null
     ) {
         val wireHands = handsBySeat.mapValues { (_, cards) -> cards.map(::cardToWireCard) }
         val wireKitty = kitty?.map(::cardToWireCard)
         dispatch(DealMessage(cmdId = nextCmdId(), seat = localSeat, playerId = localPlayerId,
             handNum = handNum, dealerSeat = dealerSeat, seatOrder = seatOrder,
-            hands = wireHands, kitty = wireKitty, kittyWinnerId = kittyWinnerId))
+            hands = wireHands, kitty = wireKitty, kittyOwnerSeat = kittyOwnerSeat))
     }
 
     fun sendBlindOffer(handNum: Int, teamSeats: List<Int>, decidingSeats: List<Int>) {
@@ -315,9 +317,12 @@ class MPAdapter(
      * Send a bid. [actingSeat] and [actingPlayerId] identify the seat that placed the bid —
      * the local human seat for human bids, or the CPU seat for host-proxied CPU bids.
      */
-    fun sendBid(actingSeat: Int, actingPlayerId: String, amount: Int, isBlind: Boolean, handNum: Int) {
+    fun sendBid(
+        actingSeat: Int, actingPlayerId: String, amount: Int, isBlind: Boolean,
+        handNum: Int, isTeamTotal: Boolean = false
+    ) {
         dispatch(BidMessage(cmdId = nextCmdId(), seat = actingSeat, playerId = actingPlayerId,
-            handNum = handNum, amount = amount, isBlind = isBlind))
+            handNum = handNum, amount = amount, isBlind = isBlind, isTeamTotal = isTeamTotal))
     }
 
     /**
@@ -359,12 +364,12 @@ class MPAdapter(
         buildJsonObject {
             put("type", type)
             (obj["cmdId"] as? JsonPrimitive)?.content?.let { put("cmdId", it) }
-            // Relay renames "playerId" to "fromPlayerId"; map it back.
-            (obj["fromPlayerId"] as? JsonPrimitive)?.content?.let { put("playerId", it) }
             // Re-inflate payload string values to their proper JSON types.
             // Only attempt JSON parsing for values that are unambiguously JSON structures or
             // pure primitives — never for arbitrary strings such as UUIDs, which a permissive
             // parser may partially decode (e.g. "51D61897-..." → 51), leaving cmdId unquoted.
+            // This includes the payload's own "playerId" (the sender's self-reported identity),
+            // which is overridden below if blank.
             payloadObj.forEach { (k, payloadElem) ->
                 runCatching {
                     val strVal = (payloadElem as JsonPrimitive).content
@@ -379,6 +384,14 @@ class MPAdapter(
                     }
                     put(k, elem)
                 }
+            }
+            // Relay renames "playerId" to "fromPlayerId". A blank payload playerId (e.g. a
+            // sender that hasn't resolved its own identity yet) must not silently pass through —
+            // fall back to the relay-assigned identity. Applied after the payload loop above so
+            // it isn't immediately overwritten by that same blank value (see mp-fix.md P1).
+            val payloadPlayerId = (payloadObj["playerId"] as? JsonPrimitive)?.content
+            if (payloadPlayerId.isNullOrEmpty()) {
+                (obj["fromPlayerId"] as? JsonPrimitive)?.content?.let { put("playerId", it) }
             }
         }.toString()
     }.getOrNull()

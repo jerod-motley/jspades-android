@@ -737,46 +737,52 @@ class PhaseManager(
                 }
                 // fall through to next team
             } else {
-                // Find the next unbidd CPU player on this team
-                val nextCpu = teamPlayers.firstOrNull { !it.runtimeFlags.didBid && it.playerType == PlayerType.CPU }
-                if (nextCpu != null) {
-                    Log.d(MP_TAG, "handleBidHouseRules team=$teamId nextCPU=${nextCpu.id}")
-                    val hand   = getPlayerHand(s, nextCpu.id)
-                    val result = BidEngine.computeCpuBid(hand, nextCpu, s)
+                val turn = viewModel.currentTeamBidTurn(teamId)
+                if (turn == null) continue
+                val (nextBidder, isTeamTotal) = turn
+
+                if (nextBidder.playerType == PlayerType.CPU) {
+                    Log.d(MP_TAG, "handleBidHouseRules team=$teamId nextCPU=${nextBidder.id} isTeamTotal=$isTeamTotal")
+                    val cards = getPlayerHand(s, nextBidder.id)
+                    val result = BidEngine.computeCpuBid(cards, nextBidder, s)
 
                     if (result.isBlind) {
                         // Team goes blind: commit combined bid of 7, auto-fill all teammates
-                        viewModel.submitBid(nextCpu.id, 0, false)
-                        viewModel.broadcastCPUBid(nextCpu.id, 7, isBlind = true)
-                        teamPlayers.filter { it.id != nextCpu.id }.forEach { p ->
+                        viewModel.submitBid(nextBidder.id, 0, false)
+                        viewModel.broadcastCPUBid(nextBidder.id, 7, isBlind = true, isTeamTotal = true)
+                        teamPlayers.filter { it.id != nextBidder.id }.forEach { p ->
                             viewModel.submitBid(p.id, 0, false)
                             viewModel.broadcastCPUBid(p.id, 0, isBlind = false)
                         }
                         viewModel.setTeamBid(teamId, 7)
                         viewModel.setTeamBlind(teamId, true)
-                        viewModel.emitAnimation(AnimationEvent.BidPlaced(nextCpu.id, 7))
+                        viewModel.emitAnimation(AnimationEvent.BidPlaced(nextBidder.id, 7))
                         return
                     }
 
-                    viewModel.submitBid(nextCpu.id, result.bid, result.isBlind)
-                    viewModel.broadcastCPUBid(nextCpu.id, result.bid, result.isBlind)
-                    // Fire-and-forget: one CPU bid per execute() call
-                    viewModel.emitAnimation(AnimationEvent.BidPlaced(nextCpu.id, result.bid))
+                    viewModel.submitBid(nextBidder.id, result.bid, result.isBlind)
+                    val wireAmount = if (isTeamTotal) {
+                        val firstBid = teamPlayers.filter { it.id != nextBidder.id }.sumOf { player ->
+                            s.phaseHands[GamePhase.Deal]?.lastOrNull()?.perPlayer?.get(player.id)?.bid ?: 0
+                        }
+                        (firstBid + result.bid).coerceAtLeast(s.effectiveMinBid).also {
+                            viewModel.setTeamBid(teamId, it)
+                        }
+                    } else result.bid
+                    viewModel.broadcastCPUBid(nextBidder.id, wireAmount, result.isBlind, isTeamTotal)
+                    viewModel.emitAnimation(AnimationEvent.BidPlaced(nextBidder.id, result.bid))
                     return
                 }
 
-                // Yield for the next unbidd MP player on this team
-                val nextMp = teamPlayers.firstOrNull { !it.runtimeFlags.didBid && it.playerType == PlayerType.MP }
-                if (nextMp != null) {
-                    Log.d(MP_TAG, "handleBidHouseRules team=$teamId nextMP=${nextMp.id} → BidMP")
+                if (nextBidder.playerType == PlayerType.MP) {
+                    Log.d(MP_TAG, "handleBidHouseRules team=$teamId nextMP=${nextBidder.id} isTeamTotal=$isTeamTotal → BidMP")
                     viewModel.advancePhase(GamePhase.BidMP)
                     dispatch()
                     return
                 }
 
-                // All CPUs and MP players on this team have bid
-                if (humanOnTeam && !humanAlreadyBid) {
-                    Log.d(MP_TAG, "handleBidHouseRules team=$teamId → BidHuman")
+                if (nextBidder.playerType == PlayerType.HUMAN) {
+                    Log.d(MP_TAG, "handleBidHouseRules team=$teamId isTeamTotal=$isTeamTotal → BidHuman")
                     val allowBid = AchievementsRepo.getActiveChallengeAllowBid(context)
                     if (allowBid != null && allowBid != "south") {
                         viewModel.submitBid("south", 0, false)
@@ -787,17 +793,6 @@ class PhaseManager(
                     dispatch()
                     return
                 }
-
-                if (!humanOnTeam) {
-                    // CPU-only team — sum individual bids and store team total (idempotent)
-                    val teamBid = teamPlayers.sumOf { player ->
-                        s.phaseHands[GamePhase.Deal]?.lastOrNull()
-                            ?.perPlayer?.get(player.id)?.bid ?: 0
-                    }.coerceAtLeast(s.effectiveMinBid)
-                    Log.d(MP_TAG, "handleBidHouseRules team=$teamId finalizedBid=$teamBid (CPU-only) → next team")
-                    viewModel.setTeamBid(teamId, teamBid)
-                }
-                // fall through to next team
             }
         }
 
