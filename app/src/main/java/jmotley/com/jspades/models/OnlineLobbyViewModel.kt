@@ -34,7 +34,7 @@ sealed class LobbyUiState {
 
 class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val session = OnlineSession(viewModelScope, AppConfig.GAME_SOCKET_URL)
+    private val session = OnlineSession(app.applicationContext, viewModelScope, AppConfig.GAME_SOCKET_URL)
 
     private val _uiState = MutableStateFlow<LobbyUiState>(LobbyUiState.RoleChoice)
     val uiState: StateFlow<LobbyUiState> = _uiState

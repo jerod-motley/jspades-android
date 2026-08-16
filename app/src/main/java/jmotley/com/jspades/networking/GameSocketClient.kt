@@ -1,5 +1,6 @@
 package jmotley.com.jspades.networking
 
+import android.content.Context
 import android.util.Log
 import io.ktor.client.*
 import io.ktor.client.engine.okhttp.*
@@ -21,12 +22,17 @@ private val socketLogJson = Json { ignoreUnknownKeys = true }
 enum class SocketState { Disconnected, Connecting, Connected }
 
 class GameSocketClient(
+    context: Context,
     private val url: String,
     private val scope: CoroutineScope,
     private val onMessage: (String) -> Unit,
     private val onStateChange: (SocketState) -> Unit,
-    private val isLoggingEnabled: () -> Boolean = { true }
+    private val isLoggingEnabled: () -> Boolean = { true },
+    private val traceContext: () -> WssTraceContext = { WssTraceContext() }
 ) {
+    init {
+        WssMessageFileLogger.ensureStarted(context.applicationContext)
+    }
     private val httpClient = HttpClient(OkHttp) {
         install(WebSockets) {
             pingInterval = 25_000L
@@ -54,6 +60,7 @@ class GameSocketClient(
                             for (msg in sendQueue) {
                                 try {
                                     logD("SEND → ${summarizeWsFrame(msg)} bytes=${msg.length}")
+                                    WssMessageFileLogger.record("SEND", msg, traceContext())
                                     send(Frame.Text(msg))
                                 } catch (e: Exception) {
                                     logW("send failed: ${e.message}")
@@ -68,6 +75,7 @@ class GameSocketClient(
                                     is Frame.Text -> {
                                         val text = frame.readText()
                                         logD("RECV ← ${summarizeWsFrame(text)} bytes=${text.length}")
+                                        WssMessageFileLogger.record("RECV", text, traceContext())
                                         onMessage(text)
                                     }
                                     is Frame.Close -> {

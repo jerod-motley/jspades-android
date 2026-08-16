@@ -1,5 +1,6 @@
 package jmotley.com.jspades.networking
 
+import android.content.Context
 import android.util.Log
 import jmotley.com.jspades.data.*
 import kotlinx.coroutines.*
@@ -9,6 +10,7 @@ import kotlin.random.Random
 private const val TAG = "WSSMP"
 
 class OnlineSession(
+    private val context: Context,
     private val scope: CoroutineScope,
     private val socketUrl: String
 ) {
@@ -113,6 +115,7 @@ class OnlineSession(
         )
 
         socket = GameSocketClient(
+            context = context,
             url = socketUrl,
             scope = scope,
             onMessage = ::onRawMessage,
@@ -124,7 +127,16 @@ class OnlineSession(
                     socket.send(buildJoinRoom(roomId, personId))
                 }
             },
-            isLoggingEnabled = { mpLoggingEnabled }
+            isLoggingEnabled = { mpLoggingEnabled },
+            traceContext = {
+                val state = _lobby.value
+                WssTraceContext(
+                    roomId = state?.roomId.orEmpty(),
+                    localPlayerId = state?.localPlayerId.orEmpty(),
+                    hostPlayerId = state?.hostPlayerId.orEmpty(),
+                    role = when (state?.isHost) { true -> "host"; false -> "client"; null -> "unresolved" }
+                )
+            }
         )
         socket.connect()
     }
