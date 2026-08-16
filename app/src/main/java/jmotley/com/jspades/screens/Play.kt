@@ -219,8 +219,13 @@ fun PlayScreen(
                     while (viewModel.currentVideoAsset.value != null && waited < 10_000L) {
                         delay(100); waited += 100
                     }
-                    AdManager.maybeShowInterstitial(activity) {
+                    if (isMultiplayer) {
+                        // Multiplayer: no interstitials mid-match — only once the match is Finished.
                         showEndHandOverlay = true
+                    } else {
+                        AdManager.maybeShowInterstitial(activity) {
+                            showEndHandOverlay = true
+                        }
                     }
                     AdManager.showBanner()
                 }
