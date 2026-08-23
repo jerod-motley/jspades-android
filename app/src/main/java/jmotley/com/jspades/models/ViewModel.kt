@@ -39,6 +39,8 @@ import jmotley.com.jspades.logging.PlayLogger
 import jmotley.com.jspades.networking.MPAdapter
 import jmotley.com.jspades.networking.MPAdapterDelegate
 import jmotley.com.jspades.networking.gameTypeToWireString
+import jmotley.com.jspades.networking.hostWireGameConfig
+import jmotley.com.jspades.networking.toWireGameConfig
 import jmotley.com.jspades.networking.wireStringToGameType
 import android.util.Log
 
@@ -185,7 +187,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val dealHands  = phaseHands[GamePhase.Deal]?.toMutableList() ?: return
 		val hand       = dealHands.lastOrNull() ?: return
 		val perPlayer  = hand.perPlayer.toMutableMap()
-		perPlayer[playerId] = (perPlayer[playerId] ?: PlayerHandState()).copy(bid = bid, isBlind = isBlind)
+		perPlayer[playerId] = (perPlayer[playerId] ?: PlayerHandState()).copy(bid = bid, bidPlaced = true, isBlind = isBlind)
 		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
 		phaseHands[GamePhase.Deal] = dealHands
 
@@ -273,7 +275,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val discardUids = discards.map { it.uid }.toSet()
 		val newHand = (phs.hand + kittyCards)
 			.filter { it.uid !in discardUids }
-			.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
+			.sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
 		perPlayer[winnerId] = phs.copy(hand = newHand)
 		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
 		phaseHands[GamePhase.Deal] = dealHands
@@ -415,7 +417,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			kittyWinnerId     = null,
 			phaseHands        = emptyMap(),
 			replayEvents      = emptyList(),
-			originalDealHands = emptyMap()
+			originalDealHands = emptyMap(),
+			mpNextHandRequested = false
 		)
 		frustratedVideoFiredThisHand = false
 	}
@@ -453,7 +456,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 
 		val humanState   = perPlayer[localPlayerId] ?: PlayerHandState()
 		val newHumanHand = (humanState.hand + humanCard)
-			.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
+			.sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
 		perPlayer[localPlayerId] = humanState.copy(hand = newHumanHand)
 
 		val cpp       = current.gameType.cardsPerPlayer
@@ -470,7 +473,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			val cpuCard = if (kotlin.random.Random.nextBoolean()) cpuTop else cpuNext
 			perPlayer[cpuId] = cpuState.copy(
 				hand = (cpuState.hand + cpuCard)
-					.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
+					.sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
 			)
 		}
 		val bothDone = humanDone && (perPlayer[cpuId]?.hand?.size ?: 0) >= cpp
@@ -575,9 +578,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val toCardUids = toCards.map { it.uid }.toSet()
 
 		val newFromHand = (fromPhs.hand.filter { it.uid !in fromCardUids } + toCards)
-			.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
+			.sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
 		val newToHand = (toPhs.hand.filter { it.uid !in toCardUids } + fromCards)
-			.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
+			.sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
 
 		perPlayer[fromId] = fromPhs.copy(hand = newFromHand)
 		perPlayer[toId] = toPhs.copy(hand = newToHand)
@@ -926,6 +929,31 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	/** Host-assigned hand number of the current deal; −1 before the first deal arrives. */
 	private var mpCurrentHandNum: Int = -1
 
+	/**
+	 * Authoritative game identity, distinct from [mpCurrentHandNum] (which stays
+	 * monotonic *within* a generation and is never reset). Set to 1 for the very first
+	 * game (`onMPHostLobbyComplete`) and incremented by the host on every Play Again
+	 * restart (`playAgain`). `onGameConfig` only performs a full new-game reset (players,
+	 * turn order, trick state, score) when the received `gameGeneration` is strictly
+	 * greater than this value — anything else (an equal or older generation) is treated
+	 * as configuration recovery, not a new game, regardless of the local UI phase at the
+	 * moment it arrives.
+	 */
+	private var mpGameGeneration: Int = 0
+
+	/**
+	 * Host only: room seats that have sent a `readyForNextHand` for [mpCurrentHandNum].
+	 * Reset whenever a new hand is dealt so a stale seat can't appear "ready" for a hand
+	 * it never actually requested.
+	 */
+	private var mpReadyForNextHandSeats: MutableSet<Int> = mutableSetOf()
+
+	/**
+	 * Host only: room seats that have sent a `requestPlayAgain` since the current game
+	 * finished. Cleared whenever a new game actually starts (in [playAgain]).
+	 */
+	private var mpPlayAgainRequestedSeats: MutableSet<Int> = mutableSetOf()
+
 	/** True if this device is the game host (deals, proxies CPUs, broadcasts all host actions). */
 	var isMPHost: Boolean = false
 
@@ -991,6 +1019,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		mpRoomSeatPlayers = seatPlayers
 		localWirePlayerId = seatPlayers[localMPSeat.toString()]?.playerId ?: ""
 		mpCurrentHandNum = 0  // broadcastDeal() increments to 1 before first sendDeal
+		mpGameGeneration = 1  // first real generation; playAgain() increments on restart
 
 		// Seed the canonical map so the host can look up canonical IDs from wire playerIds.
 		val n2 = gameType.playerCount
@@ -1004,7 +1033,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		}
 
 		Log.d(MP_TAG, "onMPHostLobbyComplete seatPlayers=${seatPlayers.map { (k, v) -> "$k→${v.playerId.take(8)}" }} remoteHumanSeats=$remoteHumanSeats gameType=${gameType.name}")
-		mpAdapter?.sendGameConfig(config, seatPlayers)
+		mpAdapter?.sendGameConfig(config, seatPlayers, mpGameGeneration)
 
 		// Build players with correct types: host seat = HUMAN, remote human seats = MP, rest = CPU.
 		val n = gameType.playerCount
@@ -1091,20 +1120,20 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 					))
 				}
 			}
-			val prefs = context.getSharedPreferences("jspades_prefs", Context.MODE_PRIVATE)
-			val minBidFiveOn = prefs.getBoolean("min_bid_five", false)
-			val wireConfig = WireGameConfig(
-				gameType                = gameTypeToWireString(gameType),
-				twoOfSpadesJoker        = prefs.getBoolean("two_of_spades_joker", false),
-				twoOfDiamondsJoker      = prefs.getBoolean("two_of_diamonds_joker", false),
-				spadesMustBreak         = prefs.getBoolean("spades_must_break", false),
-				minimumBid              = if (minBidFiveOn && gameType.minimumBid == 4) 5 else gameType.minimumBid,
-				enableSandbagPenalty    = prefs.getBoolean("count_overs", true),
-				allowNilBid             = gameType == GameType.TEAM_CLASSIC,
-				blindNilExchangeEnabled = gameType == GameType.TEAM_CLASSIC && prefs.getBoolean("blind_nil_exchange", false),
-				gameLength              = if (AppConfig.TEST_MODE) GameLength.TEST.name
-				                          else prefs.getString("game_length", GameLength.MEDIUM.name) ?: GameLength.MEDIUM.name
-			)
+			// Source from the lobby's already-synced settings (read once from host prefs when
+			// the room was created / lobby snapshot sent) rather than re-reading prefs here —
+			// so the settings shown in the lobby and the settings actually applied at game
+			// start can never diverge. lobby.hostSettings was built via hostWireGameConfig()
+			// against GameType.HOUSE_RULES (MP is House Rules-only today — see buildStartGame's
+			// hardcoded "gameType":"houseRules"), which is only valid to reuse verbatim when the
+			// resolved gameType here actually is HOUSE_RULES too. If that ever changes, re-derive
+			// straight from prefs for the real gameType rather than risk silently wrong
+			// minimumBid/allowNilBid/blindNilExchangeEnabled values from the mismatched base.
+			val wireConfig = if (gameType == GameType.HOUSE_RULES) {
+				lobby.hostSettings.copy(gameType = gameTypeToWireString(gameType))
+			} else {
+				hostWireGameConfig(context, gameType)
+			}
 			onMPHostLobbyComplete(
 				seatPlayers      = seatPlayers,
 				config           = wireConfig,
@@ -1144,6 +1173,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val hand = s.phaseHands[GamePhase.Deal]?.lastOrNull() ?: return
 
 		mpCurrentHandNum++
+		mpReadyForNextHandSeats.clear()
 
 		val dealerCanonicalIdx = (s.handLeaderIndex - 1 + n) % n
 		val dealerRoomSeat     = canonicalIdxToRoomSeat(dealerCanonicalIdx)
@@ -1219,6 +1249,19 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		adapter.sendBlindOffer(mpCurrentHandNum, teamSeats, decidingSeats)
 	}
 
+	/**
+	 * Broadcast that every required blind decision for the current hand is in (or that no
+	 * team was ever eligible). Host only — non-host clients never independently decide this,
+	 * see [PhaseManager.handleBlindBid]'s non-host early return; this is what actually
+	 * drives them out of [GamePhase.BlindBid].
+	 */
+	internal fun broadcastBlindPhaseComplete() {
+		val adapter = mpAdapter ?: return
+		if (!isMPHost) return
+		Log.d(MP_TAG, "broadcastBlindPhaseComplete hand=$mpCurrentHandNum")
+		adapter.sendBlindPhaseComplete(mpCurrentHandNum)
+	}
+
 	/** Broadcast a CPU player's blind-bid decision. Host only. */
 	internal fun broadcastCPUBlindResponse(canonicalId: String, accepted: Boolean) {
 		val adapter = mpAdapter ?: return
@@ -1236,11 +1279,34 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 
 	// ── MPAdapterDelegate ─────────────────────────────────────────────────────────
 
-	override fun onGameConfig(config: WireGameConfig, seatPlayers: Map<String, WireSeatPlayer>) {
+	override fun onGameConfig(config: WireGameConfig, seatPlayers: Map<String, WireSeatPlayer>, gameGeneration: Int) {
 		val gameType = wireStringToGameType(config.gameType) ?: GameType.HOUSE_RULES
 		mpRoomSeatPlayers = seatPlayers
 		val n = gameType.playerCount
 		val canonicalIds = listOf("south", "west", "north", "east")
+
+		mpPlayerIdToCanonical = buildMap {
+			seatPlayers.forEach { (seatKey, wirePlayer) ->
+				val roomSeat     = seatKey.toIntOrNull() ?: return@forEach
+				val canonicalIdx = (roomSeat - localMPSeat + n) % n
+				put(wirePlayer.playerId, canonicalIds.getOrElse(canonicalIdx) { "seat$roomSeat" })
+			}
+		}
+		localWirePlayerId = seatPlayers[localMPSeat.toString()]?.playerId ?: ""
+
+		// gameGeneration, not the local UI phase, is what actually distinguishes a genuine
+		// new-game start from a same-game configuration recovery (a reconnect resend, a
+		// buffered replay, a newly created adapter) — see the doc on GameConfigMessage and
+		// mpGameGeneration. A client's phase being .Lobby or .Finished is not reliable: a
+		// stray recovery message delivered while still sitting at .Finished, before the user
+		// has actually pressed Play Again, would otherwise be misread as a real restart.
+		val isNewGameStart = gameGeneration > mpGameGeneration
+		Log.d(MP_TAG, "onGameConfig gameType=${gameType.name} gameGeneration=$gameGeneration current=$mpGameGeneration isNewGameStart=$isNewGameStart")
+		if (!isNewGameStart) {
+			Log.d(MP_TAG, "onGameConfig treated as recovery — leaving active game state untouched")
+			return
+		}
+		mpGameGeneration = gameGeneration
 
 		// Iterate by canonical index so players[] is canonical-ordered (south=0…east=3).
 		// PhaseManager uses players[leaderIndex] and players[leaderIndex-1] as canonical
@@ -1258,17 +1324,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			)
 		}
 
-		mpPlayerIdToCanonical = buildMap {
-			seatPlayers.forEach { (seatKey, wirePlayer) ->
-				val roomSeat     = seatKey.toIntOrNull() ?: return@forEach
-				val canonicalIdx = (roomSeat - localMPSeat + n) % n
-				put(wirePlayer.playerId, canonicalIds.getOrElse(canonicalIdx) { "seat$roomSeat" })
-			}
-		}
-
-		localWirePlayerId = seatPlayers[localMPSeat.toString()]?.playerId ?: ""
-
-		Log.d(MP_TAG, "onGameConfig gameType=${gameType.name} players=${players.map { "${it.id}(${it.playerType})" }}")
+		Log.d(MP_TAG, "onGameConfig new game generation=$gameGeneration players=${players.map { "${it.id}(${it.playerType})" }}")
 		_state.value = _state.value.copy(
 			players              = players,
 			gameType             = gameType,
@@ -1283,7 +1339,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			enableSandbagPenalty = config.enableSandbagPenalty,
 			allowNilBid          = config.allowNilBid,
 			allowBlindExchange   = config.blindNilExchangeEnabled,
-			gameLength           = runCatching { GameLength.valueOf(config.gameLength) }.getOrElse { GameLength.MEDIUM }
+			gameLength           = runCatching { GameLength.valueOf(config.gameLength) }.getOrElse { GameLength.MEDIUM },
+			score                = Score(),
+			lastHandScore        = Score(),
+			mpPlayAgainRequested = false
 		)
 		// Phase stays at Lobby — wait for the host's `deal` message to start the hand.
 	}
@@ -1302,6 +1361,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		}
 		val dealPhaseBefore = _state.value.phase
 		mpCurrentHandNum = handNum
+		mpReadyForNextHandSeats.clear()
 
 		val n = _state.value.players.size
 		val canonicalIds = listOf("south", "west", "north", "east")
@@ -1313,7 +1373,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 				val roomSeat     = seatKey.toIntOrNull() ?: continue
 				val canonicalIdx = (roomSeat - localMPSeat + n) % n
 				val canonicalId  = canonicalIds.getOrElse(canonicalIdx) { "seat$roomSeat" }
-				val sorted = cards.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
+				val sorted = cards.sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
 				put(canonicalId, PlayerHandState(hand = sorted))
 			}
 		}
@@ -1336,22 +1396,46 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			handLeaderIndex = firstBidderCanonicalIdx
 		)
 
-		Log.d(MP_TAG, "onDeal ACCEPTED handNum=$handNum phaseBefore=$dealPhaseBefore phaseAfter=Bid")
-		advancePhase(GamePhase.Bid)
-		phaseManager.execute()
-	}
-
-	override fun onBlindOffer(handNum: Int, teamSeats: List<Int>, decidingSeats: List<Int>) {
-		val deciding = localMPSeat in decidingSeats
-		Log.d(MP_TAG, "onBlindOffer handNum=$handNum teamSeats=$teamSeats decidingSeats=$decidingSeats localSeat=$localMPSeat deciding=$deciding")
-		// Only advance if the local player is one of the designated deciding seats.
-		// If not, wait: onBlindResponse callbacks will drive the phase forward.
-		if (!deciding) return
+		Log.d(MP_TAG, "onDeal ACCEPTED handNum=$handNum phaseBefore=$dealPhaseBefore phaseAfter=BlindBid")
+		// BlindBid, not Bid directly — handleBlindBid() is what actually evaluates eligibility
+		// and (for the host) broadcasts the blind offer; skipping straight to Bid bypassed
+		// blind bidding entirely for every multiplayer client, and raced against a
+		// same-hand-number blindOffer arriving after this device had already moved on to
+		// normal bidding. Matches the single-player/host path, where handleDealHuman()
+		// also transitions to BlindBid before Bid.
 		advancePhase(GamePhase.BlindBid)
 		phaseManager.execute()
 	}
 
+	override fun onBlindOffer(handNum: Int, teamSeats: List<Int>, decidingSeats: List<Int>) {
+		if (handNum != mpCurrentHandNum) {
+			Log.w(MP_TAG, "onBlindOffer DROPPED stale handNum=$handNum current=$mpCurrentHandNum")
+			return
+		}
+		val deciding = localMPSeat in decidingSeats
+		Log.d(MP_TAG, "onBlindOffer handNum=$handNum teamSeats=$teamSeats decidingSeats=$decidingSeats localSeat=$localMPSeat deciding=$deciding")
+		// Only advance if the local player is one of the designated deciding seats.
+		// If not, wait: onBlindPhaseComplete drives the phase forward once the host
+		// has resolved every required response.
+		if (!deciding) return
+		// Advance straight to BlindBidHuman (a pure UI-owned phase — see PhaseManager's
+		// dispatch table) rather than GamePhase.BlindBid. Routing through BlindBid would
+		// re-enter PhaseManager.handleBlindBid(), which now returns immediately for every
+		// non-host multiplayer client (see its class doc) — that early return exists to
+		// stop a guest from independently running the per-seat eligibility loop for every
+		// player, but it also swallowed the one case where this device DOES need to act:
+		// showing its own BlindBidHuman UI once the host has actually authorized it via
+		// this offer. Setting BlindBidHuman directly here is exactly what the eligible-
+		// HUMAN branch inside handleBlindBid() does on the host's own device.
+		advancePhase(GamePhase.BlindBidHuman)
+		phaseManager.execute()
+	}
+
 	override fun onBlindResponse(seat: Int, accepted: Boolean, handNum: Int) {
+		if (handNum != mpCurrentHandNum) {
+			Log.w(MP_TAG, "onBlindResponse DROPPED stale handNum=$handNum current=$mpCurrentHandNum seat=$seat")
+			return
+		}
 		val canonicalId = roomSeatToCanonicalId(seat)
 		val blindPhaseBefore = _state.value.phase
 		Log.d(MP_TAG, "onBlindResponse seat=$seat canonicalId=$canonicalId accepted=$accepted handNum=$handNum phaseBefore=$blindPhaseBefore")
@@ -1365,6 +1449,30 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		}
 		advancePhase(GamePhase.BlindBid)
 		phaseManager.execute()
+	}
+
+	/**
+	 * Host-only authority signal: every required blind decision for [handNum] is in (or no
+	 * team was ever eligible). Non-host clients never independently decide this — see
+	 * `PhaseManager.handleBlindBid`'s non-host early return — so this is what actually
+	 * drives them out of `GamePhase.BlindBid`, mirroring the "reveal cards" tail of
+	 * `handleBlindBid()` that the host itself reaches locally.
+	 */
+	override fun onBlindPhaseComplete(handNum: Int) {
+		if (handNum != mpCurrentHandNum) {
+			Log.w(MP_TAG, "onBlindPhaseComplete DROPPED stale handNum=$handNum current=$mpCurrentHandNum")
+			return
+		}
+		val s = _state.value
+		Log.d(MP_TAG, "onBlindPhaseComplete handNum=$handNum phase=${s.phase}")
+		if (s.gameType.dealMode == DealMode.TWO_MAN_ALTERNATE) {
+			advancePhase(GamePhase.DealHuman)
+			phaseManager.execute()
+		} else {
+			val cardCount = s.phaseHands[GamePhase.Deal]?.lastOrNull()
+				?.perPlayer?.values?.firstOrNull()?.hand?.size ?: 13
+			viewModelScope.launch { emitAnimation(AnimationEvent.DealComplete(cardCount)) }
+		}
 	}
 
 	override fun onBid(seat: Int, amount: Int, isBlind: Boolean, isTeamTotal: Boolean, handNum: Int) {
@@ -1431,27 +1539,115 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	}
 
 	/**
-	 * Called by the "Play Again" button on EndGameView.
-	 * Resets the full game (scores included) and starts a new deal with the same
-	 * game type and players.
+	 * Host only: records that [seat] has pressed "Next Hand" and is waiting. Purely
+	 * informational — the host still deals on its own timeline via its own button press —
+	 * but ignores duplicates and signals for a hand other than the one currently in
+	 * progress, so a stale/replayed/duplicate request can't corrupt readiness tracking
+	 * for the current hand.
+	 */
+	override fun onReadyForNextHand(seat: Int, handNum: Int) {
+		if (!isMPHost) return
+		if (handNum != mpCurrentHandNum) {
+			Log.d(MP_TAG, "onReadyForNextHand ignored — stale handNum=$handNum current=$mpCurrentHandNum seat=$seat")
+			return
+		}
+		if (!mpReadyForNextHandSeats.add(seat)) {
+			Log.d(MP_TAG, "onReadyForNextHand duplicate ignored seat=$seat handNum=$handNum")
+			return
+		}
+		Log.d(MP_TAG, "onReadyForNextHand recorded seat=$seat handNum=$handNum readySeats=$mpReadyForNextHandSeats")
+	}
+
+	/**
+	 * Called by the "Next Hand" button on EndHandView for a non-host multiplayer client.
+	 * Sends one readiness request to the host and flips [GameState.mpNextHandRequested] so
+	 * the button disables itself and shows "Waiting for host..." instead of dealing a bogus
+	 * local hand (only the host's own [onNextHand] press deals for real). Idempotent — a
+	 * second press before the flag clears is a no-op, matching the disabled-button UI.
+	 */
+	fun requestNextHandFromHost() {
+		if (_state.value.mpNextHandRequested) return
+		mpAdapter?.sendReadyForNextHand(mpCurrentHandNum)
+		_state.value = _state.value.copy(mpNextHandRequested = true)
+	}
+
+	/**
+	 * Host only: records that [seat] has pressed "Play Again" and is waiting. Purely
+	 * informational — the host still restarts on its own timeline via its own button
+	 * press — but ignores duplicates the same way [onReadyForNextHand] does, and now also
+	 * ignores a request tagged for an older generation than the one currently active (a
+	 * delayed request from a game that has already ended and been superseded).
+	 */
+	override fun onRequestPlayAgain(seat: Int, gameGeneration: Int) {
+		if (!isMPHost) return
+		if (gameGeneration != mpGameGeneration) {
+			Log.d(MP_TAG, "onRequestPlayAgain ignored — stale generation=$gameGeneration current=$mpGameGeneration seat=$seat")
+			return
+		}
+		if (!mpPlayAgainRequestedSeats.add(seat)) {
+			Log.d(MP_TAG, "onRequestPlayAgain duplicate ignored seat=$seat")
+			return
+		}
+		Log.d(MP_TAG, "onRequestPlayAgain recorded seat=$seat requestedSeats=$mpPlayAgainRequestedSeats")
+	}
+
+	/**
+	 * Called by the "Play Again" button on EndGameView for a non-host multiplayer client.
+	 * Sends one readiness request to the host and flips [GameState.mpPlayAgainRequested] so
+	 * the button disables itself and shows "Waiting for host..." instead of dealing a bogus
+	 * local game (only the host's own [playAgain] press restarts for real). Idempotent — a
+	 * second press before the flag clears is a no-op, matching the disabled-button UI.
+	 */
+	fun requestPlayAgainFromHost() {
+		if (_state.value.mpPlayAgainRequested) return
+		mpAdapter?.sendRequestPlayAgain(mpGameGeneration)
+		_state.value = _state.value.copy(mpPlayAgainRequested = true)
+	}
+
+	/**
+	 * Called by the "Play Again" button on EndGameView for the host (or a single-player
+	 * game). Resets the full game — scores, bags, hand history, bids, tricks, blind state,
+	 * winner state, replay state, and hand/game counters — while preserving every host rule
+	 * and the target score, then starts a new deal with the same game type and players.
+	 *
+	 * Every settings field is carried forward explicitly (unlike the previous version of
+	 * this function, which named only 8 of [GameState]'s rule fields and silently reset the
+	 * rest to their class defaults — re-enabling the sandbag penalty, dropping the effective
+	 * minimum-bid override, etc.).
 	 */
 	fun playAgain() {
 		val current = _state.value
 		_state.value = GameState(
-			players          = current.players.map { p ->
+			players            = current.players.map { p ->
 				p.copy(runtimeFlags = RuntimeFlags(seatIndex = p.runtimeFlags.seatIndex))
 			},
-			gameType         = current.gameType,
-			phase            = GamePhase.Deal,
-			leaderIndex      = 1,
-			handLeaderIndex  = 1,
-			twoOfSpadesJoker   = current.twoOfSpadesJoker,
-			twoOfDiamondsJoker = current.twoOfDiamondsJoker,
-			spadesMustBreak    = current.spadesMustBreak,
-			minBidFive         = current.minBidFive
+			gameType             = current.gameType,
+			phase                = GamePhase.Deal,
+			leaderIndex          = 1,
+			handLeaderIndex      = 1,
+			twoOfSpadesJoker     = current.twoOfSpadesJoker,
+			twoOfDiamondsJoker   = current.twoOfDiamondsJoker,
+			enableDoubleBidBonus = current.enableDoubleBidBonus,
+			spadesMustBreak      = current.spadesMustBreak,
+			minBidFive           = current.minBidFive,
+			minimumBidOverride   = current.minimumBidOverride,
+			enableSandbagPenalty = current.enableSandbagPenalty,
+			allowNilBid          = current.allowNilBid,
+			allowBlindExchange   = current.allowBlindExchange,
+			gameLength           = current.gameLength
 		)
 		frustratedVideoFiredThisHand = false
 		setCurrentVideoAsset(null)
+		mpPlayAgainRequestedSeats.clear()
+		if (isMPHost) {
+			// A new generation is what tells onGameConfig (on every device, including this
+			// one if it ever re-processes its own echo) that this is a genuine restart, not
+			// configuration recovery — see mpGameGeneration's doc.
+			mpGameGeneration++
+			// Re-announces settings/roster before the upcoming broadcastDeal(); this is what
+			// carries the score reset to guests — see onGameConfig.
+			mpAdapter?.sendGameConfig(current.toWireGameConfig(), mpRoomSeatPlayers, mpGameGeneration)
+		}
 		phaseManager.execute()
 	}
 }

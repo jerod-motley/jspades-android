@@ -8,7 +8,7 @@ object AppConfig {
     val GAME_SOCKET_URL: String = BuildConfig.GAME_SOCKET_URL
     val TEST_MODE: Boolean = false //BuildConfig.DEBUG
     /** Writes every raw WSS send/receive frame to the app's files/mplogs.md. */
-    const val ENABLE_WSS_MESSAGE_FILE_LOGGING: Boolean = false
+    val ENABLE_WSS_MESSAGE_FILE_LOGGING: Boolean = BuildConfig.DEBUG
     const val PARTITION_KEY = "JSPADES"
 
     /** Full leaderboard URL with partition key query param, or empty string if WEB_URL is not set. */

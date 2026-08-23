@@ -12,6 +12,20 @@ import kotlin.jvm.JvmInline
 /** Basic card model. */
 enum class Suit { CLUBS, DIAMONDS, HEARTS, SPADES }
 
+/**
+ * Display sort order for hands: Hearts, Clubs, Diamonds, Spades (red/black/red/black).
+ * Independent of both [Suit.ordinal] (CLUBS, DIAMONDS, HEARTS, SPADES — an internal
+ * enum declaration order, not a display order) and the multiplayer wire suit encoding
+ * in `MPAdapter.kt`, which exists only to serialize card IDs on the network and must
+ * stay free to diverge from this without changing what's on the wire.
+ */
+val Suit.displaySortOrder: Int get() = when (this) {
+    Suit.HEARTS   -> 0
+    Suit.CLUBS    -> 1
+    Suit.DIAMONDS -> 2
+    Suit.SPADES   -> 3
+}
+
 enum class Rank(val value: Int) {
     TWO(2), THREE(3), FOUR(4), FIVE(5), SIX(6), SEVEN(7), EIGHT(8), NINE(9), TEN(10),
     JACK(11), QUEEN(12), KING(13), ACE(14), DEUCE(15), WILDDEUCE(18), LITTLEJOKER(16), BIGJOKER(17)
@@ -88,6 +102,7 @@ data class Player(
 data class PlayerHandState(
     val hand: List<Card> = emptyList(),
     val bid: Int = 0,
+    val bidPlaced: Boolean = false,
     val tricksWon: Int = 0,
     val isBlind: Boolean = false
 )
@@ -334,7 +349,24 @@ data class GameState(
      *   4-man solo:                 70 / 150 / 250.
      * Defaults to MEDIUM.
      */
-    val gameLength: GameLength = GameLength.MEDIUM
+    val gameLength: GameLength = GameLength.MEDIUM,
+    /**
+     * True once a non-host multiplayer client has pressed "Next Hand" and sent its
+     * readiness request to the host, but the host's `deal` for the next hand hasn't
+     * arrived yet. Drives the "Waiting for host..." button state on [EndHandView] so a
+     * guest can't press it repeatedly or deal a bogus local hand. Cleared by
+     * [GameViewModel.resetForNextHand] (reached via both the host's own deal and a
+     * guest's [GameViewModel.onDeal]), and on session end/disconnect.
+     */
+    val mpNextHandRequested: Boolean = false,
+    /**
+     * True once a non-host multiplayer client has pressed "Play Again" at
+     * [GamePhase.Finished] and sent its readiness request to the host, but the host's
+     * new-game `gameConfig` hasn't arrived yet. Drives the "Waiting for host..." button
+     * state on [EndGameView]. Cleared by [GameViewModel.onGameConfig], which fires for
+     * both the very first game and every subsequent Play Again restart.
+     */
+    val mpPlayAgainRequested: Boolean = false
 )
 
 /**

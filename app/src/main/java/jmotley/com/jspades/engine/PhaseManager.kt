@@ -16,6 +16,7 @@ import jmotley.com.jspades.data.PlayerType
 import jmotley.com.jspades.data.playerTypeById
 import jmotley.com.jspades.data.Rank
 import jmotley.com.jspades.data.Suit
+import jmotley.com.jspades.data.displaySortOrder
 import jmotley.com.jspades.data.AnimationEvent
 import jmotley.com.jspades.data.toSnapshot
 import jmotley.com.jspades.data.ReplayEvent
@@ -210,7 +211,7 @@ class PhaseManager(
         val cpp = gt.cardsPerPlayer
         val dealt = ids.mapIndexed { i, id ->
             id to shuffled.subList(i * cpp, (i + 1) * cpp)
-                .sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
+                .sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
         }.toMap()
         val perPlayer = dealt.mapValues { (_, cards) -> PlayerHandState(hand = cards) }
         viewModel.applyDeal(Hand(playerOrder = ids, perPlayer = perPlayer))
@@ -242,7 +243,7 @@ class PhaseManager(
         val cpp = gt.cardsPerPlayer
         val dealt = ids.mapIndexed { i, id ->
             id to playerCards.subList(i * cpp, (i + 1) * cpp)
-                .sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
+                .sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
         }.toMap()
         val perPlayer = dealt.mapValues { (_, cards) -> PlayerHandState(hand = cards) }
 
@@ -285,7 +286,7 @@ class PhaseManager(
         val perPlayer = mapOf(
             ids[0] to PlayerHandState(),   // south — empty until pick UI runs
             ids[1] to PlayerHandState(
-                hand = cpuHand.sortedWith(compareBy({ it.suit.ordinal }, { it.rank.ordinal }))
+                hand = cpuHand.sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
             )
         )
         viewModel.applyDeal(Hand(playerOrder = ids, perPlayer = perPlayer))
@@ -476,26 +477,24 @@ class PhaseManager(
      * CPUs that are 100+ points behind decide randomly (33% chance).
      * Human player: advance to BlindBidHuman if eligible; auto-skip if not.
      * After all players have decided: emit DealComplete (or return to DealHuman for TWO_MAN_ALTERNATE).
+     *
+     * Host-authoritative in multiplayer: a non-host client never runs the per-seat loop
+     * below at all (see the early return immediately below) — it only ever learns the
+     * outcome via ViewModel.onBlindOffer (if its own seat must decide) and
+     * ViewModel.onBlindPhaseComplete (once the host says the whole phase is resolved).
+     * Previously every client ran this same loop independently and could show
+     * BlindBidHuman — and let the human respond — before the host's own blindOffer for
+     * that hand had even arrived, since both sides compute eligibility with the same
+     * formula but on no coordinated timeline.
      */
     private suspend fun handleBlindBid() {
-        val s = viewModel.state.value
-        val n = s.players.size
-
-        // Blind bidding is disabled for multiplayer games — the host/guest offer-response
-        // protocol isn't reliably synchronized with the deal flow yet, so skip straight
-        // through without offering or deciding blind bids for anyone.
-        if (viewModel.mpAdapter != null) {
-            s.players.forEach { viewModel.markBlindDecision(it.id) }
-            if (s.gameType.dealMode == DealMode.TWO_MAN_ALTERNATE) {
-                viewModel.advancePhase(GamePhase.DealHuman)
-                dispatch()
-            } else {
-                val cardCount = s.phaseHands[GamePhase.Deal]?.lastOrNull()
-                    ?.perPlayer?.values?.firstOrNull()?.hand?.size ?: 13
-                viewModel.emitAnimation(AnimationEvent.DealComplete(cardCount))
-            }
+        if (viewModel.mpAdapter != null && !viewModel.isMPHost) {
+            Log.d(MP_TAG, "handleBlindBid non-host — waiting for host's blindOffer/blindPhaseComplete")
             return
         }
+
+        val s = viewModel.state.value
+        val n = s.players.size
 
         // Host broadcasts blind offer once, before any per-player decisions are processed.
         val noneDecidedYet = s.players.none { it.runtimeFlags.didBlindDecide }
@@ -527,17 +526,9 @@ class PhaseManager(
             if (player.runtimeFlags.didBlindDecide) continue
 
             if (player.playerType == PlayerType.HUMAN) {
-                // Check eligibility before showing UI
-                val eligible = if (s.gameType.useTeams) {
-                    val myScore  = (s.score.points[player.team.toString()] ?: 0) + (s.score.bags[player.team.toString()] ?: 0)
-                    val oppScore = (s.score.points[(1 - player.team).toString()] ?: 0) + (s.score.bags[(1 - player.team).toString()] ?: 0)
-                    oppScore - myScore >= 100
-                } else {
-                    val myScore  = s.score.points[player.id] ?: 0
-                    val topScore = s.players.filter { it.id != player.id }
-                        .maxOfOrNull { p -> s.score.points[p.id] ?: 0 } ?: 0
-                    topScore - myScore >= 100
-                }
+                // Check eligibility before showing UI. Local host and remote (MP) humans
+                // use the identical BidEngine.isBlindEligible formula — see its own doc.
+                val eligible = BidEngine.isBlindEligible(s, player)
                 Log.d(MP_TAG, "handleBlindBid HUMAN ${player.id} eligible=$eligible")
                 if (eligible) {
                     viewModel.advancePhase(GamePhase.BlindBidHuman)
@@ -547,6 +538,27 @@ class PhaseManager(
                     viewModel.markBlindDecision(player.id)
                     continue
                 }
+            }
+
+            if (player.playerType == PlayerType.MP) {
+                // Check eligibility before waiting — an ineligible remote seat was never
+                // sent a blind offer (the host only offers to eligible seats, see the
+                // broadcastBlindOffer block above) and therefore will never send a
+                // BlindResponseMessage. Waiting unconditionally here deadlocked the whole
+                // game the first time an ineligible MP seat's turn came up in the loop.
+                val eligible = BidEngine.isBlindEligible(s, player)
+                Log.d(MP_TAG, "handleBlindBid MP ${player.id} eligible=$eligible")
+                if (!eligible) {
+                    viewModel.markBlindDecision(player.id)
+                    continue
+                }
+                // Eligible: the remote seat's own device decides via BlindBidHuman and
+                // broadcasts a real BlindResponseMessage; this device must wait for that
+                // (ViewModel.onBlindResponse calls markBlindDecision + re-invokes this
+                // loop) rather than fabricate a decision locally, the same way
+                // handleBidIndividual()/handleBidHouseRules() wait on PlayerType.MP.
+                Log.d(MP_TAG, "handleBlindBid waiting on eligible remote MP seat=${player.id}")
+                return
             }
 
             // CPU player
@@ -560,7 +572,11 @@ class PhaseManager(
             viewModel.markBlindDecision(player.id)
         }
 
-        // All players have decided — reveal cards
+        // All players have decided — tell any non-host clients (who never independently
+        // decided this — see the non-host early return above) so they can leave BlindBid too.
+        viewModel.broadcastBlindPhaseComplete()
+
+        // Reveal cards
         if (s.gameType.dealMode == DealMode.TWO_MAN_ALTERNATE) {
             viewModel.advancePhase(GamePhase.DealHuman)
             dispatch()

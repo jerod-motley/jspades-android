@@ -3,13 +3,18 @@ package jmotley.com.jspades.networking
 import android.util.Log
 import jmotley.com.jspades.data.BidMessage
 import jmotley.com.jspades.data.BlindOfferMessage
+import jmotley.com.jspades.data.BlindPhaseCompleteMessage
 import jmotley.com.jspades.data.BlindResponseMessage
 import jmotley.com.jspades.data.Card
 import jmotley.com.jspades.data.DealMessage
 import jmotley.com.jspades.data.GameConfigMessage
+import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.GameType
+import jmotley.com.jspades.data.effectiveMinBid
 import jmotley.com.jspades.data.PlayCardMessage
 import jmotley.com.jspades.data.Rank
+import jmotley.com.jspades.data.ReadyForNextHandMessage
+import jmotley.com.jspades.data.RequestPlayAgainMessage
 import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.data.WireCard
 import jmotley.com.jspades.data.WireGameConfig
@@ -36,11 +41,13 @@ private const val TAG = "WSSMP"
 // Android: rank.value (TWO=2…ACE=14, specials≥15), Suit enum ordinal (♣=0/♦=1/♥=2/♠=3)
 // Wire rank = rank.value − 2.  Wire suit uses the ♥-first convention, not Suit.ordinal.
 
-private fun wireSuitToSuit(w: Int): Suit? = when (w) {
+// internal (not private) so MPAdapterTest can assert the wire encoding directly —
+// this must stay independent of Suit.displaySortOrder even though the numbers coincide today.
+internal fun wireSuitToSuit(w: Int): Suit? = when (w) {
     0 -> Suit.HEARTS; 1 -> Suit.CLUBS; 2 -> Suit.DIAMONDS; 3 -> Suit.SPADES; else -> null
 }
 
-private fun suitToWireSuit(s: Suit): Int = when (s) {
+internal fun suitToWireSuit(s: Suit): Int = when (s) {
     Suit.HEARTS -> 0; Suit.CLUBS -> 1; Suit.DIAMONDS -> 2; Suit.SPADES -> 3
 }
 
@@ -85,6 +92,27 @@ fun wireStringToGameType(wire: String): GameType? = when (wire) {
     else           -> null
 }
 
+/**
+ * Converts this state's currently-applied settings into a [WireGameConfig], for
+ * re-broadcasting them verbatim — e.g. [GameViewModel.playAgain] re-announcing the
+ * same rules for a new game, rather than a second, possibly-drifted source (like
+ * re-reading [android.content.SharedPreferences], which is what [hostWireGameConfig]
+ * is for at *initial* game start, before any [GameState] carrying real settings exists
+ * yet).
+ */
+fun GameState.toWireGameConfig(): WireGameConfig = WireGameConfig(
+    gameType                = gameTypeToWireString(gameType),
+    twoOfSpadesJoker        = twoOfSpadesJoker,
+    twoOfDiamondsJoker      = twoOfDiamondsJoker,
+    enableDoubleBidBonus    = enableDoubleBidBonus,
+    spadesMustBreak         = spadesMustBreak,
+    minimumBid              = effectiveMinBid,
+    enableSandbagPenalty    = enableSandbagPenalty,
+    allowNilBid             = allowNilBid,
+    blindNilExchangeEnabled = allowBlindExchange,
+    gameLength              = gameLength.name
+)
+
 // ── Delegate interface ────────────────────────────────────────────────────────
 
 /**
@@ -93,7 +121,7 @@ fun wireStringToGameType(wire: String): GameType? = when (wire) {
  * Implemented by the ViewModel in Phase 5.
  */
 interface MPAdapterDelegate {
-    fun onGameConfig(config: WireGameConfig, seatPlayers: Map<String, WireSeatPlayer>)
+    fun onGameConfig(config: WireGameConfig, seatPlayers: Map<String, WireSeatPlayer>, gameGeneration: Int)
     fun onDeal(
         handNum: Int,
         dealerSeat: Int,
@@ -104,8 +132,11 @@ interface MPAdapterDelegate {
     )
     fun onBlindOffer(handNum: Int, teamSeats: List<Int>, decidingSeats: List<Int>)
     fun onBlindResponse(seat: Int, accepted: Boolean, handNum: Int)
+    fun onBlindPhaseComplete(handNum: Int)
     fun onBid(seat: Int, amount: Int, isBlind: Boolean, isTeamTotal: Boolean, handNum: Int)
     fun onPlayCard(seat: Int, cardUid: String, handNum: Int, trickNum: Int, trickPlayNum: Int)
+    fun onReadyForNextHand(seat: Int, handNum: Int)
+    fun onRequestPlayAgain(seat: Int, gameGeneration: Int)
 }
 
 // ── Adapter ───────────────────────────────────────────────────────────────────
@@ -204,12 +235,15 @@ class MPAdapter(
             is BlindResponseMessage -> handleBlindResponse(msg)
             is BidMessage           -> handleBid(msg)
             is PlayCardMessage      -> handlePlayCard(msg)
+            is ReadyForNextHandMessage -> handleReadyForNextHand(msg)
+            is RequestPlayAgainMessage -> handleRequestPlayAgain(msg)
+            is BlindPhaseCompleteMessage -> handleBlindPhaseComplete(msg)
         }
     }
 
     private fun handleGameConfig(msg: GameConfigMessage) {
         seatPlayerMap = msg.players
-        delegate.onGameConfig(msg.config, msg.players)
+        delegate.onGameConfig(msg.config, msg.players, msg.gameGeneration)
         // Flush messages that arrived before gameConfig was processed.
         // Identity-validate each one now that seatPlayerMap is populated.
         // Sort deal before bids/playCards — the queue holds messages in arrival order, but deal
@@ -273,12 +307,27 @@ class MPAdapter(
         delegate.onPlayCard(msg.seat, card.uid, msg.handNum, msg.trickNum, msg.trickPlayNum)
     }
 
+    private fun handleReadyForNextHand(msg: ReadyForNextHandMessage) {
+        Log.d(TAG, "handleReadyForNextHand seat=${msg.seat} handNum=${msg.handNum}")
+        delegate.onReadyForNextHand(msg.seat, msg.handNum)
+    }
+
+    private fun handleRequestPlayAgain(msg: RequestPlayAgainMessage) {
+        Log.d(TAG, "handleRequestPlayAgain seat=${msg.seat} gameGeneration=${msg.gameGeneration}")
+        delegate.onRequestPlayAgain(msg.seat, msg.gameGeneration)
+    }
+
+    private fun handleBlindPhaseComplete(msg: BlindPhaseCompleteMessage) {
+        Log.d(TAG, "handleBlindPhaseComplete handNum=${msg.handNum}")
+        delegate.onBlindPhaseComplete(msg.handNum)
+    }
+
     // ── Send ──────────────────────────────────────────────────────────────────
 
-    fun sendGameConfig(config: WireGameConfig, players: Map<String, WireSeatPlayer>) {
+    fun sendGameConfig(config: WireGameConfig, players: Map<String, WireSeatPlayer>, gameGeneration: Int) {
         seatPlayerMap = players  // seed locally; host suppresses its own echo so handleGameConfig never fires
         dispatch(GameConfigMessage(cmdId = nextCmdId(), seat = localSeat, playerId = localPlayerId,
-            config = config, players = players))
+            config = config, players = players, gameGeneration = gameGeneration))
     }
 
     fun sendDeal(
@@ -338,6 +387,28 @@ class MPAdapter(
             cardId = cardToWireId(card)))
     }
 
+    /** Non-host only: signal that the local player has pressed "Next Hand" and is waiting. */
+    fun sendReadyForNextHand(handNum: Int) {
+        dispatch(ReadyForNextHandMessage(cmdId = nextCmdId(), seat = localSeat, playerId = localPlayerId,
+            handNum = handNum))
+    }
+
+    /** Non-host only: signal that the local player has pressed "Play Again" and is waiting. */
+    fun sendRequestPlayAgain(gameGeneration: Int) {
+        dispatch(RequestPlayAgainMessage(cmdId = nextCmdId(), seat = localSeat, playerId = localPlayerId,
+            gameGeneration = gameGeneration))
+    }
+
+    /**
+     * Host only: signal that every required blind decision for [handNum] is in (or that no
+     * team was eligible in the first place), so non-host clients — which never independently
+     * decide this — can leave `GamePhase.BlindBid`.
+     */
+    fun sendBlindPhaseComplete(handNum: Int) {
+        dispatch(BlindPhaseCompleteMessage(cmdId = nextCmdId(), seat = localSeat, playerId = localPlayerId,
+            handNum = handNum))
+    }
+
     // ── Internal ──────────────────────────────────────────────────────────────
 
     /**
@@ -356,7 +427,7 @@ class MPAdapter(
     private fun rebuildFromRelayEnvelope(raw: String): String? = runCatching {
         val obj = wireJson.parseToJsonElement(raw).jsonObject
         val type = (obj["type"] as? JsonPrimitive)?.content ?: return@runCatching null
-        if (type !in setOf("gameConfig", "deal", "blindOffer", "blindResponse", "bid", "playCard")) {
+        if (type !in setOf("gameConfig", "deal", "blindOffer", "blindResponse", "bid", "playCard", "readyForNextHand", "requestPlayAgain", "blindPhaseComplete")) {
             return@runCatching null
         }
         val payloadObj = obj["payload"] as? JsonObject ?: return@runCatching null
@@ -403,6 +474,7 @@ class MPAdapter(
             is PlayCardMessage      -> "hand=${msg.handNum} trick=${msg.trickNum} play=${msg.trickPlayNum} card=${msg.cardId}"
             is DealMessage          -> "hand=${msg.handNum} dealer=${msg.dealerSeat}"
             is BlindResponseMessage -> "hand=${msg.handNum} accepted=${msg.accepted}"
+            is ReadyForNextHandMessage -> "hand=${msg.handNum}"
             else -> ""
         }
         Log.d(TAG, "dispatch ${msg::class.simpleName} cmdId=${msg.cmdId.take(8)} seat=${msg.seat} player=${msg.playerId.take(8)} $extra".trimEnd())

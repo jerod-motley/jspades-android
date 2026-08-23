@@ -8,7 +8,14 @@ data class OnlineLobbyState(
     val localDisplayName: String,
     val isHost: Boolean,
     val seats: List<OnlineSeat> = List(4) { OnlineSeat(seatIndex = it) },
-    val status: LobbyStatus = LobbyStatus.Waiting
+    val status: LobbyStatus = LobbyStatus.Waiting,
+    /**
+     * The host's authoritative game settings (target score, house rules, etc.), synced via
+     * the lobby snapshot. On the host device this is populated locally from its own prefs;
+     * on a guest it starts at the default until the first snapshot arrives. Never derived
+     * from a guest's own local preferences — those are irrelevant for a room it joined.
+     */
+    val hostSettings: WireGameConfig = WireGameConfig(gameType = "houseRules")
 ) {
     /** Room seat index of this device's player (0=host/south…3). Derived from seats list. */
     val localSeatIndex: Int

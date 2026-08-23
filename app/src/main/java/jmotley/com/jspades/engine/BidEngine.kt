@@ -91,23 +91,42 @@ object BidEngine {
     data class BidResult(val bid: Int, val isBlind: Boolean = false)
 
     /**
+     * True when [player] (or, in team games, their team) is 100+ points behind the
+     * leader and therefore eligible for a blind bid this hand. Platform- and
+     * player-type-independent — the same formula applies whether [player] is CPU,
+     * a local human, or a remote multiplayer seat, and whether the game is hosted
+     * on Android or iOS. This is the single source of truth for blind-bid
+     * eligibility; [PhaseManager.handleBlindBid] uses it for human/MP seats so a
+     * human's eligibility can never disagree with a CPU's.
+     */
+    fun isBlindEligible(state: GameState, player: Player): Boolean = if (state.gameType.useTeams) {
+        teamScore(state, 1 - player.team) - teamScore(state, player.team) >= 100
+    } else {
+        val myScore = playerScore(state, player.id)
+        val topScore = state.players.filter { it.id != player.id }
+            .maxOfOrNull { p -> playerScore(state, p.id) } ?: 0
+        topScore - myScore >= 100
+    }
+
+    /**
      * Determines whether a CPU player should go blind this hand.
      * Returns a [BidResult] with [isBlind]=true if they should, null if not.
      * Eligible when 100+ points behind; goes blind 33% of the time when eligible.
      * Double blind is allowed.
+     *
+     * [random] defaults to the real source; tests inject a fixed/fake [kotlin.random.Random]
+     * (e.g. one whose `nextInt` always returns 0 or always returns nonzero) to assert the
+     * 33%-chance branch deterministically instead of relying on many trials.
      */
-    fun shouldCpuBidBlind(hand: List<Card>, player: Player, state: GameState): BidResult? {
-        val eligible = if (state.gameType.useTeams) {
-            teamScore(state, 1 - player.team) - teamScore(state, player.team) >= 100
-        } else {
-            val myScore = playerScore(state, player.id)
-            val topScore = state.players.filter { it.id != player.id }
-                .maxOfOrNull { p -> playerScore(state, p.id) } ?: 0
-            topScore - myScore >= 100
-        }
-        if (!eligible) return null
+    fun shouldCpuBidBlind(
+        hand: List<Card>,
+        player: Player,
+        state: GameState,
+        random: kotlin.random.Random = kotlin.random.Random.Default
+    ): BidResult? {
+        if (!isBlindEligible(state, player)) return null
         // 33% chance
-        if (kotlin.random.Random.nextInt(3) != 0) return null
+        if (random.nextInt(3) != 0) return null
         return when (state.gameType) {
             GameType.TEAM_CLASSIC, GameType.SOLO_FOUR_MAN -> BidResult(bid = 0, isBlind = true)
             else -> BidResult(bid = 7, isBlind = true)

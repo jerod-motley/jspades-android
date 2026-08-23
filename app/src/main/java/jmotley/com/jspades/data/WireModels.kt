@@ -77,6 +77,17 @@ sealed class WireMessage {
 /**
  * host → all, once before the first deal.
  * Establishes rules and seat→player identity for the game.
+ *
+ * [gameGeneration] distinguishes a genuine new-game start (the very first game, or a
+ * Play Again restart — [gameGeneration] strictly greater than any value the receiver
+ * has already applied) from a same-game configuration recovery (a reconnect resend, a
+ * buffered replay, a newly created adapter — [gameGeneration] equal to or less than the
+ * receiver's current value). Only a genuine new-game start may reset players, turn
+ * order, trick state, or score; recovery of an already-active generation must leave all
+ * of that untouched, since a client's own phase alone (e.g. being at `.Finished`) isn't
+ * a reliable signal — a stray recovery message delivered while still at `.Finished`,
+ * before the user has actually chosen Play Again, would otherwise be indistinguishable
+ * from a real restart.
  */
 @Serializable
 @SerialName("gameConfig")
@@ -86,7 +97,8 @@ data class GameConfigMessage(
     override val playerId: String,
     val config: WireGameConfig,
     /** Seat index (as string key) → player info. */
-    val players: Map<String, WireSeatPlayer>
+    val players: Map<String, WireSeatPlayer>,
+    val gameGeneration: Int = 1
 ) : WireMessage()
 
 /**
@@ -140,6 +152,63 @@ data class BlindResponseMessage(
     override val playerId: String,
     val handNum: Int,
     val accepted: Boolean
+) : WireMessage()
+
+/**
+ * host → all, once per hand, always — whether or not any team was eligible for a blind
+ * offer. The host is the sole authority on when the blind phase is over: a non-host
+ * client never independently decides this (it does not run its own eligibility loop at
+ * all — see `PhaseManager.handleBlindBid`'s non-host early return) and must wait for
+ * either a [BlindOfferMessage] (if its own seat is one of the deciding seats) or this
+ * message (once every required response is in, or immediately if no one was eligible)
+ * before leaving `GamePhase.BlindBid`.
+ */
+@Serializable
+@SerialName("blindPhaseComplete")
+data class BlindPhaseCompleteMessage(
+    override val cmdId: String,
+    override val seat: Int,
+    override val playerId: String,
+    val handNum: Int
+) : WireMessage()
+
+/**
+ * non-host client → all (host included).
+ * Sent once when a guest presses "Next Hand" before the host has advanced past
+ * `EndHand`. Purely informational — the host still deals on its own timeline via
+ * its own "Next Hand" press — but gives the host a per-seat readiness signal to
+ * track and gives the guest a real, idempotent action to take instead of dealing
+ * a bogus local hand (see `GameViewModel.onNextHand`'s host-only deal path).
+ * [handNum] is the hand the sender believes just ended, so a late/duplicate
+ * message for an already-superseded hand can be told apart from a current one.
+ */
+@Serializable
+@SerialName("readyForNextHand")
+data class ReadyForNextHandMessage(
+    override val cmdId: String,
+    override val seat: Int,
+    override val playerId: String,
+    val handNum: Int
+) : WireMessage()
+
+/**
+ * non-host client → all (host included).
+ * Sent once when a guest presses "Play Again" at `.Finished` before the host has
+ * started a new game. Purely informational, the same way [ReadyForNextHandMessage]
+ * is for hand transitions — the host still restarts on its own timeline via its own
+ * "Play Again" press, which re-sends [GameConfigMessage] (score/settings reset) and
+ * then a fresh [DealMessage]. [gameGeneration] is the generation the sender currently
+ * has applied — a request tagged for an older generation than the host's current one
+ * is a delayed message from an already-completed game and must be rejected, the same
+ * way [handNum] lets [ReadyForNextHandMessage] tell a current request from a stale one.
+ */
+@Serializable
+@SerialName("requestPlayAgain")
+data class RequestPlayAgainMessage(
+    override val cmdId: String,
+    override val seat: Int,
+    override val playerId: String,
+    val gameGeneration: Int = 1
 ) : WireMessage()
 
 /**

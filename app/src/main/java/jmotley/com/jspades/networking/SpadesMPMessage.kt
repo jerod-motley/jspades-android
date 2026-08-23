@@ -1,8 +1,13 @@
 package jmotley.com.jspades.networking
 
+import android.content.Context
 import android.util.Log
+import jmotley.com.jspades.data.AppConfig
+import jmotley.com.jspades.data.GameLength
+import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.data.OnlineSeat
 import jmotley.com.jspades.data.SeatKind
+import jmotley.com.jspades.data.WireGameConfig
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -807,8 +812,80 @@ fun buildGameState(
 fun buildJoinRoom(roomId: String, playerId: String): String =
     """{"action":"joinRoom","playerId":"$playerId","roomId":"$roomId","gameType":"spades"}"""
 
-fun buildLobbySnapshot(personId: String, roomId: String, seats: List<OnlineSeat>): String {
+// ── Host game settings (lobby display) ────────────────────────────────────────
+//
+// The lobby needs to show the host's authoritative settings (target score, house
+// rules, etc.) before the game starts, sourced from the same host-only prefs used
+// to build the real WireGameConfig at game start — never from a joining client's
+// own local preferences. hostWireGameConfig() is the single place that reads
+// those prefs; toLobbyFields()/parseLobbySettings() carry the resulting
+// WireGameConfig over the flat string-map wire format buildLobbySnapshot/
+// buildStartGame already use, independent of any particular message's schema.
+
+/**
+ * Reads the host device's locally configured game settings into a [WireGameConfig].
+ * Mirrors the settings block in `GameViewModel.startMPSessionIfPending` — that
+ * function should source its `WireGameConfig` from the already-synced lobby
+ * snapshot instead of calling this a second time, so the settings shown in the
+ * lobby and the settings actually applied at game start can never diverge.
+ */
+fun hostWireGameConfig(context: Context, gameType: GameType): WireGameConfig {
+    val prefs = context.getSharedPreferences("jspades_prefs", Context.MODE_PRIVATE)
+    val minBidFiveOn = prefs.getBoolean("min_bid_five", false)
+    return WireGameConfig(
+        gameType                = gameTypeToWireString(gameType),
+        twoOfSpadesJoker        = prefs.getBoolean("two_of_spades_joker", false),
+        twoOfDiamondsJoker      = prefs.getBoolean("two_of_diamonds_joker", false),
+        spadesMustBreak         = prefs.getBoolean("spades_must_break", false),
+        minimumBid              = if (minBidFiveOn && gameType.minimumBid == 4) 5 else gameType.minimumBid,
+        enableSandbagPenalty    = prefs.getBoolean("count_overs", true),
+        allowNilBid             = gameType == GameType.TEAM_CLASSIC,
+        blindNilExchangeEnabled = gameType == GameType.TEAM_CLASSIC && prefs.getBoolean("blind_nil_exchange", false),
+        gameLength              = if (AppConfig.TEST_MODE) GameLength.TEST.name
+                                   else prefs.getString("game_length", GameLength.MEDIUM.name) ?: GameLength.MEDIUM.name
+    )
+}
+
+/** Encodes [this] into the flat string-map fields used by buildLobbySnapshot/buildStartGame. */
+fun WireGameConfig.toLobbyFields(): Map<String, String> = mapOf(
+    "cfgGameType"                to gameType,
+    "cfgTwoOfSpadesJoker"        to twoOfSpadesJoker.toString(),
+    "cfgTwoOfDiamondsJoker"      to twoOfDiamondsJoker.toString(),
+    "cfgEnableDoubleBidBonus"    to enableDoubleBidBonus.toString(),
+    "cfgSpadesMustBreak"         to spadesMustBreak.toString(),
+    "cfgMinimumBid"              to minimumBid.toString(),
+    "cfgEnableSandbagPenalty"    to enableSandbagPenalty.toString(),
+    "cfgAllowNilBid"             to allowNilBid.toString(),
+    "cfgBlindNilExchangeEnabled" to blindNilExchangeEnabled.toString(),
+    "cfgGameLength"              to gameLength
+)
+
+/**
+ * Decodes the fields written by [toLobbyFields] back into a [WireGameConfig].
+ * Returns [fallback] unchanged if the payload has no settings fields at all (e.g. an
+ * older/iOS sender, or a startGame payload that only carries seat info) — never a
+ * half-populated config, so a partial/missing payload can't silently reset settings
+ * a client already knows about.
+ */
+fun parseLobbySettings(payload: Map<String, String>, fallback: WireGameConfig): WireGameConfig {
+    if ("cfgGameType" !in payload) return fallback
+    return WireGameConfig(
+        gameType                = payload["cfgGameType"] ?: fallback.gameType,
+        twoOfSpadesJoker        = payload["cfgTwoOfSpadesJoker"]?.toBooleanStrictOrNull() ?: fallback.twoOfSpadesJoker,
+        twoOfDiamondsJoker      = payload["cfgTwoOfDiamondsJoker"]?.toBooleanStrictOrNull() ?: fallback.twoOfDiamondsJoker,
+        enableDoubleBidBonus    = payload["cfgEnableDoubleBidBonus"]?.toBooleanStrictOrNull() ?: fallback.enableDoubleBidBonus,
+        spadesMustBreak         = payload["cfgSpadesMustBreak"]?.toBooleanStrictOrNull() ?: fallback.spadesMustBreak,
+        minimumBid              = payload["cfgMinimumBid"]?.toIntOrNull() ?: fallback.minimumBid,
+        enableSandbagPenalty    = payload["cfgEnableSandbagPenalty"]?.toBooleanStrictOrNull() ?: fallback.enableSandbagPenalty,
+        allowNilBid             = payload["cfgAllowNilBid"]?.toBooleanStrictOrNull() ?: fallback.allowNilBid,
+        blindNilExchangeEnabled = payload["cfgBlindNilExchangeEnabled"]?.toBooleanStrictOrNull() ?: fallback.blindNilExchangeEnabled,
+        gameLength               = payload["cfgGameLength"] ?: fallback.gameLength
+    )
+}
+
+fun buildLobbySnapshot(personId: String, roomId: String, seats: List<OnlineSeat>, settings: WireGameConfig): String {
     val payload = mutableMapOf("phase" to "lobby")
+    payload.putAll(settings.toLobbyFields())
     seats.forEach { seat ->
         payload["seat${seat.seatIndex}Id"] = seat.playerId ?: ""
         payload["seat${seat.seatIndex}Name"] = seat.displayName ?: ""
@@ -832,10 +909,17 @@ fun buildStartCountdown(personId: String, roomId: String, seconds: Int) =
     MpEnvelope(type = "startCountdown", playerId = personId, roomId = roomId,
         cmdId = cmdId(), payload = mapOf("seconds" to seconds.toString())).toJson()
 
-fun buildStartGame(personId: String, roomId: String, seats: List<OnlineSeat> = emptyList(), countdownSeconds: Int = 5): String {
+fun buildStartGame(
+    personId: String,
+    roomId: String,
+    seats: List<OnlineSeat> = emptyList(),
+    countdownSeconds: Int = 5,
+    settings: WireGameConfig? = null
+): String {
     val payload = buildMap<String, String> {
         put("gameType", "houseRules")
         put("countdownSeconds", countdownSeconds.toString())
+        settings?.let { putAll(it.toLobbyFields()) }
         seats.forEach { s ->
             put("seat${s.seatIndex}Id",   s.playerId   ?: "")
             put("seat${s.seatIndex}Name", s.displayName ?: "")

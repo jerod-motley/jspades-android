@@ -42,6 +42,7 @@ import jmotley.com.jspades.R
 import jmotley.com.jspades.data.*
 import jmotley.com.jspades.models.LobbyUiState
 import jmotley.com.jspades.models.OnlineLobbyViewModel
+import jmotley.com.jspades.networking.wireStringToGameType
 
 private val AccentGold   = Color(0xFFFFD700)
 private val AccentGreen  = Color(0xFF4CAF50)
@@ -233,6 +234,11 @@ private fun LobbyView(
 
         // ── Header ────────────────────────────────────────────────────────────
         LobbyHeader(lobby, onBack)
+
+        // ── Host settings ─────────────────────────────────────────────────────
+        // Always the host's authoritative values (synced via the lobby snapshot),
+        // never a joining player's own local preferences.
+        LobbySettingsCard(lobby.hostSettings)
 
         // ── Diamond ───────────────────────────────────────────────────────────
         Box(
@@ -603,6 +609,75 @@ private fun LobbyHeader(lobby: OnlineLobbyState, onBack: () -> Unit) {
             }
         }
     }
+}
+
+// ── Host settings card ─────────────────────────────────────────────────────────
+
+/**
+ * Displays the room's authoritative settings — always [OnlineLobbyState.hostSettings],
+ * synced from the host via the lobby snapshot, never a joining player's own local
+ * preferences (which may differ from the host's and must not be shown as this room's
+ * settings).
+ */
+@Composable
+private fun LobbySettingsCard(settings: WireGameConfig) {
+    val gameType = wireStringToGameType(settings.gameType) ?: GameType.HOUSE_RULES
+    val gameLength = runCatching { GameLength.valueOf(settings.gameLength) }.getOrDefault(GameLength.MEDIUM)
+    val targetScore = GameState(gameType = gameType, gameLength = gameLength).targetScore
+    val gameLengthLabel = when (gameLength) {
+        GameLength.SHORT  -> "Short"
+        GameLength.MEDIUM -> "Medium"
+        GameLength.LONG   -> "Long"
+        GameLength.TEST   -> "Test"
+    }
+
+    val rules = buildList {
+        if (settings.twoOfSpadesJoker)   add("2♠ Joker")
+        if (settings.twoOfDiamondsJoker) add("2♦ Joker")
+        if (settings.spadesMustBreak)    add("Spades Must Break")
+        if (settings.enableSandbagPenalty) add("Sandbag Penalty")
+        if (settings.allowNilBid)        add("Nil Bidding")
+        if (settings.blindNilExchangeEnabled) add("Blind Nil Exchange")
+        if (settings.enableDoubleBidBonus) add("Double Bid Bonus")
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(PanelBg)
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "$gameLengthLabel Game",
+                color = TextPrimary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = "Playing to $targetScore",
+                color = AccentGold,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "Min bid ${settings.minimumBid}",
+                color = TextSecondary,
+                fontSize = 12.sp
+            )
+        }
+        if (rules.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = rules.joinToString(" · "),
+                color = TextSecondary,
+                fontSize = 11.sp
+            )
+        }
+    }
+    HorizontalDivider(color = DividerColor)
 }
 
 // ── Chat ──────────────────────────────────────────────────────────────────────

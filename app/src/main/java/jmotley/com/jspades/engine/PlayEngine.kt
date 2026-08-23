@@ -316,7 +316,7 @@ object PlayEngine {
         // Apply regardless of position (not just last) to consistently help nil bidders succeed.
         if (classic) {
             val winnerPhs   = winner?.let { getHandState(state, it.playerId) }
-            val winnerIsNil = winnerPhs?.bid == 0 && winnerPhs.tricksWon == 0
+            val winnerIsNil = winnerPhs?.bidPlaced == true && winnerPhs.bid == 0 && winnerPhs.tricksWon == 0
                     && !isTeammateWin
             if (winnerIsNil) {
                 if (!hasLead) return throwOff(hand, state)  // void: don't cut
@@ -329,8 +329,14 @@ object PlayEngine {
             val rightOpp    = rightOpponent(player, state)
             val teammatePhs = teammate?.let { getHandState(state, it.id) }
             return when {
-                // Nil-bidding teammate is winning: cut to rescue their nil
-                isTeammateWin && teammatePhs?.bid == 0 -> cut(player, hand, state)
+                // Nil-bidding teammate is winning: cut to rescue their nil. Only applies in
+                // Classic, where nil is a real declared bid with its own scoring — House Rules/
+                // Kitty team bids don't have individual nil, so a teammate's bid of 0 there is
+                // just their (possibly unset) share of the team total, not a nil to protect.
+                // Also require the nil to still be intact and the bid to have actually been
+                // placed, not left at PlayerHandState's default.
+                classic && isTeammateWin && teammatePhs?.bidPlaced == true && teammatePhs.bid == 0
+                        && teammatePhs.tricksWon == 0 -> cut(player, hand, state)
                 // Partner winning with trump → throw off (never overtrump your own partner)
                 isTeammateWin && winnerCard != null && isTrump(winnerCard) -> throwOff(hand, state)
                 // Partner winning with King → throw off (King is already the top play)
@@ -360,10 +366,11 @@ object PlayEngine {
         }
 
         // Non-trump lead, has cards in suit
-        // Rescue nil-bidding teammate: beat them with the lowest winning card in suit
-        if (isTeammateWin) {
+        // Rescue nil-bidding teammate: beat them with the lowest winning card in suit.
+        // Classic-only for the same reason as the void-in-suit case above.
+        if (classic && isTeammateWin) {
             val teammatePhs = teammate?.let { getHandState(state, it.id) }
-            if (teammatePhs?.bid == 0) {
+            if (teammatePhs?.bidPlaced == true && teammatePhs.bid == 0 && teammatePhs.tricksWon == 0) {
                 val suitCards = hand.filter { followsSuit(it, lead) }
                 val beating   = suitCards.filter { it.rank.ordinal > (winnerCard?.rank?.ordinal ?: -1) }
                 return beating.minByOrNull { it.rank.ordinal } ?: throwOff(hand, state)
@@ -410,7 +417,7 @@ object PlayEngine {
         // If current winner bid nil and has no tricks yet, don't set them (let them win).
         // Apply regardless of position so we consistently help nil bidders succeed.
         val winnerPhs   = winner?.let { getHandState(state, it.playerId) }
-        val winnerIsNil = winnerPhs?.bid == 0 && winnerPhs.tricksWon == 0
+        val winnerIsNil = winnerPhs?.bidPlaced == true && winnerPhs.bid == 0 && winnerPhs.tricksWon == 0
         if (winnerIsNil) {
             if (!hasLead) return throwOff(hand, state)
             return hand.filter { followsSuit(it, lead) }.minBy { it.rank.ordinal }

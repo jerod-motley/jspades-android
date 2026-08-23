@@ -112,7 +112,13 @@ class OnlineSession(
             localDisplayName = displayName,
             isHost = isHost,
             seats = initialSeats
-        )
+        ).let { base ->
+            // MP currently always plays House Rules (see buildStartGame's hardcoded
+            // "gameType":"houseRules") — mirrors that here so the lobby's target-score
+            // display matches what the game actually starts as. A guest keeps the
+            // OnlineLobbyState default until the host's first snapshot arrives.
+            if (isHost) base.copy(hostSettings = hostWireGameConfig(context, GameType.HOUSE_RULES)) else base
+        }
 
         socket = GameSocketClient(
             context = context,
@@ -199,7 +205,7 @@ class OnlineSession(
         val state = _lobby.value ?: return
         if (!state.isHost) return
         logD("sendLobbySnapshot seats=${state.seats.map { "${it.seatIndex}:${it.kind}" }}")
-        socket.send(buildLobbySnapshot(state.localPlayerId, state.roomId, state.seats))
+        socket.send(buildLobbySnapshot(state.localPlayerId, state.roomId, state.seats, state.hostSettings))
     }
 
     // ── Incoming message dispatch ─────────────────────────────────────────────
@@ -401,10 +407,12 @@ class OnlineSession(
             }
         }
         logI("SNAPSHOT applied: ${seats.map { "${it.seatIndex}:${it.kind}:${it.displayName}" }}")
+        val settings = parseLobbySettings(msg.payload, fallback = state.hostSettings)
 
         _lobby.value = state.copy(
             seats = seats,
-            hostPlayerId = seats.firstOrNull { it.isHost }?.playerId ?: state.hostPlayerId
+            hostPlayerId = seats.firstOrNull { it.isHost }?.playerId ?: state.hostPlayerId,
+            hostSettings = settings
         )
     }
 
@@ -476,6 +484,7 @@ class OnlineSession(
         // clear all player IDs and break localSeatIndex for the guest.
         val hasSeatKeys = (0..3).any { msg.payload.containsKey("seat${it}Id") }
         if (state != null) {
+            val settings = parseLobbySettings(msg.payload, fallback = state.hostSettings)
             if (hasSeatKeys) {
                 val seats = (0..3).map { i ->
                     val id      = msg.payload["seat${i}Id"]?.takeIf { it.isNotBlank() }
@@ -485,10 +494,10 @@ class OnlineSession(
                     OnlineSeat(i, id, name, isHost = i == 0, kind = kind)
                 }
                 logI("START GAME seats: ${seats.map { "${it.seatIndex}:${it.kind}:${it.displayName}" }}")
-                _lobby.value = state.copy(seats = seats, status = LobbyStatus.Starting)
+                _lobby.value = state.copy(seats = seats, status = LobbyStatus.Starting, hostSettings = settings)
             } else {
                 logI("START GAME — no seat keys in payload, preserving snapshot seat layout")
-                _lobby.value = state.copy(status = LobbyStatus.Starting)
+                _lobby.value = state.copy(status = LobbyStatus.Starting, hostSettings = settings)
             }
         }
         // Always start the countdown when startGame arrives and no countdown is running yet.
@@ -598,7 +607,7 @@ class OnlineSession(
 
             // 2. Broadcast startGame with final seat map.
             // Host's engine deals locally once the play screen opens; game object is broadcast from there.
-            socket.send(buildStartGame(pid, room, finalSeats))
+            socket.send(buildStartGame(pid, room, finalSeats, settings = state.hostSettings))
 
             // 3. Run the same 5-second countdown the clients are showing, then navigate.
             runCountdownThenNavigate(5)

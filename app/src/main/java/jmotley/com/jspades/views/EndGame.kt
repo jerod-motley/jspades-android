@@ -87,7 +87,17 @@ fun EndGameView(
 
             Spacer(Modifier.height(8.dp))
 
+            // A non-host multiplayer client can't restart the game for real — it must ask
+            // the host and wait, instead of resetting itself to a bogus local game (see
+            // GameViewModel.requestPlayAgainFromHost). Single-player and the MP host both
+            // still restart directly via playAgain().
+            val isNonHostMP = viewModel.mpAdapter != null && !viewModel.isMPHost
+            val waitingForHost = isNonHostMP && state.mpPlayAgainRequested
+
             // ── Buttons ───────────────────────────────────────────────────────
+            // Home stays available on purpose — a client waiting on the host must still be
+            // able to leave. "Play Again" is replaced outright by a standalone waiting
+            // message while waiting, not merely disabled in place.
             Row(
                 modifier              = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -98,11 +108,22 @@ fun EndGameView(
                 ) {
                     Text("Home", color = Color.White)
                 }
-                Button(
-                    onClick  = { viewModel.playAgain() },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("Play Again")
+                if (waitingForHost) {
+                    Box(
+                        modifier = Modifier.weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("Waiting for host...", color = Color.White.copy(alpha = 0.75f))
+                    }
+                } else {
+                    Button(
+                        onClick  = {
+                            if (isNonHostMP) viewModel.requestPlayAgainFromHost() else viewModel.playAgain()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Play Again")
+                    }
                 }
             }
         }

@@ -104,6 +104,40 @@ fun EndHandView(
                 modifier            = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // A non-host multiplayer client can't deal for real — it must ask the host
+                // and wait, instead of dealing itself a bogus local hand (see
+                // GameViewModel.requestNextHandFromHost). Single-player and the MP host
+                // both still deal directly via onNextHand().
+                val isNonHostMP = viewModel.mpAdapter != null && !viewModel.isMPHost
+                val waitingForHost = isNonHostMP && state.mpNextHandRequested
+
+                // Home stays available on purpose — a client waiting on the host must still
+                // be able to leave (see the bug's own "reset if... the player leaves"
+                // clause). Every other action control (Next Hand, Replay Hand, the reward-ad
+                // replay) is replaced outright by a standalone waiting message while
+                // waiting, not merely disabled in place, matching "remove... the action
+                // buttons... replace them with the message."
+                if (waitingForHost) {
+                    Row(
+                        modifier              = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick  = { showHomeDialog = true },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Home", color = Color.White)
+                        }
+                        Box(
+                            modifier = Modifier.weight(1f),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("Waiting for host...", color = Color.White.copy(alpha = 0.75f))
+                        }
+                    }
+                    return@Column
+                }
+
                 Row(
                     modifier              = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -115,7 +149,9 @@ fun EndHandView(
                         Text("Home", color = Color.White)
                     }
                     Button(
-                        onClick  = { viewModel.onNextHand() },
+                        onClick  = {
+                            if (isNonHostMP) viewModel.requestNextHandFromHost() else viewModel.onNextHand()
+                        },
                         modifier = Modifier.weight(1f)
                     ) {
                         Text("Next Hand")
