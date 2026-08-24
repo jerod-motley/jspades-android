@@ -44,6 +44,7 @@ class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
     val navigateToPlay: SharedFlow<Unit> = _navigateToPlay
 
     private var playTransitionStarted = false
+	private var lastJoinCode = ""
 
     val personId: String = getOrCreatePersonId(app)
     val displayName: String = app.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
@@ -56,7 +57,7 @@ class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
             session.socketState.collect { socketState ->
                 val lobby = session.lobby.value ?: return@collect
                 when (socketState) {
-                    SocketState.Connected -> pushInLobby(lobby)
+                    SocketState.Connected -> if (session.roomJoined.value) pushInLobby(lobby)
                     SocketState.Connecting -> if (_uiState.value !is LobbyUiState.InLobby) {
                         _uiState.value = LobbyUiState.Connecting
                     }
@@ -66,6 +67,16 @@ class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+		viewModelScope.launch {
+			session.roomJoined.collect { joined ->
+				if (joined) session.lobby.value?.let(::pushInLobby)
+			}
+		}
+		viewModelScope.launch {
+			session.joinError.collect { message ->
+				_uiState.value = LobbyUiState.JoinEntry(codeInput = lastJoinCode, error = message)
+			}
+		}
         viewModelScope.launch {
             session.lobby.collect { lobby ->
                 if (lobby != null && session.socketState.value == SocketState.Connected) {
@@ -184,12 +195,13 @@ class OnlineLobbyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun startJoin(rawCode: String) {
-        val code = rawCode.trim()
-        if (code.length < 4) {
+        val code = rawCode.trim().uppercase()
+        if (code.length != 6 || code.any { it !in "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" }) {
             _uiState.value = LobbyUiState.JoinEntry(codeInput = rawCode, error = "Enter a valid room code")
             return
         }
         playTransitionStarted = false
+		lastJoinCode = code
         _uiState.value = LobbyUiState.Connecting
         MPSession.session = session
         MPSession.isHost = false

@@ -37,7 +37,7 @@ data class WireSeatPlayer(
     val playerId: String,
     val displayName: String,
     /** Roster identity, independent of which device executes the seat. */
-    val kind: String
+    val kind: String = ""
 )
 
 /**
@@ -225,7 +225,7 @@ data class BidMessage(
     val amount: Int,
     val isBlind: Boolean,
     /** True only when this bid commits the complete team contract. */
-    val isTeamTotal: Boolean
+    val isTeamTotal: Boolean? = null
 ) : WireMessage()
 
 /**
@@ -244,4 +244,14 @@ data class PlayCardMessage(
     val trickPlayNum: Int,
     /** Matches [WireCard.id] — 0-based `{rank}_{suit}` (e.g. "12_3" for Ace♠). */
     val cardId: String
+) : WireMessage()
+
+/** Receipt-only acknowledgement. Duplicate commands are acknowledged again. */
+@Serializable
+@SerialName("receiptAck")
+data class ReceiptAckMessage(
+    override val cmdId: String,
+    override val seat: Int,
+    override val playerId: String,
+    val ackedCmdId: String
 ) : WireMessage()

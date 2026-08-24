@@ -16,7 +16,7 @@ import jmotley.com.jspades.data.PlayerType
 import jmotley.com.jspades.data.playerTypeById
 import jmotley.com.jspades.data.Rank
 import jmotley.com.jspades.data.Suit
-import jmotley.com.jspades.data.displaySortOrder
+import jmotley.com.jspades.data.sortedForDisplay
 import jmotley.com.jspades.data.AnimationEvent
 import jmotley.com.jspades.data.toSnapshot
 import jmotley.com.jspades.data.ReplayEvent
@@ -211,7 +211,7 @@ class PhaseManager(
         val cpp = gt.cardsPerPlayer
         val dealt = ids.mapIndexed { i, id ->
             id to shuffled.subList(i * cpp, (i + 1) * cpp)
-                .sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
+                .sortedForDisplay()
         }.toMap()
         val perPlayer = dealt.mapValues { (_, cards) -> PlayerHandState(hand = cards) }
         viewModel.applyDeal(Hand(playerOrder = ids, perPlayer = perPlayer))
@@ -243,7 +243,7 @@ class PhaseManager(
         val cpp = gt.cardsPerPlayer
         val dealt = ids.mapIndexed { i, id ->
             id to playerCards.subList(i * cpp, (i + 1) * cpp)
-                .sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
+                .sortedForDisplay()
         }.toMap()
         val perPlayer = dealt.mapValues { (_, cards) -> PlayerHandState(hand = cards) }
 
@@ -286,7 +286,7 @@ class PhaseManager(
         val perPlayer = mapOf(
             ids[0] to PlayerHandState(),   // south — empty until pick UI runs
             ids[1] to PlayerHandState(
-                hand = cpuHand.sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
+                hand = cpuHand.sortedForDisplay()
             )
         )
         viewModel.applyDeal(Hand(playerOrder = ids, perPlayer = perPlayer))
@@ -566,7 +566,7 @@ class PhaseManager(
             val blindResult = BidEngine.shouldCpuBidBlind(hand, player, s)
             Log.d(MP_TAG, "handleBlindBid CPU ${player.id} blindResult=${if (blindResult != null) "bid=${blindResult.bid}" else "skip"}")
             if (blindResult != null) {
-                viewModel.submitBid(player.id, blindResult.bid, blindResult.isBlind)
+				viewModel.applyAcceptedBlindBid(player.id)
             }
             viewModel.broadcastCPUBlindResponse(player.id, blindResult != null)
             viewModel.markBlindDecision(player.id)
@@ -596,7 +596,9 @@ class PhaseManager(
      */
     private suspend fun handleBlindExchange() {
         val s = viewModel.state.value
-        if (!s.allowBlindExchange || s.gameType != GameType.TEAM_CLASSIC) {
+		// Card exchange has no shared MP wire action. Both platforms must skip it online;
+		// applying it locally would immediately give peers different hands.
+		if (viewModel.mpAdapter != null || !s.allowBlindExchange || s.gameType != GameType.TEAM_CLASSIC) {
             viewModel.advancePhase(GamePhase.Bid)
             dispatch()
             return
@@ -736,9 +738,6 @@ class PhaseManager(
 
         for (teamId in teamOrder) {
             val teamPlayers    = s.players.filter { it.team == teamId }
-            val humanOnTeam    = teamPlayers.any { it.playerType == PlayerType.HUMAN }
-            val humanAlreadyBid = s.players.find { it.playerType == PlayerType.HUMAN }?.runtimeFlags?.didBid ?: false
-
             // Check if this team is already committed to a blind bid (set by a previous CPU on the team)
             val teamAlreadyBlind = s.phaseHands[GamePhase.Deal]?.lastOrNull()
                 ?.teamBlind?.getOrNull(teamId) ?: false
@@ -761,20 +760,6 @@ class PhaseManager(
                     Log.d(MP_TAG, "handleBidHouseRules team=$teamId nextCPU=${nextBidder.id} isTeamTotal=$isTeamTotal")
                     val cards = getPlayerHand(s, nextBidder.id)
                     val result = BidEngine.computeCpuBid(cards, nextBidder, s)
-
-                    if (result.isBlind) {
-                        // Team goes blind: commit combined bid of 7, auto-fill all teammates
-                        viewModel.submitBid(nextBidder.id, 0, false)
-                        viewModel.broadcastCPUBid(nextBidder.id, 7, isBlind = true, isTeamTotal = true)
-                        teamPlayers.filter { it.id != nextBidder.id }.forEach { p ->
-                            viewModel.submitBid(p.id, 0, false)
-                            viewModel.broadcastCPUBid(p.id, 0, isBlind = false)
-                        }
-                        viewModel.setTeamBid(teamId, 7)
-                        viewModel.setTeamBlind(teamId, true)
-                        viewModel.emitAnimation(AnimationEvent.BidPlaced(nextBidder.id, 7))
-                        return
-                    }
 
                     viewModel.submitBid(nextBidder.id, result.bid, result.isBlind)
                     val wireAmount = if (isTeamTotal) {

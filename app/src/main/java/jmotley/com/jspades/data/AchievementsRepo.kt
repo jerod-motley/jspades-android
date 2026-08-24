@@ -242,10 +242,12 @@ object AchievementsRepo {
         if (humanTeamTricks == state.gameType.cardsPerPlayer) mark(ctx, AchievementIds.GOT_ALL)
 
         // GotNil — south bid nil and took zero tricks
-        if (southPhs.bid == 0 && southPhs.tricksWon == 0) mark(ctx, AchievementIds.GOT_NIL)
+		if (southPhs.bidPlaced && southPhs.bid == 0 && southPhs.tricksWon == 0) mark(ctx, AchievementIds.GOT_NIL)
 
         // GotBlindNil — south went blind-nil successfully
-        if (southPhs.isBlind && southPhs.tricksWon == 0) mark(ctx, AchievementIds.GOT_BLIND_NIL)
+		if (southPhs.bidPlaced && southPhs.bid == 0 && southPhs.isBlind && southPhs.tricksWon == 0) {
+			mark(ctx, AchievementIds.GOT_BLIND_NIL)
+		}
 
         // GotTen — south took 10 or more tricks
         if (southPhs.tricksWon >= 10) mark(ctx, AchievementIds.GOT_TEN)

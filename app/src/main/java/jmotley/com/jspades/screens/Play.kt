@@ -132,6 +132,7 @@ fun PlayScreen(
             AchievementsRepo.clearActiveChallenge(context)
             AdManager.hideBanner()
             MPSession.session?.rawMessageHook = null
+			MPSession.session?.onConnectionLost = null
         }
     }
 
@@ -444,7 +445,19 @@ fun PlayScreen(
 
             // ── Blind bid (pre-deal decision) ─────────────────────────────────
             // BlindBid: engine-driven, show hand (cards face-down still dealt — show hand frame)
-            GamePhase.BlindBid -> { /* engine processing — no special UI */ }
+            GamePhase.BlindBid -> {
+				val waitingOnRemoteBlindDecision = viewModel.isMPHost && state.players.any {
+					it.playerType == PlayerType.MP && !it.runtimeFlags.didBlindDecide
+				}
+				if (waitingOnRemoteBlindDecision) {
+					Text(
+						text = "Waiting for opponents to choose blind bid",
+						color = Color.White,
+						style = MaterialTheme.typography.titleMedium,
+						modifier = Modifier.align(Alignment.Center)
+					)
+				}
+			}
 
             // BlindBidHuman: show the decision panel over the table
             GamePhase.BlindBidHuman -> {

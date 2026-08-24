@@ -34,18 +34,12 @@ import androidx.compose.ui.unit.sp
 import jmotley.com.jspades.data.GamePhase
 import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.GameType
+import jmotley.com.jspades.data.formatBidForDisplay
 import jmotley.com.jspades.models.GameViewModel
 
 private val GOLD   = Color(0xFFFFD700)
 private val PANEL  = Color(0xEE0A0A14)   // near-black, slightly blue-tinted
 private val HEADER = Color.White
-
-private fun formatBidEnd(bid: Int, isBlind: Boolean): String = when {
-    bid == 0 && isBlind -> "B Nil"
-    bid == 0            -> "Nil"
-    isBlind             -> "B$bid"
-    else                -> "$bid"
-}
 
 /**
  * End-of-hand summary overlay. Shows each team's (or player's) bid, tricks taken,
@@ -233,7 +227,7 @@ private fun ClassicTeamStatsTable(
     // Individual bids
     StatRow("Bid", *ordered.map { p ->
         val phs = dealHand?.perPlayer?.get(p.id)
-        formatBidEnd(phs?.bid ?: 0, phs?.isBlind ?: false)
+		formatBidForDisplay(phs?.bid ?: 0, phs?.isBlind ?: false)
     }.toTypedArray())
 
     // Individual tricks won
@@ -312,12 +306,12 @@ private fun TeamStatsTable(
         val ptnrBid    = partnerFor(humanTeam)?.let { dealHand?.perPlayer?.get(it.id)?.bid } ?: humanBid
         val nilIsBlind = nilPlayerFor(humanTeam)?.let { dealHand?.perPlayer?.get(it.id)?.isBlind } ?: false
         if (nilIsBlind) "B Nil+$ptnrBid" else "Nil+$ptnrBid"
-    } else formatBidEnd(humanBid, humanTeamBlind)
+	} else formatBidForDisplay(humanBid, humanTeamBlind)
     val oppBidStr = if (oppHasBreakdown) {
         val ptnrBid    = partnerFor(oppTeam)?.let { dealHand?.perPlayer?.get(it.id)?.bid } ?: oppBid
         val nilIsBlind = nilPlayerFor(oppTeam)?.let { dealHand?.perPlayer?.get(it.id)?.isBlind } ?: false
         if (nilIsBlind) "B Nil+$ptnrBid" else "Nil+$ptnrBid"
-    } else formatBidEnd(oppBid, oppTeamBlind)
+	} else formatBidForDisplay(oppBid, oppTeamBlind)
     StatRow("Bid", humanBidStr, oppBidStr)
 
     // Tricks
@@ -397,7 +391,7 @@ private fun SoloStatsTable(
     // Bid
     StatRow("Bid", *ordered.map { p ->
         val phs = dealHand?.perPlayer?.get(p.id)
-        formatBidEnd(phs?.bid ?: 0, phs?.isBlind ?: false)
+		formatBidForDisplay(phs?.bid ?: 0, phs?.isBlind ?: false)
     }.toTypedArray())
 
     // Won

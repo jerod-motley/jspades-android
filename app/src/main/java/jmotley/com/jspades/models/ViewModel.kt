@@ -46,6 +46,24 @@ import android.util.Log
 
 private const val MP_TAG = "WSSMP"
 
+internal fun Hand.withAcceptedBlindBid(
+	playerId: String,
+	teamId: Int,
+	bid: Int,
+	usesTeamContract: Boolean
+): Hand {
+	val perPlayerCopy = perPlayer.toMutableMap()
+	perPlayerCopy[playerId] = (perPlayerCopy[playerId] ?: PlayerHandState()).copy(
+		bid = bid, bidPlaced = true, isBlind = true
+	)
+	if (!usesTeamContract) return copy(perPlayer = perPlayerCopy)
+	val teamBidsCopy = teamBids.toMutableList()
+	val teamBlindCopy = teamBlind.toMutableList()
+	if (teamId in teamBidsCopy.indices) teamBidsCopy[teamId] = bid
+	if (teamId in teamBlindCopy.indices) teamBlindCopy[teamId] = true
+	return copy(perPlayer = perPlayerCopy, teamBids = teamBidsCopy, teamBlind = teamBlindCopy)
+}
+
 class GameViewModel(application: Application) : AndroidViewModel(application), MPAdapterDelegate {
 	private val context: Context get() = getApplication<Application>().applicationContext
 
@@ -232,6 +250,37 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	}
 
 	/**
+	 * Apply an accepted pre-bid blind decision to the current hand.
+	 *
+	 * The wire response intentionally carries only `accepted`; the numeric bid is derived
+	 * from the synchronized game type. Team-bidding modes must update both the player and
+	 * team contract fields because play stats and scoring read [Hand.teamBids] and
+	 * [Hand.teamBlind].
+	 */
+	fun applyAcceptedBlindBid(playerId: String) {
+		val s = _state.value
+		val player = s.players.find { it.id == playerId } ?: return
+		val blindBid = when (s.gameType) {
+			GameType.TEAM_CLASSIC, GameType.SOLO_FOUR_MAN -> 0
+			else -> 7
+		}
+		val phaseHands = s.phaseHands.toMutableMap()
+		val dealHands = phaseHands[GamePhase.Deal]?.toMutableList() ?: return
+		val hand = dealHands.lastOrNull() ?: return
+		dealHands[dealHands.lastIndex] = hand.withAcceptedBlindBid(
+			playerId, player.team, blindBid,
+			usesTeamContract = s.gameType.useTeams && s.gameType != GameType.TEAM_CLASSIC
+		)
+		phaseHands[GamePhase.Deal] = dealHands
+		val players = s.players.map { p ->
+			if (p.id == playerId) p.copy(runtimeFlags = p.runtimeFlags.copy(didBid = true)) else p
+		}
+		_state.value = s.copy(players = players, phaseHands = phaseHands)
+		recordReplayEvent(ReplayEvent.Bid(playerId, blindBid, true))
+		PlayLogger.logBid(playerId, blindBid, true)
+	}
+
+	/**
 	 * House Rules human bid: the human enters the team total after seeing their
 	 * CPU partner's individual bid. Stores the team bid and hands control to the engine.
 	 */
@@ -239,11 +288,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val turn = currentTeamBidTurn(teamId) ?: return
 		if (turn.first.id != localPlayerId) return
 		val isTeamTotal = turn.second
+		submitBid(localPlayerId, bid, false)
 		if (isTeamTotal) setTeamBid(teamId, bid)
-		val players = _state.value.players.map { p ->
-			if (p.id == localPlayerId) p.copy(runtimeFlags = p.runtimeFlags.copy(didBid = true)) else p
-		}
-		_state.value = _state.value.copy(players = players)
 		// The first teammate's bid is preliminary. The second teammate (preferably human)
 		// commits the complete team contract.
 		mpAdapter?.let { adapter ->
@@ -275,7 +321,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val discardUids = discards.map { it.uid }.toSet()
 		val newHand = (phs.hand + kittyCards)
 			.filter { it.uid !in discardUids }
-			.sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
+			.sortedForDisplay()
 		perPlayer[winnerId] = phs.copy(hand = newHand)
 		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
 		phaseHands[GamePhase.Deal] = dealHands
@@ -456,7 +502,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 
 		val humanState   = perPlayer[localPlayerId] ?: PlayerHandState()
 		val newHumanHand = (humanState.hand + humanCard)
-			.sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
+			.sortedForDisplay()
 		perPlayer[localPlayerId] = humanState.copy(hand = newHumanHand)
 
 		val cpp       = current.gameType.cardsPerPlayer
@@ -473,7 +519,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			val cpuCard = if (kotlin.random.Random.nextBoolean()) cpuTop else cpuNext
 			perPlayer[cpuId] = cpuState.copy(
 				hand = (cpuState.hand + cpuCard)
-					.sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
+					.sortedForDisplay()
 			)
 		}
 		val bothDone = humanDone && (perPlayer[cpuId]?.hand?.size ?: 0) >= cpp
@@ -542,13 +588,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	fun submitHumanBlindBid(goBlind: Boolean, localPlayerId: String) {
 		var resultingBid: Int? = null
 		if (goBlind) {
-			val s = _state.value
-			val blindBid = when (s.gameType) {
+			resultingBid = when (_state.value.gameType) {
 				GameType.TEAM_CLASSIC, GameType.SOLO_FOUR_MAN -> 0
 				else -> 7
 			}
-			resultingBid = blindBid
-			submitBid(localPlayerId, blindBid, isBlind = true)
+			applyAcceptedBlindBid(localPlayerId)
 		}
 		markBlindDecision(localPlayerId)
 		// Every MP client sends its own human action (not host-only); CPU actions are host-only.
@@ -578,9 +622,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val toCardUids = toCards.map { it.uid }.toSet()
 
 		val newFromHand = (fromPhs.hand.filter { it.uid !in fromCardUids } + toCards)
-			.sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
+			.sortedForDisplay()
 		val newToHand = (toPhs.hand.filter { it.uid !in toCardUids } + fromCards)
-			.sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
+			.sortedForDisplay()
 
 		perPlayer[fromId] = fromPhs.copy(hand = newFromHand)
 		perPlayer[toId] = toPhs.copy(hand = newToHand)
@@ -974,7 +1018,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		fun isRosterCpu(player: Player): Boolean {
 			val canonicalIdx = listOf("south", "west", "north", "east").indexOf(player.id)
 			val roomSeat = if (canonicalIdx >= 0) canonicalIdxToRoomSeat(canonicalIdx) else -1
-			return mpRoomSeatPlayers[roomSeat.toString()]?.kind == "cpu" ||
+			val wirePlayer = mpRoomSeatPlayers[roomSeat.toString()]
+			return (wirePlayer?.kind == "cpu" || wirePlayer?.playerId?.startsWith("cpu-") == true) ||
 				(mpRoomSeatPlayers.isEmpty() && player.playerType == PlayerType.CPU)
 		}
 		if (ordered.count(::isRosterCpu) == 1) {
@@ -997,6 +1042,13 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		mpAdapter = adapter
 		localMPSeat = localSeat
 		Log.d(MP_TAG, "attachMPAdapter localSeat=$localSeat")
+	}
+
+	fun clearMPWaitingState() {
+		_state.value = _state.value.copy(
+			mpNextHandRequested = false,
+			mpPlayAgainRequested = false
+		)
 	}
 
 	/**
@@ -1107,9 +1159,13 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			scope         = viewModelScope
 		)
 		session.rawMessageHook = adapter::receive
+		session.onConnectionLost = ::clearMPWaitingState
 		attachMPAdapter(adapter, localSeat)
 
 		if (MPSession.isHost) {
+			check(gameType == GameType.HOUSE_RULES) {
+				"Multiplayer currently supports House Rules only"
+			}
 			val seatPlayers = buildMap<String, WireSeatPlayer> {
 				(0 until 4).forEach { i ->
 					val seat = lobby.seats.find { it.seatIndex == i }
@@ -1120,20 +1176,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 					))
 				}
 			}
-			// Source from the lobby's already-synced settings (read once from host prefs when
-			// the room was created / lobby snapshot sent) rather than re-reading prefs here —
-			// so the settings shown in the lobby and the settings actually applied at game
-			// start can never diverge. lobby.hostSettings was built via hostWireGameConfig()
-			// against GameType.HOUSE_RULES (MP is House Rules-only today — see buildStartGame's
-			// hardcoded "gameType":"houseRules"), which is only valid to reuse verbatim when the
-			// resolved gameType here actually is HOUSE_RULES too. If that ever changes, re-derive
-			// straight from prefs for the real gameType rather than risk silently wrong
-			// minimumBid/allowNilBid/blindNilExchangeEnabled values from the mismatched base.
-			val wireConfig = if (gameType == GameType.HOUSE_RULES) {
-				lobby.hostSettings.copy(gameType = gameTypeToWireString(gameType))
-			} else {
-				hostWireGameConfig(context, gameType)
-			}
+			// MP is House Rules-only today. The check above forces this configuration path to
+			// be revisited before another game type can silently reuse House Rules settings.
+			val wireConfig = lobby.hostSettings.copy(gameType = gameTypeToWireString(gameType))
 			onMPHostLobbyComplete(
 				seatPlayers      = seatPlayers,
 				config           = wireConfig,
@@ -1319,7 +1364,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 				id           = canonicalId,
 				name         = wirePlayer?.displayName ?: canonicalId,
 				team         = if (gameType.useTeams && canonicalIdx % 2 == 1) 1 else 0,
-				playerType   = if (roomSeat == localMPSeat) PlayerType.HUMAN else PlayerType.MP,
+				playerType   = when {
+					roomSeat == localMPSeat -> PlayerType.HUMAN
+					wirePlayer?.kind == "cpu" || wirePlayer?.playerId?.startsWith("cpu-") == true -> PlayerType.CPU
+					else -> PlayerType.MP
+				},
 				runtimeFlags = RuntimeFlags(seatIndex = canonicalIdx)
 			)
 		}
@@ -1373,7 +1422,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 				val roomSeat     = seatKey.toIntOrNull() ?: continue
 				val canonicalIdx = (roomSeat - localMPSeat + n) % n
 				val canonicalId  = canonicalIds.getOrElse(canonicalIdx) { "seat$roomSeat" }
-				val sorted = cards.sortedWith(compareBy({ it.suit.displaySortOrder }, { it.rank.ordinal }))
+				val sorted = cards.sortedForDisplay()
 				put(canonicalId, PlayerHandState(hand = sorted))
 			}
 		}
@@ -1441,11 +1490,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		Log.d(MP_TAG, "onBlindResponse seat=$seat canonicalId=$canonicalId accepted=$accepted handNum=$handNum phaseBefore=$blindPhaseBefore")
 		markBlindDecision(canonicalId)
 		if (accepted) {
-			val blindBid = when (_state.value.gameType) {
-				GameType.TEAM_CLASSIC, GameType.SOLO_FOUR_MAN -> 0
-				else -> 7
-			}
-			submitBid(canonicalId, blindBid, isBlind = true)
+			applyAcceptedBlindBid(canonicalId)
 		}
 		advancePhase(GamePhase.BlindBid)
 		phaseManager.execute()
@@ -1475,16 +1520,18 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		}
 	}
 
-	override fun onBid(seat: Int, amount: Int, isBlind: Boolean, isTeamTotal: Boolean, handNum: Int) {
+	override fun onBid(seat: Int, amount: Int, isBlind: Boolean, isTeamTotal: Boolean?, handNum: Int) {
 		if (handNum != mpCurrentHandNum) {
 			Log.w(MP_TAG, "onBid DROPPED stale handNum=$handNum current=$mpCurrentHandNum seat=$seat")
 			return
 		}
 		val canonicalId = roomSeatToCanonicalId(seat)
 		val remotePlayer = _state.value.players.find { it.id == canonicalId } ?: return
+		var resolvedTeamTotal = isTeamTotal
 		if (_state.value.gameType in setOf(GameType.HOUSE_RULES, GameType.TEAM_KITTY)) {
 			val turn = currentTeamBidTurn(remotePlayer.team)
-			if (turn == null || turn.first.id != canonicalId || turn.second != isTeamTotal) {
+			resolvedTeamTotal = isTeamTotal ?: turn?.second
+			if (turn == null || turn.first.id != canonicalId || turn.second != resolvedTeamTotal) {
 				Log.w(MP_TAG, "onBid DROPPED unexpected team bidder seat=$seat amount=$amount isTeamTotal=$isTeamTotal")
 				return
 			}
@@ -1494,7 +1541,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		submitBid(canonicalId, amount, isBlind)
 		// CPU bids are shown to the human as guidance. A human bid is the final team
 		// contract, so retain it verbatim instead of adding it to the partner's bid.
-		if (_state.value.gameType in setOf(GameType.HOUSE_RULES, GameType.TEAM_KITTY) && isTeamTotal) {
+		if (_state.value.gameType in setOf(GameType.HOUSE_RULES, GameType.TEAM_KITTY) && resolvedTeamTotal == true) {
 			val teamId = _state.value.players.find { it.id == canonicalId }?.team
 			if (teamId != null) setTeamBid(teamId, amount)
 		}

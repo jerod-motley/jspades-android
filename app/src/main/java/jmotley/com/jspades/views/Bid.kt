@@ -31,19 +31,12 @@ import jmotley.com.jspades.data.GamePhase
 import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.data.effectiveMinBid
+import jmotley.com.jspades.data.formatBidForDisplay
 import jmotley.com.jspades.models.GameViewModel
 
 private const val MAX_BID = 13
 
 private data class BidRow(val name: String, val bid: Int?, val hasBid: Boolean, val isBlind: Boolean)
-
-/** "B7", "Nil", "B0" (blind nil), or the plain number. */
-private fun formatBid(bid: Int, isBlind: Boolean): String = when {
-    bid == 0 && isBlind -> "B Nil"
-    bid == 0            -> "Nil"
-    isBlind             -> "B$bid"
-    else                -> "$bid"
-}
 
 /**
  * Bid panel: shown during [GamePhase.Bid], [GamePhase.BidHuman], and [GamePhase.BidReview].
@@ -124,7 +117,7 @@ fun BidView(
             val partnerHasBid  = partnerPlayer?.runtimeFlags?.didBid ?: false
             val partnerPhs     = if (partnerHasBid) dealHand?.perPlayer?.get(partnerPlayer?.id) else null
             val partnerBidText = when {
-                partnerHasBid && partnerPhs?.bid != null -> formatBid(partnerPhs.bid, partnerPhs.isBlind)
+				partnerHasBid && partnerPhs?.bid != null -> formatBidForDisplay(partnerPhs.bid, partnerPhs.isBlind)
                 else -> "–"
             }
 
@@ -147,7 +140,7 @@ fun BidView(
                     ) {
                         Text(p.displayName, color = Color.White, style = MaterialTheme.typography.bodySmall)
                         Text(
-                            text = if (hasBid && bid != null) formatBid(bid, phs?.isBlind ?: false) else "–",
+							text = if (hasBid && bid != null) formatBidForDisplay(bid, phs?.isBlind ?: false) else "–",
                             color = if (hasBid) Color(0xFFFFD700) else Color.White,
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.SemiBold
@@ -180,7 +173,7 @@ fun BidView(
                             Text(text = row.name, color = Color.White, style = MaterialTheme.typography.labelSmall)
                             Text(
                                 text = when {
-                                    row.hasBid && row.bid != null -> formatBid(row.bid, row.isBlind)
+									row.hasBid && row.bid != null -> formatBidForDisplay(row.bid, row.isBlind)
                                     else -> "–"
                                 },
                                 color = if (row.hasBid) Color(0xFFFFD700) else Color.White,
@@ -288,4 +281,3 @@ private fun BidAdjustButton(label: String, onClick: () -> Unit) {
         Text(text = label, color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
     }
 }
-

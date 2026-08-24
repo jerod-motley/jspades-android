@@ -22,6 +22,14 @@ class OnlineSession(
     private val _lobby = MutableStateFlow<OnlineLobbyState?>(null)
     val lobby: StateFlow<OnlineLobbyState?> = _lobby
 
+    private val _roomJoined = MutableStateFlow(false)
+    val roomJoined: StateFlow<Boolean> = _roomJoined
+
+    private val _joinError = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val joinError: SharedFlow<String> = _joinError
+
+    private var joinTimeoutJob: Job? = null
+
     private val _chat = MutableStateFlow<List<ChatMessage>>(emptyList())
     val chat: StateFlow<List<ChatMessage>> = _chat
 
@@ -46,6 +54,8 @@ class OnlineSession(
     /** Emits the player ID of the most recent disconnection; null when no disconnect has occurred. */
     private val _disconnectedPlayer = MutableStateFlow<String?>(null)
     val disconnectedPlayer: StateFlow<String?> = _disconnectedPlayer
+	/** Active-game hook used to clear transient waiting UI on any socket loss. */
+	var onConnectionLost: (() -> Unit)? = null
 
     /** Latest game object received from the host. Clients consume this to update display state. */
     private val _pendingGameState = MutableStateFlow<PendingGameState?>(null)
@@ -94,6 +104,8 @@ class OnlineSession(
     private fun initSession(personId: String, displayName: String, roomId: String, isHost: Boolean) {
         enableMpLogging()
         val seatIndex = if (isHost) 0 else -1
+        _roomJoined.value = false
+        joinTimeoutJob?.cancel()
 
         val initialSeats = if (isHost) {
             List(4) { i ->
@@ -130,7 +142,18 @@ class OnlineSession(
                 logI("socketState → $state")
                 if (state == SocketState.Connected) {
                     logI("sending joinRoom roomId=$roomId playerId=${personId.takeLast(8)}")
-                    socket.send(buildJoinRoom(roomId, personId))
+					socket.sendPriority(buildJoinRoom(roomId, personId))
+					joinTimeoutJob = scope.launch {
+						delay(8_000)
+						if (!_roomJoined.value) {
+							logW("JOIN TIMEOUT roomId=$roomId")
+							_joinError.emit("Room not found. Check the code and try again.")
+							disconnect()
+						}
+					}
+			} else if (state == SocketState.Disconnected) {
+					_roomJoined.value = false
+					onConnectionLost?.invoke()
                 }
             },
             isLoggingEnabled = { mpLoggingEnabled },
@@ -149,6 +172,9 @@ class OnlineSession(
 
     fun disconnect() {
         logI("session disconnect")
+		joinTimeoutJob?.cancel()
+		joinTimeoutJob = null
+		_roomJoined.value = false
         if (::socket.isInitialized) socket.disconnect()
         _lobby.value = null
         _chat.value = emptyList()
@@ -159,6 +185,8 @@ class OnlineSession(
         _disconnectedPlayer.value = null
         _pendingGameState.value = null
         rawMessageHook = null
+		onConnectionLost?.invoke()
+		onConnectionLost = null
         onRemotePlayerBid = null
         onRemotePlayCard = null
         countdownStarted = false
@@ -340,6 +368,9 @@ class OnlineSession(
 
     private fun onRoomJoined(msg: SpadesMPMessage.RoomJoined) {
         val state = _lobby.value ?: return
+		joinTimeoutJob?.cancel()
+		joinTimeoutJob = null
+		_roomJoined.value = true
         logI("ROOM JOINED roomId=${msg.roomId} myPlayerId=${msg.myPlayerId.takeLast(8)}")
         if (!state.isHost) {
             logI("ROOM JOINED → sending playerInfo displayName=${state.localDisplayName}")
@@ -424,6 +455,11 @@ class OnlineSession(
 
     private fun onRoomFull() {
         logW("ROOM FULL")
+		if (!_roomJoined.value) {
+			_joinError.tryEmit("Room is full.")
+			disconnect()
+			return
+		}
         addChat("system", "System", "This room is full.", isLocal = false)
     }
 

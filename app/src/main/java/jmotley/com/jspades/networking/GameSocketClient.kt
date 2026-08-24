@@ -15,6 +15,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedReceiveChannelException
+import jmotley.com.jspades.data.AppConfig
 
 private const val TAG = "WSSMP"
 private val socketLogJson = Json { ignoreUnknownKeys = true }
@@ -40,6 +41,7 @@ class GameSocketClient(
     }
 
     private val sendQueue = Channel<String>(Channel.UNLIMITED)
+    private val prioritySendQueue = Channel<String>(Channel.UNLIMITED)
     private var connectJob: Job? = null
 
     fun connect() {
@@ -47,6 +49,7 @@ class GameSocketClient(
         connectJob?.cancel()
         connectJob = scope.launch {
             var backoffMs = 1_000L
+            var retryFrame: String? = null
             while (isActive) {
                 onStateChange(SocketState.Connecting)
                 logD("socket CONNECTING (backoff=${backoffMs}ms)")
@@ -57,14 +60,28 @@ class GameSocketClient(
                         logI("socket CONNECTED")
 
                         val sendJob = launch {
-                            for (msg in sendQueue) {
+                            while (isActive) {
+								val priorityFrame = prioritySendQueue.tryReceive().getOrNull()
+								val isRetry = priorityFrame == null && retryFrame != null
+                                val msg = priorityFrame ?: retryFrame ?: sendQueue.receive()
                                 try {
                                     logD("SEND → ${summarizeWsFrame(msg)} bytes=${msg.length}")
-                                    WssMessageFileLogger.record("SEND", msg, traceContext())
+									if (AppConfig.ENABLE_WSS_MESSAGE_FILE_LOGGING) {
+										WssMessageFileLogger.record("SEND", msg, traceContext())
+									}
                                     send(Frame.Text(msg))
+									if (isRetry) retryFrame = null
                                 } catch (e: Exception) {
                                     logW("send failed: ${e.message}")
-                                    break
+                                    // Preserve the dequeued frame and fail the whole socket scope.
+                                    // Otherwise this child quietly dies while the receive loop keeps
+                                    // the connection looking healthy and later frames queue forever.
+									if (priorityFrame != null) {
+										prioritySendQueue.trySend(msg)
+									} else {
+										retryFrame = msg
+									}
+                                    throw e
                                 }
                             }
                         }
@@ -75,7 +92,9 @@ class GameSocketClient(
                                     is Frame.Text -> {
                                         val text = frame.readText()
                                         logD("RECV ← ${summarizeWsFrame(text)} bytes=${text.length}")
-                                        WssMessageFileLogger.record("RECV", text, traceContext())
+										if (AppConfig.ENABLE_WSS_MESSAGE_FILE_LOGGING) {
+											WssMessageFileLogger.record("RECV", text, traceContext())
+										}
                                         onMessage(text)
                                     }
                                     is Frame.Close -> {
@@ -108,6 +127,10 @@ class GameSocketClient(
     fun send(json: String) {
         sendQueue.trySend(json)
     }
+
+	fun sendPriority(json: String) {
+		prioritySendQueue.trySend(json)
+	}
 
     fun disconnect() {
         logI("disconnect() called")

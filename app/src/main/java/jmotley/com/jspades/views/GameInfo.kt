@@ -23,6 +23,7 @@ import jmotley.com.jspades.data.GamePhase
 import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.data.Hand
+import jmotley.com.jspades.data.formatBidForDisplay
 import jmotley.com.jspades.models.GameViewModel
 
 private val LABEL_COLOR   = Color(0xFFFFD700)   // gold  — human team / local player
@@ -65,6 +66,7 @@ fun GameInfoView(
                 nameLabel = "US",
                 isHuman   = true,
                 bid       = if (anyBidMade) dealHand?.teamBids?.getOrNull(humanTeam) else null,
+				isBlind   = dealHand?.teamBlind?.getOrNull(humanTeam) == true,
                 tricksWon = teamTricks(state, dealHand, humanTeam),
                 score     = totalScore(state, humanTeam.toString()),
                 modifier  = Modifier.weight(1f)
@@ -76,6 +78,7 @@ fun GameInfoView(
                 nameLabel = "THEM",
                 isHuman   = false,
                 bid       = if (anyBidMade) dealHand?.teamBids?.getOrNull(oppTeam) else null,
+				isBlind   = dealHand?.teamBlind?.getOrNull(oppTeam) == true,
                 tricksWon = teamTricks(state, dealHand, oppTeam),
                 score     = totalScore(state, oppTeam.toString()),
                 modifier  = Modifier.weight(1f)
@@ -95,6 +98,7 @@ fun GameInfoView(
                     nameLabel = if (isHuman) "You" else player.displayName,
                     isHuman   = isHuman,
                     bid       = if (anyBidMade) phs?.bid else null,
+					isBlind   = phs?.isBlind == true,
                     tricksWon = phs?.tricksWon ?: 0,
                     score     = totalScore(state, scoreKey),
                     modifier  = Modifier.weight(1f)
@@ -114,6 +118,7 @@ private fun InfoPanel(
     nameLabel: String,
     isHuman: Boolean,
     bid: Int?,
+	isBlind: Boolean,
     tricksWon: Int,
     score: Int,
     modifier: Modifier = Modifier
@@ -131,7 +136,7 @@ private fun InfoPanel(
             textAlign  = TextAlign.Center
         )
         Text(
-            text      = "Bid ${bid ?: "—"}",
+			text      = "Bid ${bid?.let { formatBidForDisplay(it, isBlind) } ?: "—"}",
             color     = DETAIL_COLOR,
             style     = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center

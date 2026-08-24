@@ -15,6 +15,7 @@ import jmotley.com.jspades.data.PlayCardMessage
 import jmotley.com.jspades.data.Rank
 import jmotley.com.jspades.data.ReadyForNextHandMessage
 import jmotley.com.jspades.data.RequestPlayAgainMessage
+import jmotley.com.jspades.data.ReceiptAckMessage
 import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.data.WireCard
 import jmotley.com.jspades.data.WireGameConfig
@@ -23,6 +24,7 @@ import jmotley.com.jspades.data.WireSeatPlayer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -133,7 +135,7 @@ interface MPAdapterDelegate {
     fun onBlindOffer(handNum: Int, teamSeats: List<Int>, decidingSeats: List<Int>)
     fun onBlindResponse(seat: Int, accepted: Boolean, handNum: Int)
     fun onBlindPhaseComplete(handNum: Int)
-    fun onBid(seat: Int, amount: Int, isBlind: Boolean, isTeamTotal: Boolean, handNum: Int)
+    fun onBid(seat: Int, amount: Int, isBlind: Boolean, isTeamTotal: Boolean?, handNum: Int)
     fun onPlayCard(seat: Int, cardUid: String, handNum: Int, trickNum: Int, trickPlayNum: Int)
     fun onReadyForNextHand(seat: Int, handNum: Int)
     fun onRequestPlayAgain(seat: Int, gameGeneration: Int)
@@ -164,6 +166,13 @@ class MPAdapter(
     private val scope: CoroutineScope
 ) {
     private val seenCmdIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+	private val locallyOriginatedCmdIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+	private data class PendingReceipt(
+		val raw: String,
+		val expectedSeats: Set<Int>,
+		val acknowledgedSeats: MutableSet<Int> = ConcurrentHashMap.newKeySet()
+	)
+	private val pendingReceipts = ConcurrentHashMap<String, PendingReceipt>()
 
     @Volatile
     private var seatPlayerMap: Map<String, WireSeatPlayer> = emptyMap()
@@ -197,6 +206,9 @@ class MPAdapter(
 
         if (!seenCmdIds.add(msg.cmdId)) {
             Log.d(TAG, "dup suppressed cmdId=${msg.cmdId.take(8)}")
+			if (msg !is ReceiptAckMessage && msg.cmdId !in locallyOriginatedCmdIds) {
+				dispatchAck(msg.cmdId)
+			}
             return
         }
 
@@ -225,6 +237,9 @@ class MPAdapter(
         }
 
         scope.launch(Dispatchers.Main) { route(msg) }
+		if (msg !is ReceiptAckMessage && msg.cmdId !in locallyOriginatedCmdIds) {
+			dispatchAck(msg.cmdId)
+		}
     }
 
     private fun route(msg: WireMessage) {
@@ -238,8 +253,18 @@ class MPAdapter(
             is ReadyForNextHandMessage -> handleReadyForNextHand(msg)
             is RequestPlayAgainMessage -> handleRequestPlayAgain(msg)
             is BlindPhaseCompleteMessage -> handleBlindPhaseComplete(msg)
+			is ReceiptAckMessage -> handleReceiptAck(msg)
         }
     }
+
+	private fun handleReceiptAck(msg: ReceiptAckMessage) {
+		val pending = pendingReceipts[msg.ackedCmdId] ?: return
+		pending.acknowledgedSeats.add(msg.seat)
+		if (pending.acknowledgedSeats.containsAll(pending.expectedSeats)) {
+			pendingReceipts.remove(msg.ackedCmdId)
+			Log.d(TAG, "receipt complete cmdId=${msg.ackedCmdId.take(8)}")
+		}
+	}
 
     private fun handleGameConfig(msg: GameConfigMessage) {
         seatPlayerMap = msg.players
@@ -427,7 +452,7 @@ class MPAdapter(
     private fun rebuildFromRelayEnvelope(raw: String): String? = runCatching {
         val obj = wireJson.parseToJsonElement(raw).jsonObject
         val type = (obj["type"] as? JsonPrimitive)?.content ?: return@runCatching null
-        if (type !in setOf("gameConfig", "deal", "blindOffer", "blindResponse", "bid", "playCard", "readyForNextHand", "requestPlayAgain", "blindPhaseComplete")) {
+        if (type !in setOf("gameConfig", "deal", "blindOffer", "blindResponse", "bid", "playCard", "readyForNextHand", "requestPlayAgain", "blindPhaseComplete", "receiptAck")) {
             return@runCatching null
         }
         val payloadObj = obj["payload"] as? JsonObject ?: return@runCatching null
@@ -469,6 +494,7 @@ class MPAdapter(
 
     private fun dispatch(msg: WireMessage) {
         seenCmdIds.add(msg.cmdId)
+		locallyOriginatedCmdIds.add(msg.cmdId)
         val extra = when (msg) {
             is BidMessage           -> "hand=${msg.handNum} amount=${msg.amount} blind=${msg.isBlind}"
             is PlayCardMessage      -> "hand=${msg.handNum} trick=${msg.trickNum} play=${msg.trickPlayNum} card=${msg.cardId}"
@@ -494,14 +520,42 @@ class MPAdapter(
                 }
             }
         }
-        socket.send(MpEnvelope(
+		val raw = MpEnvelope(
             type    = msgType,
             playerId = localPlayerId,
             roomId  = roomId,
             cmdId   = msg.cmdId,
             payload = payload
-        ).toJson())
+        ).toJson()
+		socket.send(raw)
+		if (msg !is ReceiptAckMessage) trackForReceipt(msg.cmdId, raw)
     }
+
+	private fun dispatchAck(ackedCmdId: String) {
+		dispatch(ReceiptAckMessage(nextCmdId(), localSeat, localPlayerId, ackedCmdId))
+	}
+
+	private fun trackForReceipt(cmdId: String, raw: String) {
+		val expected = seatPlayerMap.entries.mapNotNull { (seat, player) ->
+			seat.toIntOrNull()?.takeIf {
+				it != localSeat && player.kind != "cpu" && !player.playerId.startsWith("cpu-")
+			}
+		}.toSet()
+		if (expected.isEmpty()) return
+		val pending = PendingReceipt(raw, expected)
+		pendingReceipts[cmdId] = pending
+		scope.launch {
+			repeat(4) {
+				delay(1_500)
+				if (pendingReceipts[cmdId] !== pending) return@launch
+				Log.w(TAG, "receipt retry cmdId=${cmdId.take(8)} attempt=${it + 1}")
+				socket.send(raw)
+			}
+			if (pendingReceipts[cmdId] === pending) {
+				Log.e(TAG, "receipt timeout cmdId=${cmdId.take(8)} missing=${expected - pending.acknowledgedSeats}")
+			}
+		}
+	}
 
     private fun nextCmdId() = UUID.randomUUID().toString()
 }
