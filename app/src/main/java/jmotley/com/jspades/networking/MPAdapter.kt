@@ -258,7 +258,10 @@ class MPAdapter(
     }
 
 	private fun handleReceiptAck(msg: ReceiptAckMessage) {
-		val pending = pendingReceipts[msg.ackedCmdId] ?: return
+		val pending = pendingReceipts[msg.ackedCmdId] ?: run {
+			Log.w(TAG, "receipt ack UNMATCHED ackedCmdId=${msg.ackedCmdId.take(8)} fromSeat=${msg.seat} — no pending receipt (already completed/timed out, or cmdId mismatch)")
+			return
+		}
 		pending.acknowledgedSeats.add(msg.seat)
 		if (pending.acknowledgedSeats.containsAll(pending.expectedSeats)) {
 			pendingReceipts.remove(msg.ackedCmdId)
@@ -285,6 +288,13 @@ class MPAdapter(
             }
             Log.d(TAG, "preConfigQueue flush cmdId=${qMsg.cmdId.take(8)} type=${qMsg::class.simpleName}")
             scope.launch(Dispatchers.Main) { route(qMsg) }
+			// route() above only applies the message — unlike the live path in receive(), it never
+			// acks. Without this, any message deferred here (arrived before gameConfig) never gets
+			// acknowledged on its first pass, forcing the sender to rely solely on a later duplicate
+			// resend to trigger the dup-path ack.
+			if (qMsg !is ReceiptAckMessage && qMsg.cmdId !in locallyOriginatedCmdIds) {
+				dispatchAck(qMsg.cmdId)
+			}
         }
     }
 
