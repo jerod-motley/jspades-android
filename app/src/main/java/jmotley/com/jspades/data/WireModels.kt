@@ -74,6 +74,26 @@ sealed class WireMessage {
     abstract val playerId: String
 }
 
+object MPProtocol {
+    const val CURRENT_VERSION: Int = 2
+    const val CAP_GENERATION_SCOPED_ACTIONS = "generationScopedActions"
+    const val CAP_EXPLICIT_BID_ROLE = "explicitBidRole"
+    const val CAP_SEMANTIC_FACTS = "semanticFacts"
+    const val CAP_ORDERED_PLAY_INBOX = "orderedPlayInbox"
+    const val CAP_STATE_RESYNC = "stateResync"
+
+    val advertisedCapabilities: Set<String> = setOf(
+        CAP_GENERATION_SCOPED_ACTIONS,
+        CAP_EXPLICIT_BID_ROLE
+    )
+}
+
+@Serializable
+enum class WireBidRole {
+    @SerialName("individual") INDIVIDUAL,
+    @SerialName("teamTotal") TEAM_TOTAL
+}
+
 /**
  * host → all, once before the first deal.
  * Establishes rules and seat→player identity for the game.
@@ -98,7 +118,9 @@ data class GameConfigMessage(
     val config: WireGameConfig,
     /** Seat index (as string key) → player info. */
     val players: Map<String, WireSeatPlayer>,
-    val gameGeneration: Int = 1
+    val gameGeneration: Int = 1,
+    val protocolVersion: Int = 1,
+    val capabilities: Set<String> = emptySet()
 ) : WireMessage()
 
 /**
@@ -121,7 +143,8 @@ data class DealMessage(
     /** Kitty cards — non-null only for game types with a kitty (e.g. TEAM_KITTY). */
     val kitty: List<WireCard>? = null,
     /** Room seat of the player who won the kitty (holds 2♠); null for non-kitty game types. */
-    val kittyOwnerSeat: Int? = null
+    val kittyOwnerSeat: Int? = null,
+    val gameGeneration: Int? = null
 ) : WireMessage()
 
 /**
@@ -137,7 +160,8 @@ data class BlindOfferMessage(
     override val playerId: String,
     val handNum: Int,
     val teamSeats: List<Int>,
-    val decidingSeats: List<Int>
+    val decidingSeats: List<Int>,
+    val gameGeneration: Int? = null
 ) : WireMessage()
 
 /**
@@ -151,7 +175,8 @@ data class BlindResponseMessage(
     override val seat: Int,
     override val playerId: String,
     val handNum: Int,
-    val accepted: Boolean
+    val accepted: Boolean,
+    val gameGeneration: Int? = null
 ) : WireMessage()
 
 /**
@@ -169,7 +194,8 @@ data class BlindPhaseCompleteMessage(
     override val cmdId: String,
     override val seat: Int,
     override val playerId: String,
-    val handNum: Int
+    val handNum: Int,
+    val gameGeneration: Int? = null
 ) : WireMessage()
 
 /**
@@ -188,7 +214,8 @@ data class ReadyForNextHandMessage(
     override val cmdId: String,
     override val seat: Int,
     override val playerId: String,
-    val handNum: Int
+    val handNum: Int,
+    val gameGeneration: Int? = null
 ) : WireMessage()
 
 /**
@@ -225,7 +252,10 @@ data class BidMessage(
     val amount: Int,
     val isBlind: Boolean,
     /** True only when this bid commits the complete team contract. */
-    val isTeamTotal: Boolean? = null
+    val isTeamTotal: Boolean? = null,
+    /** Required by protocol v2; null only for legacy peers during rollout. */
+    val bidRole: WireBidRole? = null,
+    val gameGeneration: Int? = null
 ) : WireMessage()
 
 /**
@@ -243,7 +273,8 @@ data class PlayCardMessage(
     val trickNum: Int,
     val trickPlayNum: Int,
     /** Matches [WireCard.id] — 0-based `{rank}_{suit}` (e.g. "12_3" for Ace♠). */
-    val cardId: String
+    val cardId: String,
+    val gameGeneration: Int? = null
 ) : WireMessage()
 
 /** Receipt-only acknowledgement. Duplicate commands are acknowledged again. */

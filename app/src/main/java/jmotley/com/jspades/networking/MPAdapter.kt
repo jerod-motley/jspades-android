@@ -10,6 +10,7 @@ import jmotley.com.jspades.data.DealMessage
 import jmotley.com.jspades.data.GameConfigMessage
 import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.GameType
+import jmotley.com.jspades.data.MPProtocol
 import jmotley.com.jspades.data.effectiveMinBid
 import jmotley.com.jspades.data.PlayCardMessage
 import jmotley.com.jspades.data.Rank
@@ -20,6 +21,7 @@ import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.data.WireCard
 import jmotley.com.jspades.data.WireGameConfig
 import jmotley.com.jspades.data.WireMessage
+import jmotley.com.jspades.data.WireBidRole
 import jmotley.com.jspades.data.WireSeatPlayer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -123,6 +125,8 @@ fun GameState.toWireGameConfig(): WireGameConfig = WireGameConfig(
  * Implemented by the ViewModel in Phase 5.
  */
 interface MPAdapterDelegate {
+    /** The generation accepted by the game-state owner; adapters must not cache a second copy. */
+    fun currentGameGeneration(): Int
     fun onGameConfig(config: WireGameConfig, seatPlayers: Map<String, WireSeatPlayer>, gameGeneration: Int)
     fun onDeal(
         handNum: Int,
@@ -362,7 +366,9 @@ class MPAdapter(
     fun sendGameConfig(config: WireGameConfig, players: Map<String, WireSeatPlayer>, gameGeneration: Int) {
         seatPlayerMap = players  // seed locally; host suppresses its own echo so handleGameConfig never fires
         dispatch(GameConfigMessage(cmdId = nextCmdId(), seat = localSeat, playerId = localPlayerId,
-            config = config, players = players, gameGeneration = gameGeneration))
+            config = config, players = players, gameGeneration = gameGeneration,
+            protocolVersion = MPProtocol.CURRENT_VERSION,
+            capabilities = MPProtocol.advertisedCapabilities))
     }
 
     fun sendDeal(
@@ -377,24 +383,26 @@ class MPAdapter(
         val wireKitty = kitty?.map(::cardToWireCard)
         dispatch(DealMessage(cmdId = nextCmdId(), seat = localSeat, playerId = localPlayerId,
             handNum = handNum, dealerSeat = dealerSeat, seatOrder = seatOrder,
-            hands = wireHands, kitty = wireKitty, kittyOwnerSeat = kittyOwnerSeat))
+            hands = wireHands, kitty = wireKitty, kittyOwnerSeat = kittyOwnerSeat,
+            gameGeneration = delegate.currentGameGeneration()))
     }
 
     fun sendBlindOffer(handNum: Int, teamSeats: List<Int>, decidingSeats: List<Int>) {
         dispatch(BlindOfferMessage(cmdId = nextCmdId(), seat = localSeat, playerId = localPlayerId,
-            handNum = handNum, teamSeats = teamSeats, decidingSeats = decidingSeats))
+            handNum = handNum, teamSeats = teamSeats, decidingSeats = decidingSeats,
+            gameGeneration = delegate.currentGameGeneration()))
     }
 
     /** Send the local human's blind response. */
     fun sendBlindResponse(accepted: Boolean, handNum: Int) {
         dispatch(BlindResponseMessage(cmdId = nextCmdId(), seat = localSeat, playerId = localPlayerId,
-            handNum = handNum, accepted = accepted))
+            handNum = handNum, accepted = accepted, gameGeneration = delegate.currentGameGeneration()))
     }
 
     /** Send a blind response on behalf of a CPU seat (host-proxied). */
     fun sendBlindResponse(actingSeat: Int, actingPlayerId: String, accepted: Boolean, handNum: Int) {
         dispatch(BlindResponseMessage(cmdId = nextCmdId(), seat = actingSeat, playerId = actingPlayerId,
-            handNum = handNum, accepted = accepted))
+            handNum = handNum, accepted = accepted, gameGeneration = delegate.currentGameGeneration()))
     }
 
     /**
@@ -406,7 +414,9 @@ class MPAdapter(
         handNum: Int, isTeamTotal: Boolean = false
     ) {
         dispatch(BidMessage(cmdId = nextCmdId(), seat = actingSeat, playerId = actingPlayerId,
-            handNum = handNum, amount = amount, isBlind = isBlind, isTeamTotal = isTeamTotal))
+            handNum = handNum, amount = amount, isBlind = isBlind, isTeamTotal = isTeamTotal,
+            bidRole = if (isTeamTotal) WireBidRole.TEAM_TOTAL else WireBidRole.INDIVIDUAL,
+            gameGeneration = delegate.currentGameGeneration()))
     }
 
     /**
@@ -419,13 +429,13 @@ class MPAdapter(
     ) {
         dispatch(PlayCardMessage(cmdId = nextCmdId(), seat = actingSeat, playerId = actingPlayerId,
             handNum = handNum, trickNum = trickNum, trickPlayNum = trickPlayNum,
-            cardId = cardToWireId(card)))
+            cardId = cardToWireId(card), gameGeneration = delegate.currentGameGeneration()))
     }
 
     /** Non-host only: signal that the local player has pressed "Next Hand" and is waiting. */
     fun sendReadyForNextHand(handNum: Int) {
         dispatch(ReadyForNextHandMessage(cmdId = nextCmdId(), seat = localSeat, playerId = localPlayerId,
-            handNum = handNum))
+            handNum = handNum, gameGeneration = delegate.currentGameGeneration()))
     }
 
     /** Non-host only: signal that the local player has pressed "Play Again" and is waiting. */
@@ -441,7 +451,7 @@ class MPAdapter(
      */
     fun sendBlindPhaseComplete(handNum: Int) {
         dispatch(BlindPhaseCompleteMessage(cmdId = nextCmdId(), seat = localSeat, playerId = localPlayerId,
-            handNum = handNum))
+            handNum = handNum, gameGeneration = delegate.currentGameGeneration()))
     }
 
     // ── Internal ──────────────────────────────────────────────────────────────

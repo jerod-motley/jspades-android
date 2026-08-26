@@ -1324,6 +1324,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 
 	// ── MPAdapterDelegate ─────────────────────────────────────────────────────────
 
+	override fun currentGameGeneration(): Int = mpGameGeneration
+
 	override fun onGameConfig(config: WireGameConfig, seatPlayers: Map<String, WireSeatPlayer>, gameGeneration: Int) {
 		val gameType = wireStringToGameType(config.gameType) ?: GameType.HOUSE_RULES
 		mpRoomSeatPlayers = seatPlayers
