@@ -4,6 +4,16 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class MPSemanticFactStoreTest {
+	@Test fun readinessFactsDeduplicateByGenerationHandAndSeat() {
+		val store = MPSemanticFactStore()
+		val key = MPSemanticKey(MPActionType.READY_NEXT_HAND, 3, 7, 2)
+		val first = MPNormalizedAction(MPActionType.READY_NEXT_HAND, key, "ready-1", 2, "p2", 3, 7,
+			payload = MPNormalizedPayload.ReadyNextHand)
+		assertEquals(MPRetentionResult.RETAINED, store.retain(first, strictConflicts = true))
+		assertEquals(MPRetentionResult.DUPLICATE,
+			store.retain(first.copy(cmdId = "ready-2"), strictConflicts = true))
+	}
+
 	@Test fun strictPlayConflictRetainsFirstCardInSlot() {
 		val store = MPSemanticFactStore()
 		val key = MPSemanticKey(MPActionType.CARD_PLAY, 2, 4, trickNum = 3, trickPlayNum = 2)

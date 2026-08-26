@@ -1020,6 +1020,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	private var mpGameGeneration: Int = 0
 	private var strictBidSemanticsEnabled: Boolean = false
 	private var orderedPlayInboxEnabled: Boolean = false
+	private var semanticRecoveryEnabled: Boolean = false
 	private val mpRecovery = MPRecoveryCoordinator()
 
 	fun isMPRecoveryFrozen(): Boolean = mpRecovery.isFrozen(
@@ -1425,6 +1426,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	override fun onGameConfig(config: WireGameConfig, seatPlayers: Map<String, WireSeatPlayer>,
 		gameGeneration: Int, capabilities: Set<String>) {
 		if (gameGeneration > mpGameGeneration) {
+			semanticRecoveryEnabled = capabilities.containsAll(setOf(
+				MPProtocol.CAP_SEMANTIC_FACTS, MPProtocol.CAP_STATE_RESYNC))
 			strictBidSemanticsEnabled = capabilities.containsAll(setOf(
 				MPProtocol.CAP_EXPLICIT_BID_ROLE, MPProtocol.CAP_SEMANTIC_FACTS, MPProtocol.CAP_STATE_RESYNC))
 			orderedPlayInboxEnabled = capabilities.containsAll(setOf(
@@ -1566,7 +1569,12 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		phaseManager.execute()
 	}
 
-	override fun onBlindOffer(handNum: Int, teamSeats: List<Int>, decidingSeats: List<Int>) {
+	override fun onBlindOffer(action: MPNormalizedAction): MPRetentionResult = retainTemporalFact(action) { payload ->
+		val offer = payload as MPNormalizedPayload.BlindOffer
+		applyBlindOffer(action.handNum, offer.teamSeats, offer.decidingSeats)
+	}
+
+	private fun applyBlindOffer(handNum: Int, teamSeats: List<Int>, decidingSeats: List<Int>) {
 		if (handNum != mpCurrentHandNum) {
 			Log.w(MP_TAG, "onBlindOffer DROPPED stale handNum=$handNum current=$mpCurrentHandNum")
 			return
@@ -1590,7 +1598,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		phaseManager.execute()
 	}
 
-	override fun onBlindResponse(seat: Int, accepted: Boolean, handNum: Int) {
+	override fun onBlindResponse(action: MPNormalizedAction): MPRetentionResult = retainTemporalFact(action) { payload ->
+		applyBlindResponse(action.senderSeat, (payload as MPNormalizedPayload.BlindResponse).accepted, action.handNum)
+	}
+
+	private fun applyBlindResponse(seat: Int, accepted: Boolean, handNum: Int) {
 		if (handNum != mpCurrentHandNum) {
 			Log.w(MP_TAG, "onBlindResponse DROPPED stale handNum=$handNum current=$mpCurrentHandNum seat=$seat")
 			return
@@ -1613,7 +1625,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	 * drives them out of `GamePhase.BlindBid`, mirroring the "reveal cards" tail of
 	 * `handleBlindBid()` that the host itself reaches locally.
 	 */
-	override fun onBlindPhaseComplete(handNum: Int) {
+	override fun onBlindPhaseComplete(action: MPNormalizedAction): MPRetentionResult = retainTemporalFact(action) {
+		applyBlindPhaseComplete(action.handNum)
+	}
+
+	private fun applyBlindPhaseComplete(handNum: Int) {
 		if (handNum != mpCurrentHandNum) {
 			Log.w(MP_TAG, "onBlindPhaseComplete DROPPED stale handNum=$handNum current=$mpCurrentHandNum")
 			return
@@ -1842,17 +1858,46 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			action.semanticKey.toString(), listOfNotNull(existing?.cmdId, action.cmdId)))
 	}
 
+	private fun retainTemporalFact(action: MPNormalizedAction,
+		apply: (MPNormalizedPayload) -> Unit): MPRetentionResult {
+		if (action.gameGeneration < mpGameGeneration ||
+			(action.type != MPActionType.PLAY_AGAIN_REQUEST && action.gameGeneration == mpGameGeneration &&
+				action.handNum < mpCurrentHandNum)) return MPRetentionResult.STALE
+		if (action.gameGeneration > mpGameGeneration + 1 ||
+			(action.type != MPActionType.PLAY_AGAIN_REQUEST && action.gameGeneration == mpGameGeneration &&
+				action.handNum > mpCurrentHandNum + 1)) return MPRetentionResult.REJECTED
+		val result = mpSemanticFacts.retain(action, strictConflicts = semanticRecoveryEnabled)
+		if (result != MPRetentionResult.RETAINED) return result
+		if (isMPRecoveryFrozen() || action.gameGeneration > mpGameGeneration ||
+			(action.type != MPActionType.PLAY_AGAIN_REQUEST && action.handNum > mpCurrentHandNum)) {
+			mpSemanticFacts.stage(action)
+			return MPRetentionResult.RETAINED
+		}
+		apply(action.payload)
+		return MPRetentionResult.RETAINED
+	}
+
 	private fun drainSemanticFacts() {
 		if (isMPRecoveryFrozen()) return
 		val generation = mpGameGeneration
 		val hand = mpCurrentHandNum
 		val ready = mpSemanticFacts.takePending {
-			it.gameGeneration == generation && it.handNum == hand
+			it.gameGeneration == generation &&
+				(it.type == MPActionType.PLAY_AGAIN_REQUEST || it.handNum == hand)
 		}
 		for (action in ready) {
 			when (action.type) {
+				MPActionType.BLIND_OFFER -> (action.payload as? MPNormalizedPayload.BlindOffer)?.let {
+					applyBlindOffer(action.handNum, it.teamSeats, it.decidingSeats)
+				}
+				MPActionType.BLIND_RESPONSE -> (action.payload as? MPNormalizedPayload.BlindResponse)?.let {
+					applyBlindResponse(action.senderSeat, it.accepted, action.handNum)
+				}
+				MPActionType.BLIND_PHASE_COMPLETE -> applyBlindPhaseComplete(action.handNum)
 				MPActionType.BID -> applyRetainedBid(action)
 				MPActionType.CARD_PLAY -> applyRetainedPlay(action)
+				MPActionType.READY_NEXT_HAND -> applyReadyForNextHand(action.senderSeat, action.handNum)
+				MPActionType.PLAY_AGAIN_REQUEST -> applyRequestPlayAgain(action.senderSeat, action.gameGeneration)
 			}
 		}
 	}
@@ -1899,7 +1944,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	 * progress, so a stale/replayed/duplicate request can't corrupt readiness tracking
 	 * for the current hand.
 	 */
-	override fun onReadyForNextHand(seat: Int, handNum: Int) {
+	override fun onReadyForNextHand(action: MPNormalizedAction): MPRetentionResult = retainTemporalFact(action) {
+		applyReadyForNextHand(action.senderSeat, action.handNum)
+	}
+
+	private fun applyReadyForNextHand(seat: Int, handNum: Int) {
 		if (!isMPHost) return
 		if (handNum != mpCurrentHandNum) {
 			Log.d(MP_TAG, "onReadyForNextHand ignored — stale handNum=$handNum current=$mpCurrentHandNum seat=$seat")
@@ -1932,7 +1981,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	 * ignores a request tagged for an older generation than the one currently active (a
 	 * delayed request from a game that has already ended and been superseded).
 	 */
-	override fun onRequestPlayAgain(seat: Int, gameGeneration: Int) {
+	override fun onRequestPlayAgain(action: MPNormalizedAction): MPRetentionResult = retainTemporalFact(action) {
+		applyRequestPlayAgain(action.senderSeat, action.gameGeneration)
+	}
+
+	private fun applyRequestPlayAgain(seat: Int, gameGeneration: Int) {
 		if (!isMPHost) return
 		if (gameGeneration != mpGameGeneration) {
 			Log.d(MP_TAG, "onRequestPlayAgain ignored — stale generation=$gameGeneration current=$mpGameGeneration seat=$seat")

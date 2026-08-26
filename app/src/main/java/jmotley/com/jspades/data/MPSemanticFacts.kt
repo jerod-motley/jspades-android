@@ -1,6 +1,6 @@
 package jmotley.com.jspades.data
 
-enum class MPActionType { BID, CARD_PLAY }
+enum class MPActionType { BLIND_OFFER, BLIND_RESPONSE, BLIND_PHASE_COMPLETE, BID, CARD_PLAY, READY_NEXT_HAND, PLAY_AGAIN_REQUEST }
 
 data class MPSemanticKey(
     val actionType: MPActionType,
@@ -12,8 +12,13 @@ data class MPSemanticKey(
 )
 
 sealed interface MPNormalizedPayload {
-    data class Bid(val amount: Int, val isBlind: Boolean, val role: WireBidRole) : MPNormalizedPayload
-    data class CardPlay(val cardId: String) : MPNormalizedPayload
+	data class BlindOffer(val teamSeats: List<Int>, val decidingSeats: List<Int>) : MPNormalizedPayload
+	data class BlindResponse(val accepted: Boolean) : MPNormalizedPayload
+	data object BlindPhaseComplete : MPNormalizedPayload
+	data class Bid(val amount: Int, val isBlind: Boolean, val role: WireBidRole) : MPNormalizedPayload
+	data class CardPlay(val cardId: String) : MPNormalizedPayload
+	data object ReadyNextHand : MPNormalizedPayload
+	data object PlayAgainRequest : MPNormalizedPayload
 }
 
 data class MPNormalizedAction(

@@ -146,13 +146,13 @@ interface MPAdapterDelegate {
         kitty: List<Card>?,
         kittyOwnerSeat: Int?
     )
-    fun onBlindOffer(handNum: Int, teamSeats: List<Int>, decidingSeats: List<Int>)
-    fun onBlindResponse(seat: Int, accepted: Boolean, handNum: Int)
-    fun onBlindPhaseComplete(handNum: Int)
+    fun onBlindOffer(action: MPNormalizedAction): MPRetentionResult
+    fun onBlindResponse(action: MPNormalizedAction): MPRetentionResult
+    fun onBlindPhaseComplete(action: MPNormalizedAction): MPRetentionResult
     fun onBid(action: MPNormalizedAction): MPRetentionResult
     fun onPlayCard(action: MPNormalizedAction): MPRetentionResult
-    fun onReadyForNextHand(seat: Int, handNum: Int)
-    fun onRequestPlayAgain(seat: Int, gameGeneration: Int)
+    fun onReadyForNextHand(action: MPNormalizedAction): MPRetentionResult
+    fun onRequestPlayAgain(action: MPNormalizedAction): MPRetentionResult
     fun onResyncRequest(message: ResyncRequestMessage): MPRetentionResult = MPRetentionResult.RETAINED
     fun onStateSnapshot(message: StateSnapshotMessage): MPRetentionResult = MPRetentionResult.RETAINED
     fun onTerminalDeliveryFailure(cmdId: String, missingSeats: Set<Int>, gameGeneration: Int?, handNum: Int?) {}
@@ -236,6 +236,11 @@ class MPAdapter(
         // gameConfig seq=7), so without this guard pre-game CPU bids are dropped because
         // mpCurrentHandNum is still -1 when they arrive before onDeal.
         if (msg !is GameConfigMessage && seatPlayerMap.isEmpty()) {
+			if (preConfigQueue.size >= 256) {
+				val evicted = preConfigQueue.removeAt(0)
+				seenCmdIds.remove(evicted.cmdId)
+				Log.w(TAG, "preConfigQueue bounded eviction cmdId=${evicted.cmdId.take(8)}")
+			}
             Log.d(TAG, "preConfigQueue enqueue cmdId=${msg.cmdId.take(8)} type=${msg::class.simpleName}")
             preConfigQueue.add(msg)
             return
@@ -273,13 +278,13 @@ class MPAdapter(
         return when (msg) {
             is GameConfigMessage    -> { handleGameConfig(msg); MPRetentionResult.RETAINED }
             is DealMessage          -> { handleDeal(msg); MPRetentionResult.RETAINED }
-            is BlindOfferMessage    -> { handleBlindOffer(msg); MPRetentionResult.RETAINED }
-            is BlindResponseMessage -> { handleBlindResponse(msg); MPRetentionResult.RETAINED }
+            is BlindOfferMessage    -> handleBlindOffer(msg)
+            is BlindResponseMessage -> handleBlindResponse(msg)
             is BidMessage           -> handleBid(msg)
             is PlayCardMessage      -> handlePlayCard(msg)
-            is ReadyForNextHandMessage -> { handleReadyForNextHand(msg); MPRetentionResult.RETAINED }
-            is RequestPlayAgainMessage -> { handleRequestPlayAgain(msg); MPRetentionResult.RETAINED }
-            is BlindPhaseCompleteMessage -> { handleBlindPhaseComplete(msg); MPRetentionResult.RETAINED }
+            is ReadyForNextHandMessage -> handleReadyForNextHand(msg)
+            is RequestPlayAgainMessage -> handleRequestPlayAgain(msg)
+            is BlindPhaseCompleteMessage -> handleBlindPhaseComplete(msg)
             is ReceiptAckMessage -> { handleReceiptAck(msg); MPRetentionResult.RETAINED }
             is ResyncRequestMessage -> delegate.onResyncRequest(msg)
             is StateSnapshotMessage -> delegate.onStateSnapshot(msg)
@@ -344,12 +349,16 @@ class MPAdapter(
         delegate.onDeal(msg.handNum, msg.dealerSeat, msg.seatOrder, handsBySeat, kitty, msg.kittyOwnerSeat)
     }
 
-    private fun handleBlindOffer(msg: BlindOfferMessage) {
-        delegate.onBlindOffer(msg.handNum, msg.teamSeats, msg.decidingSeats)
+    private fun handleBlindOffer(msg: BlindOfferMessage): MPRetentionResult {
+		val generation = msg.gameGeneration ?: delegate.currentGameGeneration()
+		return delegate.onBlindOffer(normalized(msg, MPActionType.BLIND_OFFER, generation, msg.handNum,
+			MPNormalizedPayload.BlindOffer(msg.teamSeats, msg.decidingSeats)))
     }
 
-    private fun handleBlindResponse(msg: BlindResponseMessage) {
-        delegate.onBlindResponse(msg.seat, msg.accepted, msg.handNum)
+    private fun handleBlindResponse(msg: BlindResponseMessage): MPRetentionResult {
+		val generation = msg.gameGeneration ?: delegate.currentGameGeneration()
+		return delegate.onBlindResponse(normalized(msg, MPActionType.BLIND_RESPONSE, generation, msg.handNum,
+			MPNormalizedPayload.BlindResponse(msg.accepted), seatKey = msg.seat))
     }
 
     private fun handleBid(msg: BidMessage): MPRetentionResult {
@@ -383,20 +392,30 @@ class MPAdapter(
         ))
     }
 
-    private fun handleReadyForNextHand(msg: ReadyForNextHandMessage) {
+    private fun handleReadyForNextHand(msg: ReadyForNextHandMessage): MPRetentionResult {
         Log.d(TAG, "handleReadyForNextHand seat=${msg.seat} handNum=${msg.handNum}")
-        delegate.onReadyForNextHand(msg.seat, msg.handNum)
+		return delegate.onReadyForNextHand(normalized(msg, MPActionType.READY_NEXT_HAND,
+			msg.gameGeneration ?: delegate.currentGameGeneration(),
+			msg.handNum, MPNormalizedPayload.ReadyNextHand, seatKey = msg.seat))
     }
 
-    private fun handleRequestPlayAgain(msg: RequestPlayAgainMessage) {
+    private fun handleRequestPlayAgain(msg: RequestPlayAgainMessage): MPRetentionResult {
         Log.d(TAG, "handleRequestPlayAgain seat=${msg.seat} gameGeneration=${msg.gameGeneration}")
-        delegate.onRequestPlayAgain(msg.seat, msg.gameGeneration)
+		return delegate.onRequestPlayAgain(normalized(msg, MPActionType.PLAY_AGAIN_REQUEST, msg.gameGeneration,
+			0, MPNormalizedPayload.PlayAgainRequest, seatKey = msg.seat))
     }
 
-    private fun handleBlindPhaseComplete(msg: BlindPhaseCompleteMessage) {
+    private fun handleBlindPhaseComplete(msg: BlindPhaseCompleteMessage): MPRetentionResult {
         Log.d(TAG, "handleBlindPhaseComplete handNum=${msg.handNum}")
-        delegate.onBlindPhaseComplete(msg.handNum)
+		val generation = msg.gameGeneration ?: delegate.currentGameGeneration()
+		return delegate.onBlindPhaseComplete(normalized(msg, MPActionType.BLIND_PHASE_COMPLETE, generation,
+			msg.handNum, MPNormalizedPayload.BlindPhaseComplete))
     }
+
+	private fun normalized(msg: WireMessage, type: MPActionType, generation: Int, handNum: Int,
+		payload: MPNormalizedPayload, seatKey: Int? = null) = MPNormalizedAction(type,
+		MPSemanticKey(type, generation, handNum, seatKey), msg.cmdId, msg.seat, msg.playerId,
+		generation, handNum, payload = payload)
 
     // ── Send ──────────────────────────────────────────────────────────────────
 
