@@ -720,8 +720,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val adapter = mpAdapter
 		val cmdId = adapter?.takeIf { mpCurrentHandNum >= 0 }?.newActionCmdId()
 		if (adapter != null && cmdId != null) {
-			val result = mpSemanticFacts.retain(normalizedPlay(cmdId, localMPSeat, localWirePlayerId, card,
-				mpCurrentHandNum, trickNum, trickPlayNum))
+			val action = normalizedPlay(cmdId, localMPSeat, localWirePlayerId, card,
+				mpCurrentHandNum, trickNum, trickPlayNum)
+			val result = mpSemanticFacts.retain(action, strictConflicts = orderedPlayInboxEnabled)
+			if (result == MPRetentionResult.CONFLICT) handlePlayConflict(action, "local-same-slot-different-card")
 			if (result != MPRetentionResult.RETAINED) return
 		}
 		playCard(localPlayerId, card)
@@ -1017,6 +1019,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	 */
 	private var mpGameGeneration: Int = 0
 	private var strictBidSemanticsEnabled: Boolean = false
+	private var orderedPlayInboxEnabled: Boolean = false
 	private val mpRecovery = MPRecoveryCoordinator()
 
 	fun isMPRecoveryFrozen(): Boolean = mpRecovery.isFrozen(
@@ -1371,8 +1374,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val trickPlayNum = s.currentTrick.plays.count { it != null } + 1
 		Log.d(MP_TAG, "broadcastCPUPlay canonicalId=$canonicalId → roomSeat=$roomSeat card=${card.uid} hand=$mpCurrentHandNum trick=$trickNum play=$trickPlayNum")
 		val cmdId = adapter.newActionCmdId()
-		val result = mpSemanticFacts.retain(normalizedPlay(cmdId, roomSeat, wirePlayerId, card,
-			mpCurrentHandNum, trickNum, trickPlayNum))
+		val action = normalizedPlay(cmdId, roomSeat, wirePlayerId, card,
+			mpCurrentHandNum, trickNum, trickPlayNum)
+		val result = mpSemanticFacts.retain(action, strictConflicts = orderedPlayInboxEnabled)
+		if (result == MPRetentionResult.CONFLICT) handlePlayConflict(action, "host-cpu-same-slot-different-card")
 		if (result == MPRetentionResult.RETAINED) {
 			adapter.sendPlayCard(roomSeat, wirePlayerId, card, mpCurrentHandNum, trickNum, trickPlayNum, cmdId)
 		}
@@ -1422,6 +1427,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		if (gameGeneration > mpGameGeneration) {
 			strictBidSemanticsEnabled = capabilities.containsAll(setOf(
 				MPProtocol.CAP_EXPLICIT_BID_ROLE, MPProtocol.CAP_SEMANTIC_FACTS, MPProtocol.CAP_STATE_RESYNC))
+			orderedPlayInboxEnabled = capabilities.containsAll(setOf(
+				MPProtocol.CAP_ORDERED_PLAY_INBOX, MPProtocol.CAP_SEMANTIC_FACTS, MPProtocol.CAP_STATE_RESYNC))
 		}
 		onGameConfig(config, seatPlayers, gameGeneration)
 	}
@@ -1720,9 +1727,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	private fun handleBidConflict(action: MPNormalizedAction) {
 		val existing = mpSemanticFacts.fact(action.semanticKey)
 		val scope = MPRecoveryScope(action.gameGeneration, MPRecoveryScopeKind.HAND, action.handNum)
+		val shouldRequest = mpRecovery.gate(scope) == null
 		val gate = mpRecovery.freeze(scope, MPRecoveryReason.CONFLICTING_FACT)
 		Log.e(MP_TAG, "BID CONFLICT key=${action.semanticKey} firstCmd=${existing?.cmdId?.take(8)} secondCmd=${action.cmdId.take(8)} first=${existing?.payload} second=${action.payload}")
-		if (!isMPHost && gate.requestId != null) mpAdapter?.sendResyncRequest(ResyncRequestMessage(
+		if (shouldRequest && !isMPHost && gate.requestId != null) mpAdapter?.sendResyncRequest(ResyncRequestMessage(
 			UUID.randomUUID().toString(), localMPSeat, localWirePlayerId, gate.requestId, localMPSeat,
 			action.gameGeneration, action.handNum, WireRecoveryReason.CONFLICTING_FACT,
 			action.semanticKey.toString(), listOfNotNull(existing?.cmdId, action.cmdId)))
@@ -1733,7 +1741,17 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			return MPRetentionResult.REJECTED
 		}
 		if (isMPSemanticallyStale(action.gameGeneration, action.handNum, mpGameGeneration, mpCurrentHandNum)) return MPRetentionResult.STALE
-		val retention = mpSemanticFacts.retain(action)
+		val currentTrick = _state.value.discard.size / _state.value.players.size.coerceAtLeast(1) + 1
+		if (orderedPlayInboxEnabled && action.gameGeneration == mpGameGeneration &&
+			action.handNum == mpCurrentHandNum && action.trickNum > currentTrick + 1) {
+			handlePlayConflict(action, "beyond-next-trick")
+			return MPRetentionResult.CONFLICT
+		}
+		val retention = mpSemanticFacts.retain(action, strictConflicts = orderedPlayInboxEnabled)
+		if (retention == MPRetentionResult.CONFLICT) {
+			handlePlayConflict(action, "same-slot-different-card")
+			return retention
+		}
 		if (retention != MPRetentionResult.RETAINED) return retention
 		if (isMPRecoveryFrozen()) {
 			mpSemanticFacts.stage(action)
@@ -1747,34 +1765,41 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			mpSemanticFacts.stage(action)
 			return MPRetentionResult.RETAINED
 		}
-		applyRetainedPlay(action)
-		return MPRetentionResult.RETAINED
+		return applyRetainedPlay(action)
 	}
 
-	private fun applyRetainedPlay(action: MPNormalizedAction) {
-		val payload = action.payload as? MPNormalizedPayload.CardPlay ?: return
+	private fun applyRetainedPlay(action: MPNormalizedAction): MPRetentionResult {
+		val payload = action.payload as? MPNormalizedPayload.CardPlay ?: return MPRetentionResult.REJECTED
 		val seat = action.senderSeat
-		val cardUid = wireIdToCard(payload.cardId)?.uid ?: return
+		val cardUid = wireIdToCard(payload.cardId)?.uid ?: return MPRetentionResult.REJECTED
 		val handNum = action.handNum
-		val trickNum = action.trickNum ?: return
-		val trickPlayNum = action.trickPlayNum ?: return
+		val trickNum = action.trickNum ?: return MPRetentionResult.REJECTED
+		val trickPlayNum = action.trickPlayNum ?: return MPRetentionResult.REJECTED
 		val currentTrickNum = _state.value.discard.size / _state.value.players.size.coerceAtLeast(1) + 1
 		val playedCountBefore = _state.value.currentTrick.plays.count { it != null }
 		if (trickNum > currentTrickNum || trickPlayNum - 1 > playedCountBefore) {
 			mpSemanticFacts.stage(action)
-			return
+			return MPRetentionResult.RETAINED
 		}
 		val n = _state.value.players.size
 		val playedCount = _state.value.currentTrick.plays.count { it != null }
 		if (playedCount >= n) {
 			Log.w(MP_TAG, "onPlayCard DROPPED trick already complete trickPlayNum=$trickPlayNum playedCount=$playedCount")
-			return
+			return MPRetentionResult.STALE
 		}
 		if (trickPlayNum - 1 != playedCount) {
 			Log.w(MP_TAG, "onPlayCard DROPPED out-of-order trickPlayNum=$trickPlayNum playedCount=$playedCount")
-			return
+			return MPRetentionResult.STALE
 		}
 		val canonicalId = roomSeatToCanonicalId(seat)
+		if (orderedPlayInboxEnabled) {
+			val expectedIndex = (_state.value.leaderIndex + playedCount) % n
+			val expectedId = _state.value.players.getOrNull(expectedIndex)?.id
+			if (canonicalId != expectedId) {
+				handlePlayConflict(action, "wrong-acting-seat expected=$expectedId actual=$canonicalId")
+				return MPRetentionResult.CONFLICT
+			}
+		}
 		val playPhaseBefore = _state.value.phase
 		// phaseHands[Deal] is the LIVE hand (mutated by removeCardFromHand after each play),
 		// not the original deal snapshot — so a duplicate play for an already-played card
@@ -1782,8 +1807,16 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val card = _state.value.phaseHands[GamePhase.Deal]?.lastOrNull()
 			?.perPlayer?.get(canonicalId)?.hand?.firstOrNull { it.uid == cardUid }
 		if (card == null) {
+			if (orderedPlayInboxEnabled) {
+				handlePlayConflict(action, "card-not-owned card=$cardUid player=$canonicalId")
+				return MPRetentionResult.CONFLICT
+			}
 			Log.w(MP_TAG, "onPlayCard DROPPED card=$cardUid not in live hand of $canonicalId")
-			return
+			return MPRetentionResult.STALE
+		}
+		if (orderedPlayInboxEnabled && !canPlayCard(card, canonicalId)) {
+			handlePlayConflict(action, "illegal-card card=$cardUid player=$canonicalId")
+			return MPRetentionResult.CONFLICT
 		}
 		Log.d(MP_TAG, "onPlayCard ACCEPTED seat=$seat canonicalId=$canonicalId card=$cardUid hand=$handNum trick=$trickNum play=$trickPlayNum phaseBefore=$playPhaseBefore")
 		playCard(canonicalId, card)
@@ -1794,6 +1827,19 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		// appearing on screen — especially visible on the final trick where Score/EndHand follows.
 		viewModelScope.launch { emitAnimation(AnimationEvent.CardPlayed(canonicalId, card)) }
 		drainSemanticFacts()
+		return MPRetentionResult.RETAINED
+	}
+
+	private fun handlePlayConflict(action: MPNormalizedAction, reason: String) {
+		val existing = mpSemanticFacts.fact(action.semanticKey)
+		val scope = MPRecoveryScope(action.gameGeneration, MPRecoveryScopeKind.HAND, action.handNum)
+		val shouldRequest = mpRecovery.gate(scope) == null
+		val gate = mpRecovery.freeze(scope, MPRecoveryReason.CONFLICTING_FACT)
+		Log.e(MP_TAG, "PLAY CONFLICT reason=$reason key=${action.semanticKey} firstCmd=${existing?.cmdId?.take(8)} secondCmd=${action.cmdId.take(8)} first=${existing?.payload} second=${action.payload}")
+		if (shouldRequest && !isMPHost && gate.requestId != null) mpAdapter?.sendResyncRequest(ResyncRequestMessage(
+			UUID.randomUUID().toString(), localMPSeat, localWirePlayerId, gate.requestId, localMPSeat,
+			action.gameGeneration, action.handNum, WireRecoveryReason.CONFLICTING_FACT,
+			action.semanticKey.toString(), listOfNotNull(existing?.cmdId, action.cmdId)))
 	}
 
 	private fun drainSemanticFacts() {

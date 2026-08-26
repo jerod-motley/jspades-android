@@ -4,6 +4,17 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class MPSemanticFactStoreTest {
+	@Test fun strictPlayConflictRetainsFirstCardInSlot() {
+		val store = MPSemanticFactStore()
+		val key = MPSemanticKey(MPActionType.CARD_PLAY, 2, 4, trickNum = 3, trickPlayNum = 2)
+		val first = MPNormalizedAction(MPActionType.CARD_PLAY, key, "first", 1, "p1", 2, 4,
+			trickNum = 3, trickPlayNum = 2, payload = MPNormalizedPayload.CardPlay("10_2"))
+		val changed = first.copy(cmdId = "changed", payload = MPNormalizedPayload.CardPlay("11_2"))
+		assertEquals(MPRetentionResult.RETAINED, store.retain(first, strictConflicts = true))
+		assertEquals(MPRetentionResult.CONFLICT, store.retain(changed, strictConflicts = true))
+		assertEquals(first, store.fact(key))
+	}
+
 	@Test fun strictBidConflictRetainsFirstFact() {
 		val store = MPSemanticFactStore()
 		val key = MPSemanticKey(MPActionType.BID, 2, 4, 1)
