@@ -295,6 +295,7 @@ class MPAdapter(
 
         scope.launch(Dispatchers.Main) {
             val result = route(msg)
+			logRoutingTelemetry(msg, result)
             if (result == MPRetentionResult.REJECTED || result == MPRetentionResult.CONFLICT) {
                 seenCmdIds.remove(msg.cmdId)
             }
@@ -303,6 +304,24 @@ class MPAdapter(
             }
         }
     }
+
+	private fun logRoutingTelemetry(msg: WireMessage, result: MPRetentionResult) {
+		val scope = when (msg) {
+			is GameConfigMessage -> msg.gameGeneration to null
+			is DealMessage -> msg.gameGeneration to msg.handNum
+			is BlindOfferMessage -> msg.gameGeneration to msg.handNum
+			is BlindResponseMessage -> msg.gameGeneration to msg.handNum
+			is BlindPhaseCompleteMessage -> msg.gameGeneration to msg.handNum
+			is BidMessage -> msg.gameGeneration to msg.handNum
+			is PlayCardMessage -> msg.gameGeneration to msg.handNum
+			is ReadyForNextHandMessage -> msg.gameGeneration to msg.handNum
+			is RequestPlayAgainMessage -> msg.gameGeneration to null
+			is ResyncRequestMessage -> msg.gameGeneration to msg.handNum
+			is StateSnapshotMessage -> msg.gameGeneration to msg.handNum
+			else -> null to null
+		}
+		Log.i(TAG, "telemetry event=mp_route action=${msg::class.simpleName} result=$result cmdId=${msg.cmdId.take(8)} generation=${scope.first} hand=${scope.second} capabilities=${negotiatedCapabilities.sorted()}")
+	}
 
     private fun MPRetentionResult.isAcknowledged(): Boolean = shouldAcknowledgeRoutingResult(this)
 
@@ -343,6 +362,7 @@ class MPAdapter(
 			negotiatedGeneration = msg.gameGeneration
 			negotiatedCapabilities = msg.capabilities
 		}
+		Log.i(TAG, "telemetry event=mp_capabilities generation=${msg.gameGeneration} protocolVersion=${msg.protocolVersion} acceptedGeneration=$negotiatedGeneration capabilities=${negotiatedCapabilities.sorted()}")
         delegate.onGameConfig(msg.config, msg.players, msg.gameGeneration, msg.capabilities)
         // Flush messages that arrived before gameConfig was processed.
         // Identity-validate each one now that seatPlayerMap is populated.
@@ -360,6 +380,10 @@ class MPAdapter(
             }
             Log.d(TAG, "preConfigQueue flush cmdId=${qMsg.cmdId.take(8)} type=${qMsg::class.simpleName}")
             val result = route(qMsg)
+			logRoutingTelemetry(qMsg, result)
+			if (result == MPRetentionResult.REJECTED || result == MPRetentionResult.CONFLICT) {
+				seenCmdIds.remove(qMsg.cmdId)
+			}
 			if (qMsg !is ReceiptAckMessage && qMsg.cmdId !in locallyOriginatedCmdIds && result.isAcknowledged()) {
 				dispatchAck(qMsg.cmdId)
 			}

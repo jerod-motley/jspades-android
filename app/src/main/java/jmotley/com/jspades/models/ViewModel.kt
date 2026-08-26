@@ -1745,7 +1745,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val scope = MPRecoveryScope(action.gameGeneration, MPRecoveryScopeKind.HAND, action.handNum)
 		val shouldRequest = mpRecovery.gate(scope) == null
 		val gate = mpRecovery.freeze(scope, MPRecoveryReason.CONFLICTING_FACT)
-		Log.e(MP_TAG, "BID CONFLICT key=${action.semanticKey} firstCmd=${existing?.cmdId?.take(8)} secondCmd=${action.cmdId.take(8)} first=${existing?.payload} second=${action.payload}")
+		Log.e(MP_TAG, "telemetry event=mp_conflict action=bid generation=${action.gameGeneration} hand=${action.handNum} key=${action.semanticKey} requestId=${gate.requestId} recoveryRound=${gate.recoveryRound} firstCmd=${existing?.cmdId} secondCmd=${action.cmdId} first=${existing?.payload} second=${action.payload}")
 		if (shouldRequest && !isMPHost && gate.requestId != null) mpAdapter?.sendResyncRequest(ResyncRequestMessage(
 			UUID.randomUUID().toString(), localMPSeat, localWirePlayerId, gate.requestId, localMPSeat,
 			action.gameGeneration, action.handNum, WireRecoveryReason.CONFLICTING_FACT,
@@ -1851,7 +1851,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val scope = MPRecoveryScope(action.gameGeneration, MPRecoveryScopeKind.HAND, action.handNum)
 		val shouldRequest = mpRecovery.gate(scope) == null
 		val gate = mpRecovery.freeze(scope, MPRecoveryReason.CONFLICTING_FACT)
-		Log.e(MP_TAG, "PLAY CONFLICT reason=$reason key=${action.semanticKey} firstCmd=${existing?.cmdId?.take(8)} secondCmd=${action.cmdId.take(8)} first=${existing?.payload} second=${action.payload}")
+		Log.e(MP_TAG, "telemetry event=mp_conflict action=playCard reason=$reason generation=${action.gameGeneration} hand=${action.handNum} key=${action.semanticKey} requestId=${gate.requestId} recoveryRound=${gate.recoveryRound} firstCmd=${existing?.cmdId} secondCmd=${action.cmdId} first=${existing?.payload} second=${action.payload}")
 		if (shouldRequest && !isMPHost && gate.requestId != null) mpAdapter?.sendResyncRequest(ResyncRequestMessage(
 			UUID.randomUUID().toString(), localMPSeat, localWirePlayerId, gate.requestId, localMPSeat,
 			action.gameGeneration, action.handNum, WireRecoveryReason.CONFLICTING_FACT,
@@ -1907,7 +1907,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		if (!isMPHost || message.requesterSeat != message.seat || message.gameGeneration > mpGameGeneration) {
 			return MPRetentionResult.REJECTED
 		}
-		freezeMPRecovery(MPRecoveryReason.valueOf(message.reason.name), message.handNum)
+		val gate = freezeMPRecovery(MPRecoveryReason.valueOf(message.reason.name), message.handNum)
+		Log.w(MP_TAG, "telemetry event=mp_recovery_request requestId=${message.requestId} generation=${message.gameGeneration} hand=${message.handNum} requesterSeat=${message.requesterSeat} reason=${message.reason} recoveryRound=${gate.recoveryRound}")
 		return MPRetentionResult.RETAINED
 	}
 
@@ -1918,7 +1919,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		}
 		val scope = MPRecoveryScope(message.gameGeneration,
 			if (message.handNum == null) MPRecoveryScopeKind.GENERATION else MPRecoveryScopeKind.HAND, message.handNum)
-		return mpRecovery.classifySnapshot(scope, message.snapshotVersion, message.targetSeat)
+		val result = mpRecovery.classifySnapshot(scope, message.snapshotVersion, message.targetSeat)
+		Log.w(MP_TAG, "telemetry event=mp_snapshot snapshotId=${message.snapshotId} requestId=${message.responseToRequestId} snapshotVersion=${message.snapshotVersion} targetSeat=${message.targetSeat} generation=${message.gameGeneration} hand=${message.handNum} result=$result")
+		return result
 	}
 
 	override fun onTerminalDeliveryFailure(cmdId: String, missingSeats: Set<Int>, gameGeneration: Int?, handNum: Int?) {
@@ -1926,7 +1929,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val scope = MPRecoveryScope(gameGeneration ?: mpGameGeneration,
 			if (handNum == null) MPRecoveryScopeKind.GENERATION else MPRecoveryScopeKind.HAND, handNum)
 		val gate = mpRecovery.freeze(scope, MPRecoveryReason.DELIVERY_TIMEOUT)
-		Log.e(MP_TAG, "terminal delivery failure cmd=${cmdId.take(8)} missing=$missingSeats")
+		Log.e(MP_TAG, "telemetry event=mp_terminal_delivery cmdId=$cmdId missingSeats=$missingSeats generation=${gate.scope.gameGeneration} hand=${gate.scope.handNum} requestId=${gate.requestId} recoveryRound=${gate.recoveryRound}")
 		if (!isMPHost && gate.requestId != null) {
 			mpAdapter?.sendResyncRequest(ResyncRequestMessage(
 				cmdId = UUID.randomUUID().toString(), seat = localMPSeat, playerId = localWirePlayerId,
