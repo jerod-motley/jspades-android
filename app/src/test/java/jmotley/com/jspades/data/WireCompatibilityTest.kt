@@ -2,11 +2,18 @@ package jmotley.com.jspades.data
 
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WireCompatibilityTest {
+	@Test fun protocolPolicyKeepsLegacyOptionalAndEnforcesNegotiatedFields() {
+		assertFalse(MPProtocol.requiresGeneration(emptySet()))
+		assertFalse(MPProtocol.requiresExplicitBidRole(emptySet()))
+		assertTrue(MPProtocol.requiresGeneration(setOf(MPProtocol.CAP_GENERATION_SCOPED_ACTIONS)))
+		assertTrue(MPProtocol.requiresExplicitBidRole(setOf(MPProtocol.CAP_EXPLICIT_BID_ROLE)))
+	}
     private val json = Json { ignoreUnknownKeys = true }
 
     @Test

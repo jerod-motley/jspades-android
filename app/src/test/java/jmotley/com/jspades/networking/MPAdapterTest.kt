@@ -1,6 +1,12 @@
 package jmotley.com.jspades.networking
 
 import jmotley.com.jspades.data.Suit
+import jmotley.com.jspades.data.BidMessage
+import jmotley.com.jspades.data.MPProtocol
+import jmotley.com.jspades.data.MPRetentionResult
+import jmotley.com.jspades.data.WireBidRole
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -12,6 +18,16 @@ import org.junit.Test
  * network without a test failing here.
  */
 class MPAdapterTest {
+	@Test fun `negotiated missing fields are rejected and never acknowledged`() {
+		val caps = setOf(MPProtocol.CAP_GENERATION_SCOPED_ACTIONS, MPProtocol.CAP_EXPLICIT_BID_ROLE)
+		val compliant = BidMessage("ok", 1, "p1", 1, 4, false,
+			bidRole = WireBidRole.INDIVIDUAL, gameGeneration = 1)
+		assertTrue(validateNegotiatedWireFields(compliant, caps))
+		assertFalse(validateNegotiatedWireFields(compliant.copy(cmdId = "no-gen", gameGeneration = null), caps))
+		assertFalse(validateNegotiatedWireFields(compliant.copy(cmdId = "no-role", bidRole = null), caps))
+		assertFalse(isValidWireCommandId(""))
+		assertFalse(shouldAcknowledgeRoutingResult(MPRetentionResult.REJECTED))
+	}
 
     @Test
     fun `suit wire round-trip`() {

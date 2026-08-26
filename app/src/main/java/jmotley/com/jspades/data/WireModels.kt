@@ -126,6 +126,9 @@ object MPProtocol {
         CAP_GENERATION_SCOPED_ACTIONS,
         CAP_EXPLICIT_BID_ROLE
     )
+
+	fun requiresGeneration(capabilities: Set<String>): Boolean = CAP_GENERATION_SCOPED_ACTIONS in capabilities
+	fun requiresExplicitBidRole(capabilities: Set<String>): Boolean = CAP_EXPLICIT_BID_ROLE in capabilities
 }
 
 @Serializable

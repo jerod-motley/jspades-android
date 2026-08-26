@@ -158,6 +158,32 @@ interface MPAdapterDelegate {
     fun onTerminalDeliveryFailure(cmdId: String, missingSeats: Set<Int>, gameGeneration: Int?, handNum: Int?) {}
 }
 
+internal fun shouldAcknowledgeRoutingResult(result: MPRetentionResult): Boolean =
+	result == MPRetentionResult.RETAINED || result == MPRetentionResult.DUPLICATE || result == MPRetentionResult.STALE
+
+internal fun isValidWireCommandId(cmdId: String): Boolean = cmdId.isNotBlank()
+
+internal fun validateNegotiatedWireFields(msg: WireMessage, capabilities: Set<String>): Boolean {
+	if (msg is GameConfigMessage || msg is ReceiptAckMessage || msg is ResyncRequestMessage || msg is StateSnapshotMessage) return true
+	if (MPProtocol.requiresGeneration(capabilities)) {
+		val generation = when (msg) {
+			is DealMessage -> msg.gameGeneration
+			is BlindOfferMessage -> msg.gameGeneration
+			is BlindResponseMessage -> msg.gameGeneration
+			is BlindPhaseCompleteMessage -> msg.gameGeneration
+			is BidMessage -> msg.gameGeneration
+			is PlayCardMessage -> msg.gameGeneration
+			is ReadyForNextHandMessage -> msg.gameGeneration
+			is RequestPlayAgainMessage -> msg.gameGeneration
+			else -> null
+		}
+		if (generation == null) return false
+	}
+	if (msg is BidMessage && MPProtocol.requiresExplicitBidRole(capabilities) && msg.bidRole == null) return false
+	if (msg is PlayCardMessage && (msg.trickNum < 1 || msg.trickPlayNum < 1)) return false
+	return true
+}
+
 // ── Adapter ───────────────────────────────────────────────────────────────────
 
 /**
@@ -195,6 +221,9 @@ class MPAdapter(
 
     @Volatile
     private var seatPlayerMap: Map<String, WireSeatPlayer> = emptyMap()
+	@Volatile
+	private var negotiatedCapabilities: Set<String> = emptySet()
+	private var negotiatedGeneration: Int? = null
 
     // Messages that arrive before gameConfig is processed are held here and flushed
     // inside handleGameConfig once seatPlayerMap is populated. This ensures deal and
@@ -220,6 +249,10 @@ class MPAdapter(
             Log.w(TAG, "parse failed: ${it.message?.take(80)}")
             return
         }
+		if (!isValidWireCommandId(msg.cmdId)) {
+			Log.w(TAG, "receive rejected: blank cmdId")
+			return
+		}
 
         Log.d(TAG, "receive action=${msg::class.simpleName} cmdId=${msg.cmdId.take(8)} seat=${msg.seat} playerId=${msg.playerId.take(8)}")
 
@@ -271,10 +304,10 @@ class MPAdapter(
         }
     }
 
-    private fun MPRetentionResult.isAcknowledged(): Boolean =
-        this == MPRetentionResult.RETAINED || this == MPRetentionResult.DUPLICATE || this == MPRetentionResult.STALE
+    private fun MPRetentionResult.isAcknowledged(): Boolean = shouldAcknowledgeRoutingResult(this)
 
     private fun route(msg: WireMessage): MPRetentionResult {
+		if (!validateNegotiatedWireFields(msg, negotiatedCapabilities)) return MPRetentionResult.REJECTED
         return when (msg) {
             is GameConfigMessage    -> { handleGameConfig(msg); MPRetentionResult.RETAINED }
             is DealMessage          -> { handleDeal(msg); MPRetentionResult.RETAINED }
@@ -290,7 +323,6 @@ class MPAdapter(
             is StateSnapshotMessage -> delegate.onStateSnapshot(msg)
         }
     }
-
 	private fun handleReceiptAck(msg: ReceiptAckMessage) {
 		val pending = pendingReceipts[msg.ackedCmdId] ?: run {
 			Log.w(TAG, "receipt ack UNMATCHED ackedCmdId=${msg.ackedCmdId.take(8)} fromSeat=${msg.seat} — no pending receipt (already completed/timed out, or cmdId mismatch)")
@@ -305,6 +337,12 @@ class MPAdapter(
 
     private fun handleGameConfig(msg: GameConfigMessage) {
         seatPlayerMap = msg.players
+		val previousGeneration = negotiatedGeneration
+		if ((previousGeneration == null && msg.gameGeneration >= delegate.currentGameGeneration()) ||
+			(previousGeneration != null && msg.gameGeneration > previousGeneration)) {
+			negotiatedGeneration = msg.gameGeneration
+			negotiatedCapabilities = msg.capabilities
+		}
         delegate.onGameConfig(msg.config, msg.players, msg.gameGeneration, msg.capabilities)
         // Flush messages that arrived before gameConfig was processed.
         // Identity-validate each one now that seatPlayerMap is populated.
