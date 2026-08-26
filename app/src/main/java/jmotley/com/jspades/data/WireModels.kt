@@ -74,9 +74,13 @@ sealed class WireMessage {
     abstract val playerId: String
 }
 
+/** Wire values must match iOS's `MPRecoveryReason` raw values exactly (camelCase, not the Kotlin constant name). */
 @Serializable
 enum class WireRecoveryReason {
-    CONFLICTING_FACT, IMPOSSIBLE_PROGRESS, DELIVERY_TIMEOUT, RECONNECT_DIVERGENCE
+    @SerialName("conflictingFact") CONFLICTING_FACT,
+    @SerialName("impossibleProgress") IMPOSSIBLE_PROGRESS,
+    @SerialName("deliveryTimeout") DELIVERY_TIMEOUT,
+    @SerialName("reconnectDivergence") RECONNECT_DIVERGENCE
 }
 
 @Serializable

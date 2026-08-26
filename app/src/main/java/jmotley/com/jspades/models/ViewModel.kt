@@ -1813,6 +1813,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			val expectedId = _state.value.players.getOrNull(expectedIndex)?.id
 			if (canonicalId != expectedId) {
 				handlePlayConflict(action, "wrong-acting-seat expected=$expectedId actual=$canonicalId")
+				mpSemanticFacts.invalidate(action, MPRetentionResult.CONFLICT)
 				return MPRetentionResult.CONFLICT
 			}
 		}
@@ -1825,14 +1826,28 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		if (card == null) {
 			if (orderedPlayInboxEnabled) {
 				handlePlayConflict(action, "card-not-owned card=$cardUid player=$canonicalId")
+				mpSemanticFacts.invalidate(action, MPRetentionResult.CONFLICT)
 				return MPRetentionResult.CONFLICT
 			}
 			Log.w(MP_TAG, "onPlayCard DROPPED card=$cardUid not in live hand of $canonicalId")
 			return MPRetentionResult.STALE
 		}
-		if (orderedPlayInboxEnabled && !canPlayCard(card, canonicalId)) {
-			handlePlayConflict(action, "illegal-card card=$cardUid player=$canonicalId")
-			return MPRetentionResult.CONFLICT
+		if (!canPlayCard(card, canonicalId)) {
+			// Always enforced, unlike the other orderedPlayInbox-gated checks above: this is
+			// the last line of defense against a false trick winner (e.g. an ace silently
+			// withheld while a low card is accepted as the legal follow). The full CONFLICT
+			// path is reserved for once orderedPlayInbox is negotiated, because handlePlayConflict
+			// freezes the hand pending a resync that the host does not yet actually service
+			// (onResyncRequest never sends a real stateSnapshot) — freezing here without that
+			// capability would hang the hand instead of just rejecting the one bad message.
+			if (orderedPlayInboxEnabled) {
+				handlePlayConflict(action, "illegal-card card=$cardUid player=$canonicalId")
+				mpSemanticFacts.invalidate(action, MPRetentionResult.CONFLICT)
+				return MPRetentionResult.CONFLICT
+			}
+			Log.e(MP_TAG, "onPlayCard REJECTED illegal card=$cardUid player=$canonicalId does not follow suit/trump")
+			mpSemanticFacts.invalidate(action, MPRetentionResult.REJECTED)
+			return MPRetentionResult.REJECTED
 		}
 		Log.d(MP_TAG, "onPlayCard ACCEPTED seat=$seat canonicalId=$canonicalId card=$cardUid hand=$handNum trick=$trickNum play=$trickPlayNum phaseBefore=$playPhaseBefore")
 		playCard(canonicalId, card)

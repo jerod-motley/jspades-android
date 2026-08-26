@@ -47,6 +47,40 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "WSSMP"
+private val relayRebuildJson = Json { ignoreUnknownKeys = true }
+
+/** Internal for shared protocol-fixture tests; production receive routing uses this exact path. */
+internal fun rebuildRelayEnvelopeForDecoding(raw: String): String? = runCatching {
+    val obj = relayRebuildJson.parseToJsonElement(raw).jsonObject
+    val type = (obj["type"] as? JsonPrimitive)?.content ?: return@runCatching null
+    if (type !in setOf("gameConfig", "deal", "blindOffer", "blindResponse", "bid", "playCard",
+            "readyForNextHand", "requestPlayAgain", "blindPhaseComplete", "receiptAck",
+            "resyncRequest", "stateSnapshot")) return@runCatching null
+    val payloadObj = obj["payload"] as? JsonObject ?: return@runCatching null
+
+    buildJsonObject {
+        put("type", type)
+        (obj["cmdId"] as? JsonPrimitive)?.content?.let { put("cmdId", it) }
+        payloadObj.forEach { (key, payloadElement) ->
+            val stringValue = (payloadElement as? JsonPrimitive)?.content ?: return@forEach
+            val inflated = when {
+                stringValue.startsWith("{") || stringValue.startsWith("[") ->
+                    runCatching { relayRebuildJson.parseToJsonElement(stringValue) }
+                        .getOrElse { JsonPrimitive(stringValue) }
+                stringValue == "true" -> JsonPrimitive(true)
+                stringValue == "false" -> JsonPrimitive(false)
+                stringValue.toLongOrNull() != null -> JsonPrimitive(stringValue.toLong())
+                stringValue.toDoubleOrNull() != null -> JsonPrimitive(stringValue.toDouble())
+                else -> JsonPrimitive(stringValue)
+            }
+            put(key, inflated)
+        }
+        val payloadPlayerId = (payloadObj["playerId"] as? JsonPrimitive)?.content
+        if (payloadPlayerId.isNullOrEmpty()) {
+            (obj["fromPlayerId"] as? JsonPrimitive)?.content?.let { put("playerId", it) }
+        }
+    }.toString()
+}.getOrNull()
 
 // ── Card format conversion ────────────────────────────────────────────────────
 // Wire: rank 0-based (TWO=0…ACE=12, specials above 12), suit ♥=0/♣=1/♦=2/♠=3
@@ -593,48 +627,7 @@ class MPAdapter(
      * Returns null for non-WireMessage envelope types (startGame, startCountdown, etc.) so
      * the caller can fall back to the legacy parseIncoming path.
      */
-    private fun rebuildFromRelayEnvelope(raw: String): String? = runCatching {
-        val obj = wireJson.parseToJsonElement(raw).jsonObject
-        val type = (obj["type"] as? JsonPrimitive)?.content ?: return@runCatching null
-        if (type !in setOf("gameConfig", "deal", "blindOffer", "blindResponse", "bid", "playCard", "readyForNextHand", "requestPlayAgain", "blindPhaseComplete", "receiptAck")) {
-            return@runCatching null
-        }
-        val payloadObj = obj["payload"] as? JsonObject ?: return@runCatching null
-
-        buildJsonObject {
-            put("type", type)
-            (obj["cmdId"] as? JsonPrimitive)?.content?.let { put("cmdId", it) }
-            // Re-inflate payload string values to their proper JSON types.
-            // Only attempt JSON parsing for values that are unambiguously JSON structures or
-            // pure primitives — never for arbitrary strings such as UUIDs, which a permissive
-            // parser may partially decode (e.g. "51D61897-..." → 51), leaving cmdId unquoted.
-            // This includes the payload's own "playerId" (the sender's self-reported identity),
-            // which is overridden below if blank.
-            payloadObj.forEach { (k, payloadElem) ->
-                runCatching {
-                    val strVal = (payloadElem as JsonPrimitive).content
-                    val elem = when {
-                        strVal.startsWith("{") || strVal.startsWith("[") ->
-                            runCatching { wireJson.parseToJsonElement(strVal) }.getOrElse { JsonPrimitive(strVal) }
-                        strVal == "true"  -> JsonPrimitive(true)
-                        strVal == "false" -> JsonPrimitive(false)
-                        strVal.toLongOrNull() != null   -> JsonPrimitive(strVal.toLong())
-                        strVal.toDoubleOrNull() != null -> JsonPrimitive(strVal.toDouble())
-                        else -> JsonPrimitive(strVal)
-                    }
-                    put(k, elem)
-                }
-            }
-            // Relay renames "playerId" to "fromPlayerId". A blank payload playerId (e.g. a
-            // sender that hasn't resolved its own identity yet) must not silently pass through —
-            // fall back to the relay-assigned identity. Applied after the payload loop above so
-            // it isn't immediately overwritten by that same blank value (see mp-fix.md P1).
-            val payloadPlayerId = (payloadObj["playerId"] as? JsonPrimitive)?.content
-            if (payloadPlayerId.isNullOrEmpty()) {
-                (obj["fromPlayerId"] as? JsonPrimitive)?.content?.let { put("playerId", it) }
-            }
-        }.toString()
-    }.getOrNull()
+    private fun rebuildFromRelayEnvelope(raw: String): String? = rebuildRelayEnvelopeForDecoding(raw)
 
     private fun dispatch(msg: WireMessage) {
         seenCmdIds.add(msg.cmdId)

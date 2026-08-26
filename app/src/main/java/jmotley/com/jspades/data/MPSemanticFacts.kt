@@ -75,6 +75,19 @@ class MPSemanticFactStore {
         pendingByKey[action.semanticKey] = action
     }
 
+    /**
+     * Correct the store after [retain] speculatively marked [action] RETAINED (and cached its
+     * fact/cmdId) but downstream validation — seat, ownership, or legality — determined it must
+     * not be applied. Without this, a retry reusing the same cmdId would hit the cached RETAINED
+     * result and return DUPLICATE, silently acknowledging a play that was never actually applied.
+     * Overwrites the cached command result with the true terminal outcome and frees the semantic
+     * key so a legitimate corrected play can still land in that slot.
+     */
+    fun invalidate(action: MPNormalizedAction, result: MPRetentionResult) {
+        resultsByCommand[action.cmdId] = result
+        if (factsByKey[action.semanticKey]?.cmdId == action.cmdId) factsByKey.remove(action.semanticKey)
+    }
+
     fun fact(key: MPSemanticKey): MPNormalizedAction? = factsByKey[key]
     fun facts(predicate: (MPNormalizedAction) -> Boolean): List<MPNormalizedAction> = factsByKey.values.filter(predicate)
     fun pending(key: MPSemanticKey): MPNormalizedAction? = pendingByKey[key]
