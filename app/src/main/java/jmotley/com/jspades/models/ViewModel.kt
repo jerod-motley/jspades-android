@@ -45,6 +45,7 @@ import jmotley.com.jspades.networking.wireStringToGameType
 import jmotley.com.jspades.networking.suitToWireSuit
 import jmotley.com.jspades.networking.wireIdToCard
 import android.util.Log
+import java.util.UUID
 
 private const val MP_TAG = "WSSMP"
 
@@ -83,6 +84,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 
 	/** Emit an animation event from the engine. Called only by [PhaseManager]. */
 	suspend fun emitAnimation(event: AnimationEvent) {
+		if (isMPRecoveryFrozen()) return
 		_animationEvents.send(event)
 	}
 
@@ -95,6 +97,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 
 	/** Emit a challenge result from the engine. Called only by [PhaseManager]. */
 	suspend fun emitChallengeResult(result: jmotley.com.jspades.engine.ChallengeResult) {
+		if (isMPRecoveryFrozen()) return
 		_challengeResults.emit(result)
 	}
 
@@ -174,6 +177,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 
 	/** Advance to a new phase. */
 	fun advancePhase(phase: GamePhase) {
+		if (isMPRecoveryFrozen()) return
 		_state.value = _state.value.copy(phase = phase)
 	}
 
@@ -1006,6 +1010,16 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	 * moment it arrives.
 	 */
 	private var mpGameGeneration: Int = 0
+	private val mpRecovery = MPRecoveryCoordinator()
+
+	fun isMPRecoveryFrozen(): Boolean = mpRecovery.isFrozen(
+		mpGameGeneration,
+		mpCurrentHandNum.takeIf { it >= 0 }
+	)
+
+	internal fun freezeMPRecovery(reason: MPRecoveryReason, handNum: Int? = mpCurrentHandNum.takeIf { it >= 0 }): MPRecoveryGate =
+		mpRecovery.freeze(MPRecoveryScope(mpGameGeneration,
+			if (handNum == null) MPRecoveryScopeKind.GENERATION else MPRecoveryScopeKind.HAND, handNum), reason)
 	private val mpSemanticFacts = MPSemanticFactStore()
 
 	private fun normalizedBid(
@@ -1596,6 +1610,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		if (isMPSemanticallyStale(action.gameGeneration, action.handNum, mpGameGeneration, mpCurrentHandNum)) return MPRetentionResult.STALE
 		val retention = mpSemanticFacts.retain(action)
 		if (retention != MPRetentionResult.RETAINED) return retention
+		if (isMPRecoveryFrozen()) {
+			mpSemanticFacts.stage(action)
+			return MPRetentionResult.RETAINED
+		}
 		if (action.gameGeneration > mpGameGeneration) {
 			mpSemanticFacts.stage(action)
 			return MPRetentionResult.RETAINED
@@ -1646,6 +1664,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		if (isMPSemanticallyStale(action.gameGeneration, action.handNum, mpGameGeneration, mpCurrentHandNum)) return MPRetentionResult.STALE
 		val retention = mpSemanticFacts.retain(action)
 		if (retention != MPRetentionResult.RETAINED) return retention
+		if (isMPRecoveryFrozen()) {
+			mpSemanticFacts.stage(action)
+			return MPRetentionResult.RETAINED
+		}
 		if (action.gameGeneration > mpGameGeneration) {
 			mpSemanticFacts.stage(action)
 			return MPRetentionResult.RETAINED
@@ -1704,6 +1726,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	}
 
 	private fun drainSemanticFacts() {
+		if (isMPRecoveryFrozen()) return
 		val generation = mpGameGeneration
 		val hand = mpCurrentHandNum
 		val ready = mpSemanticFacts.takePending {
@@ -1714,6 +1737,41 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 				MPActionType.BID -> applyRetainedBid(action)
 				MPActionType.CARD_PLAY -> applyRetainedPlay(action)
 			}
+		}
+	}
+
+	override fun onResyncRequest(message: ResyncRequestMessage): MPRetentionResult {
+		if (message.gameGeneration < mpGameGeneration) return MPRetentionResult.STALE
+		if (!isMPHost || message.requesterSeat != message.seat || message.gameGeneration > mpGameGeneration) {
+			return MPRetentionResult.REJECTED
+		}
+		freezeMPRecovery(MPRecoveryReason.valueOf(message.reason.name), message.handNum)
+		return MPRetentionResult.RETAINED
+	}
+
+	override fun onStateSnapshot(message: StateSnapshotMessage): MPRetentionResult {
+		if (message.gameGeneration < mpGameGeneration) return MPRetentionResult.STALE
+		if (isMPHost || message.seat != 0 || message.targetSeat != localMPSeat || message.gameGeneration > mpGameGeneration) {
+			return if (message.targetSeat != localMPSeat) MPRetentionResult.STALE else MPRetentionResult.REJECTED
+		}
+		val scope = MPRecoveryScope(message.gameGeneration,
+			if (message.handNum == null) MPRecoveryScopeKind.GENERATION else MPRecoveryScopeKind.HAND, message.handNum)
+		return mpRecovery.classifySnapshot(scope, message.snapshotVersion, message.targetSeat)
+	}
+
+	override fun onTerminalDeliveryFailure(cmdId: String, missingSeats: Set<Int>, gameGeneration: Int?, handNum: Int?) {
+		if (gameGeneration != null && gameGeneration < mpGameGeneration) return
+		val scope = MPRecoveryScope(gameGeneration ?: mpGameGeneration,
+			if (handNum == null) MPRecoveryScopeKind.GENERATION else MPRecoveryScopeKind.HAND, handNum)
+		val gate = mpRecovery.freeze(scope, MPRecoveryReason.DELIVERY_TIMEOUT)
+		Log.e(MP_TAG, "terminal delivery failure cmd=${cmdId.take(8)} missing=$missingSeats")
+		if (!isMPHost && gate.requestId != null) {
+			mpAdapter?.sendResyncRequest(ResyncRequestMessage(
+				cmdId = UUID.randomUUID().toString(), seat = localMPSeat, playerId = localWirePlayerId,
+				requestId = gate.requestId, requesterSeat = localMPSeat,
+				gameGeneration = gate.scope.gameGeneration, handNum = gate.scope.handNum,
+				reason = WireRecoveryReason.DELIVERY_TIMEOUT, conflictingCmdIds = listOf(cmdId)
+			))
 		}
 	}
 

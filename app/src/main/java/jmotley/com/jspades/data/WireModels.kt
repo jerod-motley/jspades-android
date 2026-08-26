@@ -74,6 +74,46 @@ sealed class WireMessage {
     abstract val playerId: String
 }
 
+@Serializable
+enum class WireRecoveryReason {
+    CONFLICTING_FACT, IMPOSSIBLE_PROGRESS, DELIVERY_TIMEOUT, RECONNECT_DIVERGENCE
+}
+
+@Serializable
+@SerialName("resyncRequest")
+data class ResyncRequestMessage(
+    override val cmdId: String,
+    override val seat: Int,
+    override val playerId: String,
+    val requestId: String,
+    val requesterSeat: Int,
+    val gameGeneration: Int,
+    val handNum: Int? = null,
+    val reason: WireRecoveryReason,
+    val semanticKey: String? = null,
+    val conflictingCmdIds: List<String> = emptyList(),
+    val lastSnapshotVersion: Long? = null,
+    val logicalStateDigest: String? = null
+) : WireMessage()
+
+@Serializable
+@SerialName("stateSnapshot")
+data class StateSnapshotMessage(
+    override val cmdId: String,
+    override val seat: Int,
+    override val playerId: String,
+    val snapshotId: String,
+    val responseToRequestId: String? = null,
+    val targetSeat: Int,
+    val gameGeneration: Int,
+    val handNum: Int? = null,
+    val snapshotVersion: Long,
+    /** Canonical JSON owned and validated by the reducer, never UI state. */
+    val logicalState: String,
+    val retainedSemanticFacts: List<String> = emptyList(),
+    val retainedCmdIds: List<String> = emptyList()
+) : WireMessage()
+
 object MPProtocol {
     const val CURRENT_VERSION: Int = 2
     const val CAP_GENERATION_SCOPED_ACTIONS = "generationScopedActions"

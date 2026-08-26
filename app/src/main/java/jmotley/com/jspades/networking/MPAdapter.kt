@@ -22,6 +22,9 @@ import jmotley.com.jspades.data.Rank
 import jmotley.com.jspades.data.ReadyForNextHandMessage
 import jmotley.com.jspades.data.RequestPlayAgainMessage
 import jmotley.com.jspades.data.ReceiptAckMessage
+import jmotley.com.jspades.data.ResyncRequestMessage
+import jmotley.com.jspades.data.StateSnapshotMessage
+import jmotley.com.jspades.data.WireRecoveryReason
 import jmotley.com.jspades.data.Suit
 import jmotley.com.jspades.data.WireCard
 import jmotley.com.jspades.data.WireGameConfig
@@ -148,6 +151,9 @@ interface MPAdapterDelegate {
     fun onPlayCard(action: MPNormalizedAction): MPRetentionResult
     fun onReadyForNextHand(seat: Int, handNum: Int)
     fun onRequestPlayAgain(seat: Int, gameGeneration: Int)
+    fun onResyncRequest(message: ResyncRequestMessage): MPRetentionResult = MPRetentionResult.RETAINED
+    fun onStateSnapshot(message: StateSnapshotMessage): MPRetentionResult = MPRetentionResult.RETAINED
+    fun onTerminalDeliveryFailure(cmdId: String, missingSeats: Set<Int>, gameGeneration: Int?, handNum: Int?) {}
 }
 
 // ── Adapter ───────────────────────────────────────────────────────────────────
@@ -179,6 +185,8 @@ class MPAdapter(
 	private data class PendingReceipt(
 		val raw: String,
 		val expectedSeats: Set<Int>,
+		val gameGeneration: Int?,
+		val handNum: Int?,
 		val acknowledgedSeats: MutableSet<Int> = ConcurrentHashMap.newKeySet()
 	)
 	private val pendingReceipts = ConcurrentHashMap<String, PendingReceipt>()
@@ -270,7 +278,9 @@ class MPAdapter(
             is ReadyForNextHandMessage -> { handleReadyForNextHand(msg); MPRetentionResult.RETAINED }
             is RequestPlayAgainMessage -> { handleRequestPlayAgain(msg); MPRetentionResult.RETAINED }
             is BlindPhaseCompleteMessage -> { handleBlindPhaseComplete(msg); MPRetentionResult.RETAINED }
-			is ReceiptAckMessage -> { handleReceiptAck(msg); MPRetentionResult.RETAINED }
+            is ReceiptAckMessage -> { handleReceiptAck(msg); MPRetentionResult.RETAINED }
+            is ResyncRequestMessage -> delegate.onResyncRequest(msg)
+            is StateSnapshotMessage -> delegate.onStateSnapshot(msg)
         }
     }
 
@@ -395,6 +405,9 @@ class MPAdapter(
             protocolVersion = MPProtocol.CURRENT_VERSION,
             capabilities = MPProtocol.advertisedCapabilities))
     }
+
+    fun sendResyncRequest(message: ResyncRequestMessage) = dispatch(message)
+    fun sendStateSnapshot(message: StateSnapshotMessage) = dispatch(message)
 
     fun sendDeal(
         handNum: Int,
@@ -576,21 +589,44 @@ class MPAdapter(
             payload = payload
         ).toJson()
 		socket.send(raw)
-		if (msg !is ReceiptAckMessage) trackForReceipt(msg.cmdId, raw)
+		if (msg !is ReceiptAckMessage) {
+			val targets = when (msg) {
+				is StateSnapshotMessage -> setOf(msg.targetSeat)
+				is ResyncRequestMessage -> setOf(0)
+				else -> null
+			}
+			val actionScope = when (msg) {
+				is BidMessage -> msg.gameGeneration to msg.handNum
+				is PlayCardMessage -> msg.gameGeneration to msg.handNum
+				is DealMessage -> msg.gameGeneration to msg.handNum
+				is BlindOfferMessage -> msg.gameGeneration to msg.handNum
+				is BlindResponseMessage -> msg.gameGeneration to msg.handNum
+				is BlindPhaseCompleteMessage -> msg.gameGeneration to msg.handNum
+				is ReadyForNextHandMessage -> msg.gameGeneration to msg.handNum
+				is ResyncRequestMessage -> msg.gameGeneration to msg.handNum
+				is StateSnapshotMessage -> msg.gameGeneration to msg.handNum
+				is GameConfigMessage -> msg.gameGeneration to null
+				is RequestPlayAgainMessage -> msg.gameGeneration to null
+				is ReceiptAckMessage -> null to null
+			}
+			trackForReceipt(msg.cmdId, raw, targets, actionScope.first, actionScope.second)
+		}
     }
 
 	private fun dispatchAck(ackedCmdId: String) {
 		dispatch(ReceiptAckMessage(nextCmdId(), localSeat, localPlayerId, ackedCmdId))
 	}
 
-	private fun trackForReceipt(cmdId: String, raw: String) {
-		val expected = seatPlayerMap.entries.mapNotNull { (seat, player) ->
+	private fun trackForReceipt(cmdId: String, raw: String, targetSeats: Set<Int>? = null,
+		gameGeneration: Int? = null, handNum: Int? = null) {
+		val humans = seatPlayerMap.entries.mapNotNull { (seat, player) ->
 			seat.toIntOrNull()?.takeIf {
 				it != localSeat && player.kind != "cpu" && !player.playerId.startsWith("cpu-")
 			}
 		}.toSet()
+		val expected = targetSeats?.intersect(humans) ?: humans
 		if (expected.isEmpty()) return
-		val pending = PendingReceipt(raw, expected)
+		val pending = PendingReceipt(raw, expected, gameGeneration, handNum)
 		pendingReceipts[cmdId] = pending
 		scope.launch {
 			repeat(4) {
@@ -601,6 +637,9 @@ class MPAdapter(
 			}
 			if (pendingReceipts[cmdId] === pending) {
 				Log.e(TAG, "receipt timeout cmdId=${cmdId.take(8)} missing=${expected - pending.acknowledgedSeats}")
+				pendingReceipts.remove(cmdId, pending)
+				delegate.onTerminalDeliveryFailure(cmdId, expected - pending.acknowledgedSeats,
+					pending.gameGeneration, pending.handNum)
 			}
 		}
 	}

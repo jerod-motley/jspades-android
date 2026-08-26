@@ -66,6 +66,7 @@ class PhaseManager(
      * External callers (ViewModel, UI) always use this.
      */
     fun execute() {
+        if (viewModel.isMPRecoveryFrozen()) return
         if (!busy.compareAndSet(false, true)) return
         scope.launch {
             try {
@@ -81,6 +82,7 @@ class PhaseManager(
      * Bypasses handleBid and goes directly to the post-bid phase.
      */
     fun executeBidConfirmed() {
+        if (viewModel.isMPRecoveryFrozen()) return
         if (!busy.compareAndSet(false, true)) return
         scope.launch {
             try {
@@ -99,6 +101,7 @@ class PhaseManager(
      * finally block and the UI's subsequent [execute] call resumes the engine.
      */
     private suspend fun dispatch() {
+        if (viewModel.isMPRecoveryFrozen()) return
         when (viewModel.state.value.phase) {
             GamePhase.Lobby       -> handleLobby()
             GamePhase.Deal        -> handleDeal()
