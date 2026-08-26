@@ -297,7 +297,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val adapter = mpAdapter
 		val cmdId = adapter?.newActionCmdId()
 		if (adapter != null && cmdId != null) {
-			val result = mpSemanticFacts.retain(normalizedBid(cmdId, localMPSeat, localWirePlayerId, bid, false, isTeamTotal))
+			val localAction = normalizedBid(cmdId, localMPSeat, localWirePlayerId, bid, false, isTeamTotal)
+			val result = mpSemanticFacts.retain(localAction,
+				strictConflicts = strictBidSemanticsEnabled)
+			if (result == MPRetentionResult.CONFLICT) handleBidConflict(localAction)
 			if (result != MPRetentionResult.RETAINED) return
 		}
 		submitBid(localPlayerId, bid, false)
@@ -566,7 +569,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val adapter = mpAdapter
 		val cmdId = adapter?.takeIf { mpCurrentHandNum >= 0 }?.newActionCmdId()
 		if (adapter != null && cmdId != null) {
-			val result = mpSemanticFacts.retain(normalizedBid(cmdId, localMPSeat, localWirePlayerId, bid, isBlind, false))
+			val localAction = normalizedBid(cmdId, localMPSeat, localWirePlayerId, bid, isBlind, false)
+			val result = mpSemanticFacts.retain(localAction,
+				strictConflicts = strictBidSemanticsEnabled)
+			if (result == MPRetentionResult.CONFLICT) handleBidConflict(localAction)
 			if (result != MPRetentionResult.RETAINED) return
 		}
 		submitBid(playerId = localPlayerId, bid = bid, isBlind = isBlind)
@@ -1010,6 +1016,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	 * moment it arrives.
 	 */
 	private var mpGameGeneration: Int = 0
+	private var strictBidSemanticsEnabled: Boolean = false
 	private val mpRecovery = MPRecoveryCoordinator()
 
 	fun isMPRecoveryFrozen(): Boolean = mpRecovery.isFrozen(
@@ -1332,7 +1339,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		}
 		Log.d(MP_TAG, "submitAndBroadcastCPUBid canonicalId=$canonicalId → roomSeat=$roomSeat amount=$wireAmount blind=$isBlind hand=$mpCurrentHandNum")
 		val cmdId = adapter.newActionCmdId()
-		val result = mpSemanticFacts.retain(normalizedBid(cmdId, roomSeat, wirePlayerId, wireAmount, isBlind, isTeamTotal))
+		val localAction = normalizedBid(cmdId, roomSeat, wirePlayerId, wireAmount, isBlind, isTeamTotal)
+		val result = mpSemanticFacts.retain(localAction,
+			strictConflicts = strictBidSemanticsEnabled)
+		if (result == MPRetentionResult.CONFLICT) handleBidConflict(localAction)
 		if (result == MPRetentionResult.RETAINED) {
 			submitBid(canonicalId, individualAmount, isBlind)
 			if (isTeamTotal && teamId != null) setTeamBid(teamId, wireAmount)
@@ -1407,6 +1417,14 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	// ── MPAdapterDelegate ─────────────────────────────────────────────────────────
 
 	override fun currentGameGeneration(): Int = mpGameGeneration
+	override fun onGameConfig(config: WireGameConfig, seatPlayers: Map<String, WireSeatPlayer>,
+		gameGeneration: Int, capabilities: Set<String>) {
+		if (gameGeneration > mpGameGeneration) {
+			strictBidSemanticsEnabled = capabilities.containsAll(setOf(
+				MPProtocol.CAP_EXPLICIT_BID_ROLE, MPProtocol.CAP_SEMANTIC_FACTS, MPProtocol.CAP_STATE_RESYNC))
+		}
+		onGameConfig(config, seatPlayers, gameGeneration)
+	}
 
 	override fun onGameConfig(config: WireGameConfig, seatPlayers: Map<String, WireSeatPlayer>, gameGeneration: Int) {
 		val gameType = wireStringToGameType(config.gameType) ?: GameType.HOUSE_RULES
@@ -1608,7 +1626,12 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	override fun onBid(action: MPNormalizedAction): MPRetentionResult {
 		if (action.payload !is MPNormalizedPayload.Bid) return MPRetentionResult.REJECTED
 		if (isMPSemanticallyStale(action.gameGeneration, action.handNum, mpGameGeneration, mpCurrentHandNum)) return MPRetentionResult.STALE
-		val retention = mpSemanticFacts.retain(action)
+		if (strictBidSemanticsEnabled && !isValidBidRole(action)) return MPRetentionResult.REJECTED
+		val retention = mpSemanticFacts.retain(action, strictConflicts = strictBidSemanticsEnabled)
+		if (retention == MPRetentionResult.CONFLICT) {
+			handleBidConflict(action)
+			return retention
+		}
 		if (retention != MPRetentionResult.RETAINED) return retention
 		if (isMPRecoveryFrozen()) {
 			mpSemanticFacts.stage(action)
@@ -1635,15 +1658,14 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val handNum = action.handNum
 		val canonicalId = roomSeatToCanonicalId(seat)
 		val remotePlayer = _state.value.players.find { it.id == canonicalId } ?: return
-		var resolvedTeamTotal: Boolean? = isTeamTotal
-		if (_state.value.gameType in setOf(GameType.HOUSE_RULES, GameType.TEAM_KITTY)) {
+		if (!strictBidSemanticsEnabled && _state.value.gameType in setOf(GameType.HOUSE_RULES, GameType.TEAM_KITTY)) {
 			val turn = currentTeamBidTurn(remotePlayer.team)
-			resolvedTeamTotal = isTeamTotal ?: turn?.second
-			if (turn == null || turn.first.id != canonicalId || turn.second != resolvedTeamTotal) {
-				Log.w(MP_TAG, "onBid DROPPED unexpected team bidder seat=$seat amount=$amount isTeamTotal=$isTeamTotal")
+			if (turn == null || turn.first.id != canonicalId || turn.second != isTeamTotal) {
+				Log.w(MP_TAG, "onBid REJECTED legacy unexpected team bidder seat=$seat role=${payload.role}")
 				return
 			}
 		}
+		val resolvedTeamTotal = isTeamTotal
 		val didBid = _state.value.players.find { it.id == canonicalId }?.runtimeFlags?.didBid
 		Log.d(MP_TAG, "onBid ACCEPTED seat=$seat canonicalId=$canonicalId amount=$amount blind=$isBlind didBid=$didBid")
 		submitBid(canonicalId, amount, isBlind)
@@ -1653,8 +1675,57 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			val teamId = _state.value.players.find { it.id == canonicalId }?.team
 			if (teamId != null) setTeamBid(teamId, amount)
 		}
-		advancePhase(GamePhase.Bid)
+		val bidCount = mpSemanticFacts.facts { it.type == MPActionType.BID &&
+			it.gameGeneration == action.gameGeneration && it.handNum == action.handNum }.size
+		advancePhase(if (strictBidSemanticsEnabled && bidCount >= _state.value.players.size) GamePhase.BidReview else GamePhase.Bid)
 		phaseManager.execute()
+	}
+
+	internal fun submitAutoCompletedBlindBid(playerId: String) {
+		if (strictBidSemanticsEnabled && mpCurrentHandNum >= 0) {
+			val canonical = listOf("south", "west", "north", "east").indexOf(playerId)
+			if (canonical >= 0) {
+				val seat = canonicalIdxToRoomSeat(canonical)
+				val role = fixedBidRoleForSeat(seat) ?: WireBidRole.INDIVIDUAL
+				val action = normalizedBid(UUID.randomUUID().toString(), seat,
+					roomSeatToWirePlayerId(seat).orEmpty(), 0, false, role == WireBidRole.TEAM_TOTAL)
+				val result = mpSemanticFacts.retain(action, strictConflicts = true)
+				if (result == MPRetentionResult.CONFLICT) {
+					handleBidConflict(action)
+					return
+				}
+			}
+		}
+		submitBid(playerId, 0, false)
+	}
+
+	private fun fixedBidRoleForSeat(seat: Int): WireBidRole? {
+		val player = _state.value.players.find { it.id == roomSeatToCanonicalId(seat) } ?: return null
+		if (_state.value.gameType !in setOf(GameType.HOUSE_RULES, GameType.TEAM_KITTY)) return WireBidRole.INDIVIDUAL
+		val teammates = _state.value.players.filter { it.team == player.team }.toMutableList()
+		if (teammates.size != 2) return null
+		fun isCpu(p: Player): Boolean {
+			val canonical = listOf("south", "west", "north", "east").indexOf(p.id)
+			val room = if (canonical >= 0) canonicalIdxToRoomSeat(canonical) else -1
+			val wire = mpRoomSeatPlayers[room.toString()]
+			return wire?.kind == "cpu" || wire?.playerId?.startsWith("cpu-") == true
+		}
+		if (teammates.count(::isCpu) == 1) teammates.sortWith(compareByDescending(::isCpu))
+		return if (teammates.first().id == player.id) WireBidRole.INDIVIDUAL else WireBidRole.TEAM_TOTAL
+	}
+
+	private fun isValidBidRole(action: MPNormalizedAction): Boolean =
+		(action.payload as? MPNormalizedPayload.Bid)?.role == fixedBidRoleForSeat(action.senderSeat)
+
+	private fun handleBidConflict(action: MPNormalizedAction) {
+		val existing = mpSemanticFacts.fact(action.semanticKey)
+		val scope = MPRecoveryScope(action.gameGeneration, MPRecoveryScopeKind.HAND, action.handNum)
+		val gate = mpRecovery.freeze(scope, MPRecoveryReason.CONFLICTING_FACT)
+		Log.e(MP_TAG, "BID CONFLICT key=${action.semanticKey} firstCmd=${existing?.cmdId?.take(8)} secondCmd=${action.cmdId.take(8)} first=${existing?.payload} second=${action.payload}")
+		if (!isMPHost && gate.requestId != null) mpAdapter?.sendResyncRequest(ResyncRequestMessage(
+			UUID.randomUUID().toString(), localMPSeat, localWirePlayerId, gate.requestId, localMPSeat,
+			action.gameGeneration, action.handNum, WireRecoveryReason.CONFLICTING_FACT,
+			action.semanticKey.toString(), listOfNotNull(existing?.cmdId, action.cmdId)))
 	}
 
 	override fun onPlayCard(action: MPNormalizedAction): MPRetentionResult {

@@ -4,6 +4,17 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class MPSemanticFactStoreTest {
+	@Test fun strictBidConflictRetainsFirstFact() {
+		val store = MPSemanticFactStore()
+		val key = MPSemanticKey(MPActionType.BID, 2, 4, 1)
+		val first = MPNormalizedAction(MPActionType.BID, key, "first", 1, "p1", 2, 4,
+			payload = MPNormalizedPayload.Bid(3, false, WireBidRole.INDIVIDUAL))
+		val changed = first.copy(cmdId = "changed",
+			payload = MPNormalizedPayload.Bid(5, false, WireBidRole.INDIVIDUAL))
+		assertEquals(MPRetentionResult.RETAINED, store.retain(first, strictConflicts = true))
+		assertEquals(MPRetentionResult.CONFLICT, store.retain(changed, strictConflicts = true))
+		assertEquals(first, store.fact(key))
+	}
     private fun bid(cmdId: String, amount: Int = 4) = MPNormalizedAction(
         type = MPActionType.BID,
         semanticKey = MPSemanticKey(MPActionType.BID, 2, 3, 1),

@@ -748,7 +748,7 @@ class PhaseManager(
                 // Blind already committed — auto-fill any remaining unbidd players and skip BidHuman
                 val remaining = teamPlayers.filter { !it.runtimeFlags.didBid }
                 if (remaining.isNotEmpty()) {
-                    remaining.forEach { p -> viewModel.submitBid(p.id, 0, false) }
+                    remaining.forEach { p -> viewModel.submitAutoCompletedBlindBid(p.id) }
                     viewModel.emitAnimation(AnimationEvent.BidPlaced(remaining.first().id, 0))
                     return
                 }

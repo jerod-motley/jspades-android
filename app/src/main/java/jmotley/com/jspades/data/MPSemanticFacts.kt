@@ -71,6 +71,7 @@ class MPSemanticFactStore {
     }
 
     fun fact(key: MPSemanticKey): MPNormalizedAction? = factsByKey[key]
+    fun facts(predicate: (MPNormalizedAction) -> Boolean): List<MPNormalizedAction> = factsByKey.values.filter(predicate)
     fun pending(key: MPSemanticKey): MPNormalizedAction? = pendingByKey[key]
     fun takePending(predicate: (MPNormalizedAction) -> Boolean): List<MPNormalizedAction> {
         val ready = pendingByKey.values.filter(predicate).sortedWith(

@@ -136,6 +136,8 @@ interface MPAdapterDelegate {
     /** The generation accepted by the game-state owner; adapters must not cache a second copy. */
     fun currentGameGeneration(): Int
     fun onGameConfig(config: WireGameConfig, seatPlayers: Map<String, WireSeatPlayer>, gameGeneration: Int)
+    fun onGameConfig(config: WireGameConfig, seatPlayers: Map<String, WireSeatPlayer>, gameGeneration: Int,
+                     capabilities: Set<String>) = onGameConfig(config, seatPlayers, gameGeneration)
     fun onDeal(
         handNum: Int,
         dealerSeat: Int,
@@ -298,7 +300,7 @@ class MPAdapter(
 
     private fun handleGameConfig(msg: GameConfigMessage) {
         seatPlayerMap = msg.players
-        delegate.onGameConfig(msg.config, msg.players, msg.gameGeneration)
+        delegate.onGameConfig(msg.config, msg.players, msg.gameGeneration, msg.capabilities)
         // Flush messages that arrived before gameConfig was processed.
         // Identity-validate each one now that seatPlayerMap is populated.
         // Sort deal before bids/playCards — the queue holds messages in arrival order, but deal
