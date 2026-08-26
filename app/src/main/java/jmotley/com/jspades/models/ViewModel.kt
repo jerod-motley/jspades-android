@@ -42,6 +42,8 @@ import jmotley.com.jspades.networking.gameTypeToWireString
 import jmotley.com.jspades.networking.hostWireGameConfig
 import jmotley.com.jspades.networking.toWireGameConfig
 import jmotley.com.jspades.networking.wireStringToGameType
+import jmotley.com.jspades.networking.suitToWireSuit
+import jmotley.com.jspades.networking.wireIdToCard
 import android.util.Log
 
 private const val MP_TAG = "WSSMP"
@@ -288,14 +290,20 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val turn = currentTeamBidTurn(teamId) ?: return
 		if (turn.first.id != localPlayerId) return
 		val isTeamTotal = turn.second
+		val adapter = mpAdapter
+		val cmdId = adapter?.newActionCmdId()
+		if (adapter != null && cmdId != null) {
+			val result = mpSemanticFacts.retain(normalizedBid(cmdId, localMPSeat, localWirePlayerId, bid, false, isTeamTotal))
+			if (result != MPRetentionResult.RETAINED) return
+		}
 		submitBid(localPlayerId, bid, false)
 		if (isTeamTotal) setTeamBid(teamId, bid)
 		// The first teammate's bid is preliminary. The second teammate (preferably human)
 		// commits the complete team contract.
-		mpAdapter?.let { adapter ->
+		if (adapter != null && cmdId != null) {
 			Log.d(MP_TAG, "submitHumanTeamBid teamId=$teamId amount=$bid isTeamTotal=$isTeamTotal hand=$mpCurrentHandNum")
 			adapter.sendBid(localMPSeat, localWirePlayerId, bid, false, mpCurrentHandNum,
-				isTeamTotal = isTeamTotal)
+				isTeamTotal = isTeamTotal, cmdId = cmdId)
 		}
 		advancePhase(GamePhase.Bid)
 		phaseManager.execute()
@@ -417,6 +425,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			discard      = current.discard + playedCards,
 			leaderIndex  = winnerIndex
 		)
+		drainSemanticFacts()
 	}
 
 	// ── Scoring ───────────────────────────────────────────────────────────────
@@ -550,11 +559,17 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	 * CPU bidders or move directly to the next phase.
 	 */
 	fun submitHumanBid(bid: Int, localPlayerId: String, isBlind: Boolean = false) {
+		val adapter = mpAdapter
+		val cmdId = adapter?.takeIf { mpCurrentHandNum >= 0 }?.newActionCmdId()
+		if (adapter != null && cmdId != null) {
+			val result = mpSemanticFacts.retain(normalizedBid(cmdId, localMPSeat, localWirePlayerId, bid, isBlind, false))
+			if (result != MPRetentionResult.RETAINED) return
+		}
 		submitBid(playerId = localPlayerId, bid = bid, isBlind = isBlind)
 		// Every MP client sends its own human action (not host-only); CPU actions are host-only.
-		if (mpAdapter != null && mpCurrentHandNum >= 0) {
+		if (adapter != null && cmdId != null) {
 			Log.d(MP_TAG, "submitHumanBid bid=$bid blind=$isBlind seat=$localMPSeat player=${localWirePlayerId.take(8)} hand=$mpCurrentHandNum")
-			mpAdapter!!.sendBid(localMPSeat, localWirePlayerId, bid, isBlind, mpCurrentHandNum)
+			adapter.sendBid(localMPSeat, localWirePlayerId, bid, isBlind, mpCurrentHandNum, cmdId = cmdId)
 		}
 		advancePhase(GamePhase.Bid)
 		phaseManager.execute()
@@ -692,11 +707,18 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val trickNum     = s.discard.size / n + 1
 		val trickPlayNum = s.currentTrick.plays.count { it != null } + 1
 		Log.d(MP_TAG, "submitHumanPlay card=${card.uid} hand=$mpCurrentHandNum trick=$trickNum play=$trickPlayNum")
+		val adapter = mpAdapter
+		val cmdId = adapter?.takeIf { mpCurrentHandNum >= 0 }?.newActionCmdId()
+		if (adapter != null && cmdId != null) {
+			val result = mpSemanticFacts.retain(normalizedPlay(cmdId, localMPSeat, localWirePlayerId, card,
+				mpCurrentHandNum, trickNum, trickPlayNum))
+			if (result != MPRetentionResult.RETAINED) return
+		}
 		playCard(localPlayerId, card)
 		removeCardFromHand(localPlayerId, card)
 		// Every MP client sends its own human action (not host-only); CPU actions are host-only.
-		if (mpAdapter != null && mpCurrentHandNum >= 0) {
-			mpAdapter!!.sendPlayCard(localMPSeat, localWirePlayerId, card, mpCurrentHandNum, trickNum, trickPlayNum)
+		if (adapter != null && cmdId != null) {
+			adapter.sendPlayCard(localMPSeat, localWirePlayerId, card, mpCurrentHandNum, trickNum, trickPlayNum, cmdId)
 		}
 		advancePhase(GamePhase.Trick)
 		// Fire-and-forget: emit CardPlayed animation; Play.kt's 550ms callback drives execute().
@@ -984,6 +1006,37 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	 * moment it arrives.
 	 */
 	private var mpGameGeneration: Int = 0
+	private val mpSemanticFacts = MPSemanticFactStore()
+
+	private fun normalizedBid(
+		cmdId: String, seat: Int, playerId: String, amount: Int, isBlind: Boolean,
+		isTeamTotal: Boolean, handNum: Int = mpCurrentHandNum
+	): MPNormalizedAction {
+		val role = if (isTeamTotal) WireBidRole.TEAM_TOTAL else WireBidRole.INDIVIDUAL
+		return MPNormalizedAction(
+			type = MPActionType.BID,
+			semanticKey = MPSemanticKey(MPActionType.BID, mpGameGeneration, handNum, seat),
+			cmdId = cmdId, senderSeat = seat, senderPlayerId = playerId,
+			gameGeneration = mpGameGeneration, handNum = handNum,
+			payload = MPNormalizedPayload.Bid(amount, isBlind, role)
+		)
+	}
+
+	private fun normalizedPlay(
+		cmdId: String, seat: Int, playerId: String, card: Card,
+		handNum: Int, trickNum: Int, trickPlayNum: Int
+	): MPNormalizedAction {
+		val cardId = "${card.rank.value - 2}_${suitToWireSuit(card.suit)}"
+		return MPNormalizedAction(
+			type = MPActionType.CARD_PLAY,
+			semanticKey = MPSemanticKey(MPActionType.CARD_PLAY, mpGameGeneration, handNum,
+				trickNum = trickNum, trickPlayNum = trickPlayNum),
+			cmdId = cmdId, senderSeat = seat, senderPlayerId = playerId,
+			gameGeneration = mpGameGeneration, handNum = handNum,
+			trickNum = trickNum, trickPlayNum = trickPlayNum,
+			payload = MPNormalizedPayload.CardPlay(cardId)
+		)
+	}
 
 	/**
 	 * Host only: room seats that have sent a `readyForNextHand` for [mpCurrentHandNum].
@@ -1245,22 +1298,32 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		adapter.sendDeal(mpCurrentHandNum, dealerRoomSeat, seatOrder, handsBySeat, kittyCards, kittyOwnerSeat)
 	}
 
-	/** Broadcast a CPU player's computed bid. Host only. */
-	internal fun broadcastCPUBid(
-		canonicalId: String, amount: Int, isBlind: Boolean,
-		isTeamTotal: Boolean = false
+	/** Register, apply, then broadcast a CPU bid through the same Slice-1 pipeline. */
+	internal fun submitAndBroadcastCPUBid(
+		canonicalId: String, individualAmount: Int, wireAmount: Int, isBlind: Boolean,
+		isTeamTotal: Boolean = false, teamId: Int? = null
 	) {
-		val adapter = mpAdapter ?: return
-		if (!isMPHost) return
+		val adapter = mpAdapter
+		if (adapter == null || !isMPHost) {
+			submitBid(canonicalId, individualAmount, isBlind)
+			if (isTeamTotal && teamId != null) setTeamBid(teamId, wireAmount)
+			return
+		}
 		val idx = listOf("south", "west", "north", "east").indexOf(canonicalId)
 		if (idx < 0) return
 		val roomSeat     = canonicalIdxToRoomSeat(idx)
 		val wirePlayerId = roomSeatToWirePlayerId(roomSeat) ?: run {
-			Log.w(MP_TAG, "broadcastCPUBid: missing playerId for seat $roomSeat — skipping")
+			Log.w(MP_TAG, "submitAndBroadcastCPUBid: missing playerId for seat $roomSeat — skipping")
 			return
 		}
-		Log.d(MP_TAG, "broadcastCPUBid canonicalId=$canonicalId → roomSeat=$roomSeat amount=$amount blind=$isBlind hand=$mpCurrentHandNum")
-		adapter.sendBid(roomSeat, wirePlayerId, amount, isBlind, mpCurrentHandNum, isTeamTotal)
+		Log.d(MP_TAG, "submitAndBroadcastCPUBid canonicalId=$canonicalId → roomSeat=$roomSeat amount=$wireAmount blind=$isBlind hand=$mpCurrentHandNum")
+		val cmdId = adapter.newActionCmdId()
+		val result = mpSemanticFacts.retain(normalizedBid(cmdId, roomSeat, wirePlayerId, wireAmount, isBlind, isTeamTotal))
+		if (result == MPRetentionResult.RETAINED) {
+			submitBid(canonicalId, individualAmount, isBlind)
+			if (isTeamTotal && teamId != null) setTeamBid(teamId, wireAmount)
+			adapter.sendBid(roomSeat, wirePlayerId, wireAmount, isBlind, mpCurrentHandNum, isTeamTotal, cmdId)
+		}
 	}
 
 	/**
@@ -1283,7 +1346,12 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val trickNum     = s.discard.size / n + 1
 		val trickPlayNum = s.currentTrick.plays.count { it != null } + 1
 		Log.d(MP_TAG, "broadcastCPUPlay canonicalId=$canonicalId → roomSeat=$roomSeat card=${card.uid} hand=$mpCurrentHandNum trick=$trickNum play=$trickPlayNum")
-		adapter.sendPlayCard(roomSeat, wirePlayerId, card, mpCurrentHandNum, trickNum, trickPlayNum)
+		val cmdId = adapter.newActionCmdId()
+		val result = mpSemanticFacts.retain(normalizedPlay(cmdId, roomSeat, wirePlayerId, card,
+			mpCurrentHandNum, trickNum, trickPlayNum))
+		if (result == MPRetentionResult.RETAINED) {
+			adapter.sendPlayCard(roomSeat, wirePlayerId, card, mpCurrentHandNum, trickNum, trickPlayNum, cmdId)
+		}
 	}
 
 	/** Broadcast a blind offer to all clients. Host only. */
@@ -1455,6 +1523,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		// normal bidding. Matches the single-player/host path, where handleDealHuman()
 		// also transitions to BlindBid before Bid.
 		advancePhase(GamePhase.BlindBid)
+		drainSemanticFacts()
 		phaseManager.execute()
 	}
 
@@ -1522,14 +1591,33 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		}
 	}
 
-	override fun onBid(seat: Int, amount: Int, isBlind: Boolean, isTeamTotal: Boolean?, handNum: Int) {
-		if (handNum != mpCurrentHandNum) {
-			Log.w(MP_TAG, "onBid DROPPED stale handNum=$handNum current=$mpCurrentHandNum seat=$seat")
-			return
+	override fun onBid(action: MPNormalizedAction): MPRetentionResult {
+		if (action.payload !is MPNormalizedPayload.Bid) return MPRetentionResult.REJECTED
+		if (isMPSemanticallyStale(action.gameGeneration, action.handNum, mpGameGeneration, mpCurrentHandNum)) return MPRetentionResult.STALE
+		val retention = mpSemanticFacts.retain(action)
+		if (retention != MPRetentionResult.RETAINED) return retention
+		if (action.gameGeneration > mpGameGeneration) {
+			mpSemanticFacts.stage(action)
+			return MPRetentionResult.RETAINED
 		}
+		if (action.handNum > mpCurrentHandNum) {
+			mpSemanticFacts.stage(action)
+			return MPRetentionResult.RETAINED
+		}
+		applyRetainedBid(action)
+		return MPRetentionResult.RETAINED
+	}
+
+	private fun applyRetainedBid(action: MPNormalizedAction) {
+		val payload = action.payload as? MPNormalizedPayload.Bid ?: return
+		val seat = action.senderSeat
+		val amount = payload.amount
+		val isBlind = payload.isBlind
+		val isTeamTotal = payload.role == WireBidRole.TEAM_TOTAL
+		val handNum = action.handNum
 		val canonicalId = roomSeatToCanonicalId(seat)
 		val remotePlayer = _state.value.players.find { it.id == canonicalId } ?: return
-		var resolvedTeamTotal = isTeamTotal
+		var resolvedTeamTotal: Boolean? = isTeamTotal
 		if (_state.value.gameType in setOf(GameType.HOUSE_RULES, GameType.TEAM_KITTY)) {
 			val turn = currentTeamBidTurn(remotePlayer.team)
 			resolvedTeamTotal = isTeamTotal ?: turn?.second
@@ -1551,9 +1639,36 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		phaseManager.execute()
 	}
 
-	override fun onPlayCard(seat: Int, cardUid: String, handNum: Int, trickNum: Int, trickPlayNum: Int) {
-		if (handNum != mpCurrentHandNum) {
-			Log.w(MP_TAG, "onPlayCard DROPPED stale handNum=$handNum current=$mpCurrentHandNum")
+	override fun onPlayCard(action: MPNormalizedAction): MPRetentionResult {
+		if (action.payload !is MPNormalizedPayload.CardPlay || action.trickNum == null || action.trickPlayNum == null) {
+			return MPRetentionResult.REJECTED
+		}
+		if (isMPSemanticallyStale(action.gameGeneration, action.handNum, mpGameGeneration, mpCurrentHandNum)) return MPRetentionResult.STALE
+		val retention = mpSemanticFacts.retain(action)
+		if (retention != MPRetentionResult.RETAINED) return retention
+		if (action.gameGeneration > mpGameGeneration) {
+			mpSemanticFacts.stage(action)
+			return MPRetentionResult.RETAINED
+		}
+		if (action.handNum > mpCurrentHandNum) {
+			mpSemanticFacts.stage(action)
+			return MPRetentionResult.RETAINED
+		}
+		applyRetainedPlay(action)
+		return MPRetentionResult.RETAINED
+	}
+
+	private fun applyRetainedPlay(action: MPNormalizedAction) {
+		val payload = action.payload as? MPNormalizedPayload.CardPlay ?: return
+		val seat = action.senderSeat
+		val cardUid = wireIdToCard(payload.cardId)?.uid ?: return
+		val handNum = action.handNum
+		val trickNum = action.trickNum ?: return
+		val trickPlayNum = action.trickPlayNum ?: return
+		val currentTrickNum = _state.value.discard.size / _state.value.players.size.coerceAtLeast(1) + 1
+		val playedCountBefore = _state.value.currentTrick.plays.count { it != null }
+		if (trickNum > currentTrickNum || trickPlayNum - 1 > playedCountBefore) {
+			mpSemanticFacts.stage(action)
 			return
 		}
 		val n = _state.value.players.size
@@ -1585,6 +1700,21 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		// Calling execute() directly would race ahead of the animation pipeline and skip the card
 		// appearing on screen — especially visible on the final trick where Score/EndHand follows.
 		viewModelScope.launch { emitAnimation(AnimationEvent.CardPlayed(canonicalId, card)) }
+		drainSemanticFacts()
+	}
+
+	private fun drainSemanticFacts() {
+		val generation = mpGameGeneration
+		val hand = mpCurrentHandNum
+		val ready = mpSemanticFacts.takePending {
+			it.gameGeneration == generation && it.handNum == hand
+		}
+		for (action in ready) {
+			when (action.type) {
+				MPActionType.BID -> applyRetainedBid(action)
+				MPActionType.CARD_PLAY -> applyRetainedPlay(action)
+			}
+		}
 	}
 
 	/**

@@ -706,8 +706,7 @@ class PhaseManager(
                     state         = s,
                     isKittyWinner = s.kittyWinnerId == player.id
                 )
-                viewModel.submitBid(player.id, result.bid, result.isBlind)
-                viewModel.broadcastCPUBid(player.id, result.bid, result.isBlind)
+                viewModel.submitAndBroadcastCPUBid(player.id, result.bid, result.bid, result.isBlind)
                 // Fire-and-forget: emit event, return; animation completion calls execute()
                 viewModel.emitAnimation(AnimationEvent.BidPlaced(player.id, result.bid))
                 return
@@ -761,16 +760,14 @@ class PhaseManager(
                     val cards = getPlayerHand(s, nextBidder.id)
                     val result = BidEngine.computeCpuBid(cards, nextBidder, s)
 
-                    viewModel.submitBid(nextBidder.id, result.bid, result.isBlind)
                     val wireAmount = if (isTeamTotal) {
                         val firstBid = teamPlayers.filter { it.id != nextBidder.id }.sumOf { player ->
                             s.phaseHands[GamePhase.Deal]?.lastOrNull()?.perPlayer?.get(player.id)?.bid ?: 0
                         }
-                        (firstBid + result.bid).coerceAtLeast(s.effectiveMinBid).also {
-                            viewModel.setTeamBid(teamId, it)
-                        }
-                    } else result.bid
-                    viewModel.broadcastCPUBid(nextBidder.id, wireAmount, result.isBlind, isTeamTotal)
+						(firstBid + result.bid).coerceAtLeast(s.effectiveMinBid)
+					} else result.bid
+					viewModel.submitAndBroadcastCPUBid(nextBidder.id, result.bid, wireAmount,
+						result.isBlind, isTeamTotal, teamId)
                     viewModel.emitAnimation(AnimationEvent.BidPlaced(nextBidder.id, result.bid))
                     return
                 }

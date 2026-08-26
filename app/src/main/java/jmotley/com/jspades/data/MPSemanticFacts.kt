@@ -1,0 +1,89 @@
+package jmotley.com.jspades.data
+
+enum class MPActionType { BID, CARD_PLAY }
+
+data class MPSemanticKey(
+    val actionType: MPActionType,
+    val gameGeneration: Int,
+    val handNum: Int,
+    val seat: Int? = null,
+    val trickNum: Int? = null,
+    val trickPlayNum: Int? = null
+)
+
+sealed interface MPNormalizedPayload {
+    data class Bid(val amount: Int, val isBlind: Boolean, val role: WireBidRole) : MPNormalizedPayload
+    data class CardPlay(val cardId: String) : MPNormalizedPayload
+}
+
+data class MPNormalizedAction(
+    val type: MPActionType,
+    val semanticKey: MPSemanticKey,
+    val cmdId: String,
+    val senderSeat: Int,
+    val senderPlayerId: String,
+    val gameGeneration: Int,
+    val handNum: Int,
+    val trickNum: Int? = null,
+    val trickPlayNum: Int? = null,
+    val payload: MPNormalizedPayload
+)
+
+enum class MPRetentionResult { RETAINED, DUPLICATE, STALE, CONFLICT, REJECTED }
+
+internal fun isMPSemanticallyStale(
+    actionGeneration: Int,
+    actionHand: Int,
+    currentGeneration: Int,
+    currentHand: Int
+): Boolean = actionGeneration < currentGeneration ||
+    (actionGeneration == currentGeneration && actionHand < currentHand)
+
+/**
+ * Slice-1 storage. Strict semantic conflicts intentionally remain disabled until the
+ * recovery gate exists; in that mode a changed same-key fact is retained as legacy traffic.
+ */
+class MPSemanticFactStore {
+    private val factsByKey = linkedMapOf<MPSemanticKey, MPNormalizedAction>()
+    private val resultsByCommand = mutableMapOf<String, MPRetentionResult>()
+    private val pendingByKey = linkedMapOf<MPSemanticKey, MPNormalizedAction>()
+
+    fun retain(action: MPNormalizedAction, strictConflicts: Boolean = false): MPRetentionResult {
+        resultsByCommand[action.cmdId]?.let {
+            return if (it == MPRetentionResult.RETAINED || it == MPRetentionResult.DUPLICATE) {
+                MPRetentionResult.DUPLICATE
+            } else it
+        }
+        val existing = factsByKey[action.semanticKey]
+        val result = when {
+            existing == null -> MPRetentionResult.RETAINED
+            existing.payload == action.payload -> MPRetentionResult.DUPLICATE
+            strictConflicts -> MPRetentionResult.CONFLICT
+            else -> MPRetentionResult.RETAINED
+        }
+        resultsByCommand[action.cmdId] = result
+        if (result == MPRetentionResult.RETAINED) factsByKey[action.semanticKey] = action
+        return result
+    }
+
+    fun stage(action: MPNormalizedAction) {
+        pendingByKey[action.semanticKey] = action
+    }
+
+    fun fact(key: MPSemanticKey): MPNormalizedAction? = factsByKey[key]
+    fun pending(key: MPSemanticKey): MPNormalizedAction? = pendingByKey[key]
+    fun takePending(predicate: (MPNormalizedAction) -> Boolean): List<MPNormalizedAction> {
+        val ready = pendingByKey.values.filter(predicate).sortedWith(
+            compareBy<MPNormalizedAction> { it.handNum }
+                .thenBy { it.trickNum ?: 0 }
+                .thenBy { it.trickPlayNum ?: 0 }
+        )
+        ready.forEach { pendingByKey.remove(it.semanticKey) }
+        return ready
+    }
+    fun clear() {
+        factsByKey.clear()
+        resultsByCommand.clear()
+        pendingByKey.clear()
+    }
+}

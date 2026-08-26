@@ -11,6 +11,11 @@ import jmotley.com.jspades.data.GameConfigMessage
 import jmotley.com.jspades.data.GameState
 import jmotley.com.jspades.data.GameType
 import jmotley.com.jspades.data.MPProtocol
+import jmotley.com.jspades.data.MPActionType
+import jmotley.com.jspades.data.MPNormalizedAction
+import jmotley.com.jspades.data.MPNormalizedPayload
+import jmotley.com.jspades.data.MPRetentionResult
+import jmotley.com.jspades.data.MPSemanticKey
 import jmotley.com.jspades.data.effectiveMinBid
 import jmotley.com.jspades.data.PlayCardMessage
 import jmotley.com.jspades.data.Rank
@@ -55,7 +60,7 @@ internal fun suitToWireSuit(s: Suit): Int = when (s) {
     Suit.HEARTS -> 0; Suit.CLUBS -> 1; Suit.DIAMONDS -> 2; Suit.SPADES -> 3
 }
 
-private fun wireIdToCard(id: String): Card? {
+internal fun wireIdToCard(id: String): Card? {
     val sep = id.indexOf('_')
     if (sep < 0) return null
     val wireRank = id.substring(0, sep).toIntOrNull() ?: return null
@@ -139,8 +144,8 @@ interface MPAdapterDelegate {
     fun onBlindOffer(handNum: Int, teamSeats: List<Int>, decidingSeats: List<Int>)
     fun onBlindResponse(seat: Int, accepted: Boolean, handNum: Int)
     fun onBlindPhaseComplete(handNum: Int)
-    fun onBid(seat: Int, amount: Int, isBlind: Boolean, isTeamTotal: Boolean?, handNum: Int)
-    fun onPlayCard(seat: Int, cardUid: String, handNum: Int, trickNum: Int, trickPlayNum: Int)
+    fun onBid(action: MPNormalizedAction): MPRetentionResult
+    fun onPlayCard(action: MPNormalizedAction): MPRetentionResult
     fun onReadyForNextHand(seat: Int, handNum: Int)
     fun onRequestPlayAgain(seat: Int, gameGeneration: Int)
 }
@@ -240,24 +245,32 @@ class MPAdapter(
             Log.d(TAG, "identity PASS seat=${msg.seat}")
         }
 
-        scope.launch(Dispatchers.Main) { route(msg) }
-		if (msg !is ReceiptAckMessage && msg.cmdId !in locallyOriginatedCmdIds) {
-			dispatchAck(msg.cmdId)
-		}
+        scope.launch(Dispatchers.Main) {
+            val result = route(msg)
+            if (result == MPRetentionResult.REJECTED || result == MPRetentionResult.CONFLICT) {
+                seenCmdIds.remove(msg.cmdId)
+            }
+            if (msg !is ReceiptAckMessage && msg.cmdId !in locallyOriginatedCmdIds && result.isAcknowledged()) {
+                dispatchAck(msg.cmdId)
+            }
+        }
     }
 
-    private fun route(msg: WireMessage) {
-        when (msg) {
-            is GameConfigMessage    -> handleGameConfig(msg)
-            is DealMessage          -> handleDeal(msg)
-            is BlindOfferMessage    -> handleBlindOffer(msg)
-            is BlindResponseMessage -> handleBlindResponse(msg)
+    private fun MPRetentionResult.isAcknowledged(): Boolean =
+        this == MPRetentionResult.RETAINED || this == MPRetentionResult.DUPLICATE || this == MPRetentionResult.STALE
+
+    private fun route(msg: WireMessage): MPRetentionResult {
+        return when (msg) {
+            is GameConfigMessage    -> { handleGameConfig(msg); MPRetentionResult.RETAINED }
+            is DealMessage          -> { handleDeal(msg); MPRetentionResult.RETAINED }
+            is BlindOfferMessage    -> { handleBlindOffer(msg); MPRetentionResult.RETAINED }
+            is BlindResponseMessage -> { handleBlindResponse(msg); MPRetentionResult.RETAINED }
             is BidMessage           -> handleBid(msg)
             is PlayCardMessage      -> handlePlayCard(msg)
-            is ReadyForNextHandMessage -> handleReadyForNextHand(msg)
-            is RequestPlayAgainMessage -> handleRequestPlayAgain(msg)
-            is BlindPhaseCompleteMessage -> handleBlindPhaseComplete(msg)
-			is ReceiptAckMessage -> handleReceiptAck(msg)
+            is ReadyForNextHandMessage -> { handleReadyForNextHand(msg); MPRetentionResult.RETAINED }
+            is RequestPlayAgainMessage -> { handleRequestPlayAgain(msg); MPRetentionResult.RETAINED }
+            is BlindPhaseCompleteMessage -> { handleBlindPhaseComplete(msg); MPRetentionResult.RETAINED }
+			is ReceiptAckMessage -> { handleReceiptAck(msg); MPRetentionResult.RETAINED }
         }
     }
 
@@ -291,12 +304,8 @@ class MPAdapter(
                 continue
             }
             Log.d(TAG, "preConfigQueue flush cmdId=${qMsg.cmdId.take(8)} type=${qMsg::class.simpleName}")
-            scope.launch(Dispatchers.Main) { route(qMsg) }
-			// route() above only applies the message — unlike the live path in receive(), it never
-			// acks. Without this, any message deferred here (arrived before gameConfig) never gets
-			// acknowledged on its first pass, forcing the sender to rely solely on a later duplicate
-			// resend to trigger the dup-path ack.
-			if (qMsg !is ReceiptAckMessage && qMsg.cmdId !in locallyOriginatedCmdIds) {
+            val result = route(qMsg)
+			if (qMsg !is ReceiptAckMessage && qMsg.cmdId !in locallyOriginatedCmdIds && result.isAcknowledged()) {
 				dispatchAck(qMsg.cmdId)
 			}
         }
@@ -331,19 +340,35 @@ class MPAdapter(
         delegate.onBlindResponse(msg.seat, msg.accepted, msg.handNum)
     }
 
-    private fun handleBid(msg: BidMessage) {
+    private fun handleBid(msg: BidMessage): MPRetentionResult {
         Log.d(TAG, "handleBid seat=${msg.seat} amount=${msg.amount} isBlind=${msg.isBlind} handNum=${msg.handNum}")
-        delegate.onBid(msg.seat, msg.amount, msg.isBlind, msg.isTeamTotal, msg.handNum)
+        val generation = msg.gameGeneration ?: delegate.currentGameGeneration()
+        val role = msg.bidRole ?: if (msg.isTeamTotal == true) WireBidRole.TEAM_TOTAL else WireBidRole.INDIVIDUAL
+        return delegate.onBid(MPNormalizedAction(
+            type = MPActionType.BID,
+            semanticKey = MPSemanticKey(MPActionType.BID, generation, msg.handNum, msg.seat),
+            cmdId = msg.cmdId, senderSeat = msg.seat, senderPlayerId = msg.playerId,
+            gameGeneration = generation, handNum = msg.handNum,
+            payload = MPNormalizedPayload.Bid(msg.amount, msg.isBlind, role)
+        ))
     }
 
-    private fun handlePlayCard(msg: PlayCardMessage) {
+    private fun handlePlayCard(msg: PlayCardMessage): MPRetentionResult {
         val card = wireIdToCard(msg.cardId)
         if (card == null) {
             Log.w(TAG, "handlePlayCard: unparseable cardId=${msg.cardId}")
-            return
+            return MPRetentionResult.REJECTED
         }
         Log.d(TAG, "handlePlayCard wireId=${msg.cardId} → uid=${card.uid} seat=${msg.seat} hand=${msg.handNum} trick=${msg.trickNum} play=${msg.trickPlayNum}")
-        delegate.onPlayCard(msg.seat, card.uid, msg.handNum, msg.trickNum, msg.trickPlayNum)
+        val generation = msg.gameGeneration ?: delegate.currentGameGeneration()
+        return delegate.onPlayCard(MPNormalizedAction(
+            type = MPActionType.CARD_PLAY,
+            semanticKey = MPSemanticKey(MPActionType.CARD_PLAY, generation, msg.handNum, trickNum = msg.trickNum, trickPlayNum = msg.trickPlayNum),
+            cmdId = msg.cmdId, senderSeat = msg.seat, senderPlayerId = msg.playerId,
+            gameGeneration = generation, handNum = msg.handNum,
+            trickNum = msg.trickNum, trickPlayNum = msg.trickPlayNum,
+            payload = MPNormalizedPayload.CardPlay(msg.cardId)
+        ))
     }
 
     private fun handleReadyForNextHand(msg: ReadyForNextHandMessage) {
@@ -409,11 +434,13 @@ class MPAdapter(
      * Send a bid. [actingSeat] and [actingPlayerId] identify the seat that placed the bid —
      * the local human seat for human bids, or the CPU seat for host-proxied CPU bids.
      */
+    fun newActionCmdId(): String = nextCmdId()
+
     fun sendBid(
         actingSeat: Int, actingPlayerId: String, amount: Int, isBlind: Boolean,
-        handNum: Int, isTeamTotal: Boolean = false
+        handNum: Int, isTeamTotal: Boolean = false, cmdId: String = nextCmdId()
     ) {
-        dispatch(BidMessage(cmdId = nextCmdId(), seat = actingSeat, playerId = actingPlayerId,
+        dispatch(BidMessage(cmdId = cmdId, seat = actingSeat, playerId = actingPlayerId,
             handNum = handNum, amount = amount, isBlind = isBlind, isTeamTotal = isTeamTotal,
             bidRole = if (isTeamTotal) WireBidRole.TEAM_TOTAL else WireBidRole.INDIVIDUAL,
             gameGeneration = delegate.currentGameGeneration()))
@@ -425,9 +452,10 @@ class MPAdapter(
      */
     fun sendPlayCard(
         actingSeat: Int, actingPlayerId: String,
-        card: Card, handNum: Int, trickNum: Int, trickPlayNum: Int
+        card: Card, handNum: Int, trickNum: Int, trickPlayNum: Int,
+        cmdId: String = nextCmdId()
     ) {
-        dispatch(PlayCardMessage(cmdId = nextCmdId(), seat = actingSeat, playerId = actingPlayerId,
+        dispatch(PlayCardMessage(cmdId = cmdId, seat = actingSeat, playerId = actingPlayerId,
             handNum = handNum, trickNum = trickNum, trickPlayNum = trickPlayNum,
             cardId = cardToWireId(card), gameGeneration = delegate.currentGameGeneration()))
     }
