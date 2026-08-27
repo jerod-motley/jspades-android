@@ -15,7 +15,7 @@ object AppConfig {
      * testing. Normal device testing never negotiates these capabilities, so that path never
      * runs otherwise. Must stay false outside a deliberate local test session — flip back
      * before committing/releasing. */
-    val ENABLE_STRICT_BID_RECOVERY_TESTING: Boolean = false
+    val ENABLE_STRICT_BID_RECOVERY_TESTING: Boolean = true // TEMP: local MP test session — revert before commit/release
     const val PARTITION_KEY = "JSPADES"
 
     /** Full leaderboard URL with partition key query param, or empty string if WEB_URL is not set. */

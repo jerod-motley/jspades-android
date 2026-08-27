@@ -1161,6 +1161,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 
 		Log.d(MP_TAG, "onMPHostLobbyComplete seatPlayers=${seatPlayers.map { (k, v) -> "$k→${v.playerId.take(8)}" }} remoteHumanSeats=$remoteHumanSeats gameType=${gameType.name}")
 		mpAdapter?.sendGameConfig(config, seatPlayers, mpGameGeneration)
+		// Host suppresses its own gameConfig echo, so onGameConfig never runs here — adopt the
+		// capability set we just advertised so the host enables the same strict-path gates as guests.
+		applyNegotiatedCapabilities(MPProtocol.advertisedCapabilities)
 
 		// Build players with correct types: host seat = HUMAN, remote human seats = MP, rest = CPU.
 		val n = gameType.playerCount
@@ -1423,14 +1426,23 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	override fun onGameConfig(config: WireGameConfig, seatPlayers: Map<String, WireSeatPlayer>,
 		gameGeneration: Int, capabilities: Set<String>) {
 		if (gameGeneration > mpGameGeneration) {
-			semanticRecoveryEnabled = capabilities.containsAll(setOf(
-				MPProtocol.CAP_SEMANTIC_FACTS, MPProtocol.CAP_STATE_RESYNC))
-			strictBidSemanticsEnabled = capabilities.containsAll(setOf(
-				MPProtocol.CAP_EXPLICIT_BID_ROLE, MPProtocol.CAP_SEMANTIC_FACTS, MPProtocol.CAP_STATE_RESYNC))
-			orderedPlayInboxEnabled = capabilities.containsAll(setOf(
-				MPProtocol.CAP_ORDERED_PLAY_INBOX, MPProtocol.CAP_SEMANTIC_FACTS, MPProtocol.CAP_STATE_RESYNC))
+			applyNegotiatedCapabilities(capabilities)
 		}
 		onGameConfig(config, seatPlayers, gameGeneration)
+	}
+
+	/** Enable strict-path feature gates from a negotiated capability set. Runs on the guest
+	 *  when it receives `gameConfig`, and on the host right after it *sends* `gameConfig`
+	 *  ([onMPHostLobbyComplete], [playAgain]) — the host suppresses its own echo, so
+	 *  `onGameConfig` never fires there and the host would otherwise stay on the legacy path
+	 *  while every guest runs strict. */
+	private fun applyNegotiatedCapabilities(capabilities: Set<String>) {
+		semanticRecoveryEnabled = capabilities.containsAll(setOf(
+			MPProtocol.CAP_SEMANTIC_FACTS, MPProtocol.CAP_STATE_RESYNC))
+		strictBidSemanticsEnabled = capabilities.containsAll(setOf(
+			MPProtocol.CAP_EXPLICIT_BID_ROLE, MPProtocol.CAP_SEMANTIC_FACTS, MPProtocol.CAP_STATE_RESYNC))
+		orderedPlayInboxEnabled = capabilities.containsAll(setOf(
+			MPProtocol.CAP_ORDERED_PLAY_INBOX, MPProtocol.CAP_SEMANTIC_FACTS, MPProtocol.CAP_STATE_RESYNC))
 	}
 
 	override fun onGameConfig(config: WireGameConfig, seatPlayers: Map<String, WireSeatPlayer>, gameGeneration: Int) {
@@ -2216,6 +2228,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			// Re-announces settings/roster before the upcoming broadcastDeal(); this is what
 			// carries the score reset to guests — see onGameConfig.
 			mpAdapter?.sendGameConfig(current.toWireGameConfig(), mpRoomSeatPlayers, mpGameGeneration)
+			// Host suppresses its own echo — re-adopt the advertised capabilities for the new generation.
+			applyNegotiatedCapabilities(MPProtocol.advertisedCapabilities)
 		}
 		phaseManager.execute()
 	}

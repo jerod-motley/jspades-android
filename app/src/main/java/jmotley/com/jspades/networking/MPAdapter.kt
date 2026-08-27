@@ -523,6 +523,7 @@ class MPAdapter(
 
     fun sendGameConfig(config: WireGameConfig, players: Map<String, WireSeatPlayer>, gameGeneration: Int) {
         seatPlayerMap = players  // seed locally; host suppresses its own echo so handleGameConfig never fires
+        negotiatedCapabilities = MPProtocol.advertisedCapabilities  // ditto — adopt the set we advertise so host route() validates/logs against it
         dispatch(GameConfigMessage(cmdId = nextCmdId(), seat = localSeat, playerId = localPlayerId,
             config = config, players = players, gameGeneration = gameGeneration,
             protocolVersion = MPProtocol.CURRENT_VERSION,
