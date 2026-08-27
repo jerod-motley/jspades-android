@@ -253,9 +253,9 @@ class MPAdapter(
 	)
 	private val pendingReceipts = ConcurrentHashMap<String, PendingReceipt>()
 
-	/** Callbacks registered via [onReceiptComplete], fired exactly once when the matching cmdId's
-	 * outstanding receipt is fully acknowledged, and discarded (never fired) if delivery times out
-	 * instead — see [trackForReceipt]. */
+	/** Callbacks registered via [sendStateSnapshot]'s `onReceiptComplete` param, fired exactly once
+	 * when the matching cmdId's outstanding receipt is fully acknowledged, and discarded (never
+	 * fired) if delivery times out instead — see [trackForReceipt]. */
 	private val receiptCompletionCallbacks = ConcurrentHashMap<String, () -> Unit>()
 
     @Volatile
@@ -365,7 +365,7 @@ class MPAdapter(
     private fun MPRetentionResult.isAcknowledged(): Boolean = shouldAcknowledgeRoutingResult(this)
 
     private fun route(msg: WireMessage): MPRetentionResult {
-		if (!validateNegotiatedWireFields(msg, negotiatedCapabilities)) return MPRetentionResult.REJECTED
+        if (!validateNegotiatedWireFields(msg, negotiatedCapabilities)) return MPRetentionResult.REJECTED
         return when (msg) {
             is GameConfigMessage    -> { handleGameConfig(msg); MPRetentionResult.RETAINED }
             is DealMessage          -> { handleDeal(msg); MPRetentionResult.RETAINED }
@@ -530,18 +530,19 @@ class MPAdapter(
     }
 
     fun sendResyncRequest(message: ResyncRequestMessage) = dispatch(message)
-    fun sendStateSnapshot(message: StateSnapshotMessage) = dispatch(message)
 
-	/** Registers [callback] to fire exactly once [cmdId]'s outstanding receipt is fully
-	 * acknowledged by every expected target seat — proof the peer actually has the data, not
-	 * merely that a send call was made (a synchronous "socket.send returned" cannot distinguish
-	 * a live connection from a silently-dropped frame on a stale one). Call this immediately
-	 * after the `dispatch`/`send...` call that produced [cmdId], since [trackForReceipt] creates
-	 * the pending-receipt bookkeeping synchronously during that call. If delivery times out
-	 * instead of being acknowledged, the callback is discarded, never fired — the caller must
-	 * treat "never fires" as "delivery did not succeed," not assume success after a timeout. */
-	fun onReceiptComplete(cmdId: String, callback: () -> Unit) {
-		receiptCompletionCallbacks[cmdId] = callback
+	/** Sends [message] and, if [onReceiptComplete] is given, registers it to fire exactly once
+	 * the snapshot's cmdId is fully acknowledged by every expected target seat — proof the peer
+	 * actually has the data, not merely that a send call was made (a synchronous "socket.send
+	 * returned" cannot distinguish a live connection from a silently-dropped frame on a stale
+	 * one). The callback is registered before [dispatch] runs so it can never race a fast or
+	 * reentrant (e.g. loopback-test) acknowledgment that arrives before registration would
+	 * otherwise have happened. If delivery times out instead of being acknowledged, the callback
+	 * is discarded, never fired — the caller must treat "never fires" as "delivery did not
+	 * succeed," not assume success after a timeout. */
+	fun sendStateSnapshot(message: StateSnapshotMessage, onReceiptComplete: (() -> Unit)? = null) {
+		onReceiptComplete?.let { receiptCompletionCallbacks[message.cmdId] = it }
+		dispatch(message)
 	}
 
     fun sendDeal(
@@ -682,7 +683,9 @@ class MPAdapter(
             cmdId   = msg.cmdId,
             payload = payload
         ).toJson()
-		socket.send(raw)
+		// Register receipt tracking BEFORE transmitting: a fast or reentrant (e.g. loopback-test)
+		// acknowledgment must never be able to race ahead of pendingReceipts/receiptCompletionCallbacks
+		// bookkeeping and be discarded as unmatched — see mp-fix.md's send-before-track finding.
 		if (msg !is ReceiptAckMessage) {
 			val targets = when (msg) {
 				is StateSnapshotMessage -> setOf(msg.targetSeat)
@@ -705,6 +708,7 @@ class MPAdapter(
 			}
 			trackForReceipt(msg.cmdId, raw, targets, actionScope.first, actionScope.second)
 		}
+		socket.send(raw)
     }
 
 	private fun dispatchAck(ackedCmdId: String) {

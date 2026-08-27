@@ -126,10 +126,15 @@ object MPProtocol {
     const val CAP_ORDERED_PLAY_INBOX = "orderedPlayInbox"
     const val CAP_STATE_RESYNC = "stateResync"
 
-    val advertisedCapabilities: Set<String> = setOf(
-        CAP_GENERATION_SCOPED_ACTIONS,
-        CAP_EXPLICIT_BID_ROLE
-    )
+    val advertisedCapabilities: Set<String>
+        get() = buildSet {
+            add(CAP_GENERATION_SCOPED_ACTIONS)
+            add(CAP_EXPLICIT_BID_ROLE)
+            if (AppConfig.ENABLE_STRICT_BID_RECOVERY_TESTING) {
+                add(CAP_SEMANTIC_FACTS)
+                add(CAP_STATE_RESYNC)
+            }
+        }
 
 	fun requiresGeneration(capabilities: Set<String>): Boolean = CAP_GENERATION_SCOPED_ACTIONS in capabilities
 	fun requiresExplicitBidRole(capabilities: Set<String>): Boolean = CAP_EXPLICIT_BID_ROLE in capabilities

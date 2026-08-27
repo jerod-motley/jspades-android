@@ -9,6 +9,13 @@ object AppConfig {
     val TEST_MODE: Boolean = false //BuildConfig.DEBUG
     /** Writes every raw WSS send/receive frame to the app's files/mplogs.md. */
     val ENABLE_WSS_MESSAGE_FILE_LOGGING: Boolean = BuildConfig.DEBUG
+    /** Manually flip to true on BOTH devices' local debug builds to advertise `semanticFacts`/
+     * `stateResync` and exercise Slice 3's bid-recovery path (order-independent bidding,
+     * host self-heal, resync request/response, snapshot apply) end-to-end during manual
+     * testing. Normal device testing never negotiates these capabilities, so that path never
+     * runs otherwise. Must stay false outside a deliberate local test session — flip back
+     * before committing/releasing. */
+    val ENABLE_STRICT_BID_RECOVERY_TESTING: Boolean = false
     const val PARTITION_KEY = "JSPADES"
 
     /** Full leaderboard URL with partition key query param, or empty string if WEB_URL is not set. */
