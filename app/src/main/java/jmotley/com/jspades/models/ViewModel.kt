@@ -13,6 +13,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
 import jmotley.com.jspades.data.*
 /*import jmotley.com.jspades.data.AchievementsRepo
 import jmotley.com.jspades.data.AnimationEvent
@@ -34,6 +37,7 @@ import jmotley.com.jspades.data.HandReplay
 import jmotley.com.jspades.data.GameLength
 import jmotley.com.jspades.data.ReplayEvent
 import jmotley.com.jspades.data.AppConfig*/
+import jmotley.com.jspades.engine.BidReconciler
 import jmotley.com.jspades.engine.PhaseManager
 import jmotley.com.jspades.logging.PlayLogger
 import jmotley.com.jspades.networking.MPAdapter
@@ -1086,27 +1090,20 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	private var localWirePlayerId: String = ""
 
 	/** Next bidder for a team-total contract. The second bidder commits the total. */
+	/** Roster kind (not runtime ownership): true when the host-assigned wire roster marks this
+	 * player's seat as a CPU. Shared by [currentTeamBidTurn] (send-side scheduling) and
+	 * [BidReconciler.fixedBidRoleForSeat] (receive-side validation) so both agree on team order. */
+	private fun isRosterCpu(player: Player): Boolean {
+		val canonicalIdx = listOf("south", "west", "north", "east").indexOf(player.id)
+		val roomSeat = if (canonicalIdx >= 0) canonicalIdxToRoomSeat(canonicalIdx) else -1
+		val wirePlayer = mpRoomSeatPlayers[roomSeat.toString()]
+		return (wirePlayer?.kind == "cpu" || wirePlayer?.playerId?.startsWith("cpu-") == true) ||
+			(mpRoomSeatPlayers.isEmpty() && player.playerType == PlayerType.CPU)
+	}
+
 	internal fun currentTeamBidTurn(teamId: Int): Pair<Player, Boolean>? {
 		val s = _state.value
-		val ordered = (s.players.indices)
-			.map { offset -> s.players[(s.leaderIndex + offset) % s.players.size] }
-			.filter { it.team == teamId }
-			.toMutableList()
-		if (ordered.size != 2) return null
-		fun isRosterCpu(player: Player): Boolean {
-			val canonicalIdx = listOf("south", "west", "north", "east").indexOf(player.id)
-			val roomSeat = if (canonicalIdx >= 0) canonicalIdxToRoomSeat(canonicalIdx) else -1
-			val wirePlayer = mpRoomSeatPlayers[roomSeat.toString()]
-			return (wirePlayer?.kind == "cpu" || wirePlayer?.playerId?.startsWith("cpu-") == true) ||
-				(mpRoomSeatPlayers.isEmpty() && player.playerType == PlayerType.CPU)
-		}
-		if (ordered.count(::isRosterCpu) == 1) {
-			ordered.sortWith(compareByDescending(::isRosterCpu))
-		}
-		val first = ordered[0]
-		if (!first.runtimeFlags.didBid) return first to false
-		val final = ordered[1]
-		return if (!final.runtimeFlags.didBid) final to true else null
+		return BidReconciler.currentTeamBidTurn(s.players, s.leaderIndex, teamId, ::isRosterCpu)
 	}
 
 	private fun roomSeatToCanonicalId(roomSeat: Int): String {
@@ -1649,7 +1646,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	override fun onBid(action: MPNormalizedAction): MPRetentionResult {
 		if (action.payload !is MPNormalizedPayload.Bid) return MPRetentionResult.REJECTED
 		if (isMPSemanticallyStale(action.gameGeneration, action.handNum, mpGameGeneration, mpCurrentHandNum)) return MPRetentionResult.STALE
-		if (strictBidSemanticsEnabled && !isValidBidRole(action)) return MPRetentionResult.REJECTED
+		// Role is validated in applyRetainedBid, not here: a bid for a not-yet-installed hand
+		// must stage first and be validated against THAT hand's leaderIndex/roster once its deal
+		// is installed, not against whatever hand happens to be current right now.
 		val retention = mpSemanticFacts.retain(action, strictConflicts = strictBidSemanticsEnabled)
 		if (retention == MPRetentionResult.CONFLICT) {
 			handleBidConflict(action)
@@ -1668,40 +1667,45 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			mpSemanticFacts.stage(action)
 			return MPRetentionResult.RETAINED
 		}
-		applyRetainedBid(action)
-		return MPRetentionResult.RETAINED
+		return applyRetainedBid(action)
 	}
 
-	private fun applyRetainedBid(action: MPNormalizedAction) {
-		val payload = action.payload as? MPNormalizedPayload.Bid ?: return
+	private fun applyRetainedBid(action: MPNormalizedAction): MPRetentionResult {
+		val payload = action.payload as? MPNormalizedPayload.Bid ?: return MPRetentionResult.REJECTED
 		val seat = action.senderSeat
-		val amount = payload.amount
-		val isBlind = payload.isBlind
 		val isTeamTotal = payload.role == WireBidRole.TEAM_TOTAL
-		val handNum = action.handNum
 		val canonicalId = roomSeatToCanonicalId(seat)
-		val remotePlayer = _state.value.players.find { it.id == canonicalId } ?: return
-		if (!strictBidSemanticsEnabled && _state.value.gameType in setOf(GameType.HOUSE_RULES, GameType.TEAM_KITTY)) {
+		val state = _state.value
+		val remotePlayer = state.players.find { it.id == canonicalId } ?: return MPRetentionResult.REJECTED
+		if (strictBidSemanticsEnabled) {
+			val expected = BidReconciler.fixedBidRoleForSeat(state.players, state.leaderIndex, state.gameType, canonicalId, ::isRosterCpu)
+			if (payload.role != expected) {
+				Log.e(MP_TAG, "onBid REJECTED invalid role seat=$seat claimed=${payload.role} expected=$expected")
+				mpSemanticFacts.invalidate(action, MPRetentionResult.REJECTED)
+				return MPRetentionResult.REJECTED
+			}
+		} else if (state.gameType in setOf(GameType.HOUSE_RULES, GameType.TEAM_KITTY)) {
 			val turn = currentTeamBidTurn(remotePlayer.team)
 			if (turn == null || turn.first.id != canonicalId || turn.second != isTeamTotal) {
 				Log.w(MP_TAG, "onBid REJECTED legacy unexpected team bidder seat=$seat role=${payload.role}")
-				return
+				return MPRetentionResult.RETAINED
 			}
 		}
-		val resolvedTeamTotal = isTeamTotal
-		val didBid = _state.value.players.find { it.id == canonicalId }?.runtimeFlags?.didBid
-		Log.d(MP_TAG, "onBid ACCEPTED seat=$seat canonicalId=$canonicalId amount=$amount blind=$isBlind didBid=$didBid")
-		submitBid(canonicalId, amount, isBlind)
-		// CPU bids are shown to the human as guidance. A human bid is the final team
-		// contract, so retain it verbatim instead of adding it to the partner's bid.
-		if (_state.value.gameType in setOf(GameType.HOUSE_RULES, GameType.TEAM_KITTY) && resolvedTeamTotal == true) {
-			val teamId = _state.value.players.find { it.id == canonicalId }?.team
-			if (teamId != null) setTeamBid(teamId, amount)
-		}
+		Log.d(MP_TAG, "onBid ACCEPTED seat=$seat canonicalId=$canonicalId amount=${payload.amount} blind=${payload.isBlind} didBid=${remotePlayer.runtimeFlags.didBid}")
+		val dealHands = state.phaseHands[GamePhase.Deal]?.toMutableList() ?: return MPRetentionResult.REJECTED
+		val hand = dealHands.lastOrNull() ?: return MPRetentionResult.REJECTED
+		val (newHand, newPlayers) = BidReconciler.applyBidFact(hand, state.players, canonicalId, state.gameType, action)
+		dealHands[dealHands.lastIndex] = newHand
+		val phaseHands = state.phaseHands.toMutableMap()
+		phaseHands[GamePhase.Deal] = dealHands
+		_state.value = state.copy(players = newPlayers, phaseHands = phaseHands)
+		recordReplayEvent(ReplayEvent.Bid(canonicalId, payload.amount, payload.isBlind))
+		PlayLogger.logBid(canonicalId, payload.amount, payload.isBlind)
 		val bidCount = mpSemanticFacts.facts { it.type == MPActionType.BID &&
 			it.gameGeneration == action.gameGeneration && it.handNum == action.handNum }.size
-		advancePhase(if (strictBidSemanticsEnabled && bidCount >= _state.value.players.size) GamePhase.BidReview else GamePhase.Bid)
+		advancePhase(BidReconciler.derivedBidPhase(strictBidSemanticsEnabled, bidCount, _state.value.players.size))
 		phaseManager.execute()
+		return MPRetentionResult.RETAINED
 	}
 
 	internal fun submitAutoCompletedBlindBid(playerId: String) {
@@ -1723,22 +1727,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	}
 
 	private fun fixedBidRoleForSeat(seat: Int): WireBidRole? {
-		val player = _state.value.players.find { it.id == roomSeatToCanonicalId(seat) } ?: return null
-		if (_state.value.gameType !in setOf(GameType.HOUSE_RULES, GameType.TEAM_KITTY)) return WireBidRole.INDIVIDUAL
-		val teammates = _state.value.players.filter { it.team == player.team }.toMutableList()
-		if (teammates.size != 2) return null
-		fun isCpu(p: Player): Boolean {
-			val canonical = listOf("south", "west", "north", "east").indexOf(p.id)
-			val room = if (canonical >= 0) canonicalIdxToRoomSeat(canonical) else -1
-			val wire = mpRoomSeatPlayers[room.toString()]
-			return wire?.kind == "cpu" || wire?.playerId?.startsWith("cpu-") == true
-		}
-		if (teammates.count(::isCpu) == 1) teammates.sortWith(compareByDescending(::isCpu))
-		return if (teammates.first().id == player.id) WireBidRole.INDIVIDUAL else WireBidRole.TEAM_TOTAL
+		val s = _state.value
+		return BidReconciler.fixedBidRoleForSeat(s.players, s.leaderIndex, s.gameType, roomSeatToCanonicalId(seat), ::isRosterCpu)
 	}
-
-	private fun isValidBidRole(action: MPNormalizedAction): Boolean =
-		(action.payload as? MPNormalizedPayload.Bid)?.role == fixedBidRoleForSeat(action.senderSeat)
 
 	private fun handleBidConflict(action: MPNormalizedAction) {
 		val existing = mpSemanticFacts.fact(action.semanticKey)
@@ -1746,10 +1737,43 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val shouldRequest = mpRecovery.gate(scope) == null
 		val gate = mpRecovery.freeze(scope, MPRecoveryReason.CONFLICTING_FACT)
 		Log.e(MP_TAG, "telemetry event=mp_conflict action=bid generation=${action.gameGeneration} hand=${action.handNum} key=${action.semanticKey} requestId=${gate.requestId} recoveryRound=${gate.recoveryRound} firstCmd=${existing?.cmdId} secondCmd=${action.cmdId} first=${existing?.payload} second=${action.payload}")
-		if (shouldRequest && !isMPHost && gate.requestId != null) mpAdapter?.sendResyncRequest(ResyncRequestMessage(
-			UUID.randomUUID().toString(), localMPSeat, localWirePlayerId, gate.requestId, localMPSeat,
-			action.gameGeneration, action.handNum, WireRecoveryReason.CONFLICTING_FACT,
-			action.semanticKey.toString(), listOfNotNull(existing?.cmdId, action.cmdId)))
+		if (isMPHost) {
+			// The host is authoritative and never needs to wait on anything to unfreeze itself:
+			// send the conflicting sender the corrected facts, then self-clear immediately using
+			// the exact identifiers just sent (never re-derive the gate's own requestId back into
+			// itself — that check would be tautological and is exactly the correlation bug this
+			// path must not repeat on the receiving end; see onStateSnapshot).
+			val (snapshotId, version) = sendBidRecoverySnapshot(scope, targetSeat = action.senderSeat, responseToRequestId = null)
+			mpRecovery.complete(scope, gate.requestId, snapshotId, version, localMPSeat)
+		} else if (shouldRequest && gate.requestId != null) {
+			mpAdapter?.sendResyncRequest(ResyncRequestMessage(
+				UUID.randomUUID().toString(), localMPSeat, localWirePlayerId, gate.requestId, localMPSeat,
+				action.gameGeneration, action.handNum, WireRecoveryReason.CONFLICTING_FACT,
+				action.semanticKey.toString(), listOfNotNull(existing?.cmdId, action.cmdId)))
+		}
+	}
+
+	/** Host-local, per-recovery-scope monotonic version counter for bid-recovery snapshots. */
+	private val mpBidSnapshotVersions = mutableMapOf<MPRecoveryScope, Long>()
+	private val mpBidSnapshotJson = Json { ignoreUnknownKeys = true }
+
+	/** Host-side: build the bid-recovery snapshot for [scope] and send it to [targetSeat].
+	 * Returns the (snapshotId, version) actually sent, so a self-heal caller can complete its
+	 * own gate using the identical identifiers. No-op (returns a version-0 placeholder) when
+	 * [scope] has no hand — Slice 3's bid-recovery snapshot is hand-scoped only. */
+	private fun sendBidRecoverySnapshot(scope: MPRecoveryScope, targetSeat: Int, responseToRequestId: String?): Pair<String, Long> {
+		val handNum = scope.handNum ?: return "" to 0L
+		val payload = BidReconciler.buildRecoverySnapshotPayload(mpSemanticFacts, scope.gameGeneration, handNum, _state.value.phase.name)
+		val version = (mpBidSnapshotVersions[scope] ?: 0L) + 1
+		mpBidSnapshotVersions[scope] = version
+		val snapshotId = UUID.randomUUID().toString()
+		mpAdapter?.sendStateSnapshot(StateSnapshotMessage(
+			cmdId = UUID.randomUUID().toString(), seat = localMPSeat, playerId = localWirePlayerId,
+			snapshotId = snapshotId, responseToRequestId = responseToRequestId,
+			targetSeat = targetSeat, gameGeneration = scope.gameGeneration, handNum = handNum,
+			snapshotVersion = version, logicalState = mpBidSnapshotJson.encodeToString(payload),
+			retainedCmdIds = payload.bids.map { it.cmdId }))
+		return snapshotId to version
 	}
 
 	override fun onPlayCard(action: MPNormalizedAction): MPRetentionResult {
@@ -1924,6 +1948,15 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		}
 		val gate = freezeMPRecovery(MPRecoveryReason.valueOf(message.reason.name), message.handNum)
 		Log.w(MP_TAG, "telemetry event=mp_recovery_request requestId=${message.requestId} generation=${message.gameGeneration} hand=${message.handNum} requesterSeat=${message.requesterSeat} reason=${message.reason} recoveryRound=${gate.recoveryRound}")
+		// Slice 3 only knows how to resolve a BID conflict. A request for anything else (a play
+		// conflict, delivery timeout, impossible progress, reconnect divergence) must stay frozen
+		// rather than be falsely "resolved" by a bid-only snapshot — see BidReconciler.isBidScopedRecoveryKey.
+		if (message.handNum != null && BidReconciler.isBidScopedRecoveryKey(message.semanticKey)) {
+			val scope = MPRecoveryScope(message.gameGeneration, MPRecoveryScopeKind.HAND, message.handNum)
+			sendBidRecoverySnapshot(scope, targetSeat = message.requesterSeat, responseToRequestId = message.requestId)
+		} else {
+			Log.w(MP_TAG, "onResyncRequest FROZEN-NO-SNAPSHOT unsupported recovery scope reason=${message.reason} semanticKey=${message.semanticKey} — Slice 3 only resolves bid conflicts")
+		}
 		return MPRetentionResult.RETAINED
 	}
 
@@ -1932,11 +1965,85 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		if (isMPHost || message.seat != 0 || message.targetSeat != localMPSeat || message.gameGeneration > mpGameGeneration) {
 			return if (message.targetSeat != localMPSeat) MPRetentionResult.STALE else MPRetentionResult.REJECTED
 		}
+		val handNum = message.handNum
 		val scope = MPRecoveryScope(message.gameGeneration,
-			if (message.handNum == null) MPRecoveryScopeKind.GENERATION else MPRecoveryScopeKind.HAND, message.handNum)
-		val result = mpRecovery.classifySnapshot(scope, message.snapshotVersion, message.targetSeat)
-		Log.w(MP_TAG, "telemetry event=mp_snapshot snapshotId=${message.snapshotId} requestId=${message.responseToRequestId} snapshotVersion=${message.snapshotVersion} targetSeat=${message.targetSeat} generation=${message.gameGeneration} hand=${message.handNum} result=$result")
-		return result
+			if (handNum == null) MPRecoveryScopeKind.GENERATION else MPRecoveryScopeKind.HAND, handNum)
+		val classification = mpRecovery.classifySnapshot(scope, message.snapshotVersion, message.targetSeat)
+		Log.w(MP_TAG, "telemetry event=mp_snapshot snapshotId=${message.snapshotId} requestId=${message.responseToRequestId} snapshotVersion=${message.snapshotVersion} targetSeat=${message.targetSeat} generation=${message.gameGeneration} hand=${message.handNum} result=$classification")
+		if (classification != MPRetentionResult.RETAINED) return classification
+		// Correlate BEFORE touching anything: a stale/mismatched recovery-round response must
+		// never mutate the fact store, gate, or game state, even if it happens to decode fine.
+		val gate = mpRecovery.gate(scope)
+		if (!BidReconciler.shouldApplySnapshot(message.responseToRequestId, gate?.requestId)) {
+			Log.w(MP_TAG, "onStateSnapshot STALE requestId mismatch expected=${gate?.requestId} got=${message.responseToRequestId}")
+			return MPRetentionResult.STALE
+		}
+		// Slice 3 scope: only hand-level bid-recovery snapshots carry content to apply here.
+		if (handNum == null) return MPRetentionResult.RETAINED
+		val state = _state.value
+		val payload = runCatching { mpBidSnapshotJson.decodeFromString<MPBidRecoverySnapshotPayload>(message.logicalState) }.getOrNull()
+		val valid = payload != null && BidReconciler.isValidRecoverySnapshot(
+			payload, message.gameGeneration, handNum, message.retainedCmdIds,
+			state.players, state.leaderIndex, state.gameType, ::roomSeatToCanonicalId, ::isRosterCpu)
+		if (payload == null || !valid) {
+			Log.e(MP_TAG, "onStateSnapshot REJECTED malformed/inconsistent logicalState snapshotId=${message.snapshotId}")
+			return MPRetentionResult.REJECTED
+		}
+		// This snapshot's hand must be the hand actually installed locally right now — a snapshot
+		// for any other hand has no Deal-phase Hand to replay onto, and applying it onto whatever
+		// happens to be the current hand would corrupt that unrelated hand's bid facts.
+		if (handNum != mpCurrentHandNum) {
+			Log.e(MP_TAG, "onStateSnapshot REJECTED handNum mismatch snapshotHand=$handNum currentHand=$mpCurrentHandNum")
+			return MPRetentionResult.REJECTED
+		}
+		val dealHands = state.phaseHands[GamePhase.Deal]?.toMutableList()
+		val initialHand = dealHands?.lastOrNull()
+		if (dealHands == null || initialHand == null) {
+			Log.e(MP_TAG, "onStateSnapshot REJECTED no installed Deal hand to replay onto for hand=$handNum")
+			return MPRetentionResult.REJECTED
+		}
+		// Everything needed to apply is verified — construct the prospective replacement state
+		// purely, without mutating the fact store, recovery gate, or GameState yet, so a snapshot
+		// that fails validation never leaves things half-applied.
+		val actions = payload.bids.map { dto ->
+			normalizedBid(dto.cmdId, dto.seat, roomSeatToWirePlayerId(dto.seat).orEmpty(), dto.amount, dto.isBlind,
+				dto.role == WireBidRole.TEAM_TOTAL, payload.handNum)
+		}
+		var hand: Hand = initialHand
+		var players = state.players
+		for (action in actions) {
+			val canonicalId = roomSeatToCanonicalId(action.senderSeat)
+			val (newHand, newPlayers) = BidReconciler.applyBidFact(hand, players, canonicalId, state.gameType, action)
+			hand = newHand
+			players = newPlayers
+		}
+		// Bid-recovery-derived phase only: never trust payload.logicalPhase as authoritative
+		// input (it's diagnostic-only) — derive it the same way a live bid does, from the
+		// now-authoritative fact count, so recovery can't force a client backward or skip a
+		// presentation prerequisite.
+		val bidCount = actions.count { it.type == MPActionType.BID }
+		val derivedPhase = BidReconciler.derivedBidPhase(strictBidSemanticsEnabled, bidCount, players.size)
+		Log.d(MP_TAG, "onStateSnapshot derivedPhase=$derivedPhase hostClaimedPhase=${payload.logicalPhase} (diagnostic only, not applied)")
+
+		// Validated and computed — commit facts, gate, and game state together.
+		BidReconciler.installRecoverySnapshot(mpSemanticFacts, payload) { dto -> actions.first { it.cmdId == dto.cmdId } }
+		if (gate != null) {
+			if (!mpRecovery.complete(scope, gate.requestId, message.snapshotId, message.snapshotVersion, message.targetSeat)) {
+				return MPRetentionResult.RETAINED
+			}
+		} else {
+			// Unsolicited host-initiated correction: no local gate to clear, but the version must
+			// still be recorded so a retried delivery of the same snapshot is later STALE.
+			mpRecovery.recordAppliedSnapshot(scope, message.snapshotVersion, message.targetSeat)
+		}
+		val phaseHands = state.phaseHands.toMutableMap()
+		dealHands[dealHands.lastIndex] = hand
+		phaseHands[GamePhase.Deal] = dealHands
+		_state.value = state.copy(players = players, phaseHands = phaseHands)
+		advancePhase(derivedPhase)
+		drainSemanticFacts()
+		phaseManager.execute()
+		return MPRetentionResult.RETAINED
 	}
 
 	override fun onTerminalDeliveryFailure(cmdId: String, missingSeats: Set<Int>, gameGeneration: Int?, handNum: Int?) {

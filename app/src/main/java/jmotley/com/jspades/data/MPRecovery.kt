@@ -50,9 +50,18 @@ class MPRecoveryCoordinator(private val maxRounds: Int = 3) {
     fun complete(scope: MPRecoveryScope, requestId: String?, snapshotId: String, snapshotVersion: Long, targetSeat: Int): Boolean {
         val current = gates[scope] ?: return false
         if (current.requestId != requestId) return false
-        appliedSnapshots += Triple(scope.gameGeneration, snapshotVersion, targetSeat)
-        latestSnapshotVersion[scope] = snapshotVersion
+        recordAppliedSnapshot(scope, snapshotVersion, targetSeat)
         gates.remove(scope)
         return true
+    }
+
+    /** Record [snapshotVersion] as applied for [scope]/[targetSeat] without requiring (or
+     * clearing) an existing gate. Used for a host-initiated correction the target never
+     * requested — there is no local gate to correlate or clear, but the version/idempotency
+     * bookkeeping must still be recorded so a retried delivery of the same snapshot is
+     * classified `STALE` instead of being reapplied on every retry. */
+    fun recordAppliedSnapshot(scope: MPRecoveryScope, snapshotVersion: Long, targetSeat: Int) {
+        appliedSnapshots += Triple(scope.gameGeneration, snapshotVersion, targetSeat)
+        latestSnapshotVersion[scope] = snapshotVersion
     }
 }

@@ -88,6 +88,28 @@ class MPSemanticFactStore {
         if (factsByKey[action.semanticKey]?.cmdId == action.cmdId) factsByKey.remove(action.semanticKey)
     }
 
+    /** Remove every retained fact matching [predicate], e.g. to make way for an authoritative
+     * recovery snapshot that supersedes a whole (generation, hand) scope. Also clears each
+     * removed fact's own `cmdId` from [resultsByCommand] — otherwise a retry of that exact cmdId
+     * would hit the stale cached result and return `DUPLICATE`, acknowledging a fact that no
+     * longer exists in the authoritative store, instead of being re-evaluated against whatever
+     * replaces it. Terminal results for *other* cmdIds (e.g. a `CONFLICT`-classified second
+     * fact that never made it into [factsByKey]) are untouched — only cmdIds whose fact is
+     * actually being removed here lose their cached result. */
+    fun clearFacts(predicate: (MPNormalizedAction) -> Boolean) {
+        val stale = factsByKey.filterValues(predicate)
+        stale.keys.forEach { factsByKey.remove(it) }
+        stale.values.forEach { resultsByCommand.remove(it.cmdId) }
+    }
+
+    /** Install [action] as authoritative, bypassing normal conflict comparison. Used only to
+     * apply a host-authored recovery snapshot, whose facts are truth by definition rather than
+     * something to compare against whatever this store already holds. */
+    fun installAuthoritative(action: MPNormalizedAction) {
+        factsByKey[action.semanticKey] = action
+        resultsByCommand[action.cmdId] = MPRetentionResult.RETAINED
+    }
+
     fun fact(key: MPSemanticKey): MPNormalizedAction? = factsByKey[key]
     fun facts(predicate: (MPNormalizedAction) -> Boolean): List<MPNormalizedAction> = factsByKey.values.filter(predicate)
     fun pending(key: MPSemanticKey): MPNormalizedAction? = pendingByKey[key]
