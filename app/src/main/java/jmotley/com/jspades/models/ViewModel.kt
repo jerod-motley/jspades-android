@@ -1739,18 +1739,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		Log.e(MP_TAG, "telemetry event=mp_conflict action=bid generation=${action.gameGeneration} hand=${action.handNum} key=${action.semanticKey} requestId=${gate.requestId} recoveryRound=${gate.recoveryRound} firstCmd=${existing?.cmdId} secondCmd=${action.cmdId} first=${existing?.payload} second=${action.payload}")
 		if (isMPHost) {
 			// The host is authoritative and never needs to wait on anything to unfreeze itself:
-			// send the conflicting sender the corrected facts, then self-clear immediately using
-			// the exact identifiers just sent (never re-derive the gate's own requestId back into
-			// itself — that check would be tautological and is exactly the correlation bug this
-			// path must not repeat on the receiving end; see onStateSnapshot). Only self-clear
-			// if a snapshot was actually sent — sendBidRecoverySnapshot returns null when the
-			// adapter isn't connected yet, and completing the gate on a send that never happened
-			// would resume the host while the conflicting peer stays frozen with nothing to
-			// correct it, and no send is ever retried.
-			val sent = sendBidRecoverySnapshot(scope, targetSeat = action.senderSeat, responseToRequestId = null)
-			if (sent != null) {
-				mpRecovery.complete(scope, gate.requestId, sent.first, sent.second, localMPSeat)
-			}
+			// send the conflicting sender the corrected facts, then self-clear immediately.
+			sendSnapshotAndSelfComplete(scope, gate, targetSeat = action.senderSeat, responseToRequestId = null)
 		} else if (shouldRequest && gate.requestId != null) {
 			mpAdapter?.sendResyncRequest(ResyncRequestMessage(
 				UUID.randomUUID().toString(), localMPSeat, localWirePlayerId, gate.requestId, localMPSeat,
@@ -1782,6 +1772,22 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			snapshotVersion = version, logicalState = mpBidSnapshotJson.encodeToString(payload),
 			retainedCmdIds = payload.bids.map { it.cmdId }))
 		return snapshotId to version
+	}
+
+	/** Host-side: send the bid-recovery snapshot for [scope] and, only if the send actually
+	 * succeeded, immediately self-complete [gate] — the host is authoritative and doesn't need
+	 * confirmation from the peer to resume, but a send that never happened must never be treated
+	 * as done (see [sendBidRecoverySnapshot]'s null contract). Used by both the self-heal path
+	 * (a host-detected conflict, no requestId to correlate against) and the request/response path
+	 * (a client's resyncRequest, correlated to its own requestId). Without this, the host's own
+	 * gate — installed by [freezeMPRecovery] before either path sends anything — is never cleared
+	 * by anything else in this class, so answering a single resync request would otherwise freeze
+	 * the host's own gameplay for that scope permanently. */
+	private fun sendSnapshotAndSelfComplete(scope: MPRecoveryScope, gate: MPRecoveryGate, targetSeat: Int, responseToRequestId: String?) {
+		val sent = sendBidRecoverySnapshot(scope, targetSeat, responseToRequestId)
+		if (sent != null) {
+			mpRecovery.complete(scope, gate.requestId, sent.first, sent.second, localMPSeat)
+		}
 	}
 
 	override fun onPlayCard(action: MPNormalizedAction): MPRetentionResult {
@@ -1961,7 +1967,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		// rather than be falsely "resolved" by a bid-only snapshot — see BidReconciler.isBidScopedRecoveryKey.
 		if (message.handNum != null && BidReconciler.isBidScopedRecoveryKey(message.semanticKey)) {
 			val scope = MPRecoveryScope(message.gameGeneration, MPRecoveryScopeKind.HAND, message.handNum)
-			sendBidRecoverySnapshot(scope, targetSeat = message.requesterSeat, responseToRequestId = message.requestId)
+			// P0 found on review: this freeze (above) was never cleared by anything — the host
+			// would stay frozen forever after answering a single client resync request. The host
+			// is authoritative, so once its correction is actually sent, it resumes immediately.
+			sendSnapshotAndSelfComplete(scope, gate, targetSeat = message.requesterSeat, responseToRequestId = message.requestId)
 		} else {
 			Log.w(MP_TAG, "onResyncRequest FROZEN-NO-SNAPSHOT unsupported recovery scope reason=${message.reason} semanticKey=${message.semanticKey} — Slice 3 only resolves bid conflicts")
 		}
