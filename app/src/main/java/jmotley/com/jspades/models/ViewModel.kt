@@ -1742,14 +1742,20 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			// send the conflicting sender the corrected facts, then self-clear immediately using
 			// the exact identifiers just sent (never re-derive the gate's own requestId back into
 			// itself — that check would be tautological and is exactly the correlation bug this
-			// path must not repeat on the receiving end; see onStateSnapshot).
-			val (snapshotId, version) = sendBidRecoverySnapshot(scope, targetSeat = action.senderSeat, responseToRequestId = null)
-			mpRecovery.complete(scope, gate.requestId, snapshotId, version, localMPSeat)
+			// path must not repeat on the receiving end; see onStateSnapshot). Only self-clear
+			// if a snapshot was actually sent — sendBidRecoverySnapshot returns null when the
+			// adapter isn't connected yet, and completing the gate on a send that never happened
+			// would resume the host while the conflicting peer stays frozen with nothing to
+			// correct it, and no send is ever retried.
+			val sent = sendBidRecoverySnapshot(scope, targetSeat = action.senderSeat, responseToRequestId = null)
+			if (sent != null) {
+				mpRecovery.complete(scope, gate.requestId, sent.first, sent.second, localMPSeat)
+			}
 		} else if (shouldRequest && gate.requestId != null) {
 			mpAdapter?.sendResyncRequest(ResyncRequestMessage(
 				UUID.randomUUID().toString(), localMPSeat, localWirePlayerId, gate.requestId, localMPSeat,
 				action.gameGeneration, action.handNum, WireRecoveryReason.CONFLICTING_FACT,
-				action.semanticKey.toString(), listOfNotNull(existing?.cmdId, action.cmdId)))
+				BidReconciler.BID_CONFLICT_SEMANTIC_KEY_TAG, listOfNotNull(existing?.cmdId, action.cmdId)))
 		}
 	}
 
@@ -1759,15 +1765,17 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 
 	/** Host-side: build the bid-recovery snapshot for [scope] and send it to [targetSeat].
 	 * Returns the (snapshotId, version) actually sent, so a self-heal caller can complete its
-	 * own gate using the identical identifiers. No-op (returns a version-0 placeholder) when
-	 * [scope] has no hand — Slice 3's bid-recovery snapshot is hand-scoped only. */
-	private fun sendBidRecoverySnapshot(scope: MPRecoveryScope, targetSeat: Int, responseToRequestId: String?): Pair<String, Long> {
-		val handNum = scope.handNum ?: return "" to 0L
+	 * own gate using the identical identifiers — or null if no send actually happened ([scope]
+	 * has no hand, or [mpAdapter] isn't connected yet), so the caller must not treat this as a
+	 * successful hand-off and must not clear/complete anything on the strength of it. */
+	private fun sendBidRecoverySnapshot(scope: MPRecoveryScope, targetSeat: Int, responseToRequestId: String?): Pair<String, Long>? {
+		val handNum = scope.handNum ?: return null
+		val adapter = mpAdapter ?: return null
 		val payload = BidReconciler.buildRecoverySnapshotPayload(mpSemanticFacts, scope.gameGeneration, handNum, _state.value.phase.name)
 		val version = (mpBidSnapshotVersions[scope] ?: 0L) + 1
 		mpBidSnapshotVersions[scope] = version
 		val snapshotId = UUID.randomUUID().toString()
-		mpAdapter?.sendStateSnapshot(StateSnapshotMessage(
+		adapter.sendStateSnapshot(StateSnapshotMessage(
 			cmdId = UUID.randomUUID().toString(), seat = localMPSeat, playerId = localWirePlayerId,
 			snapshotId = snapshotId, responseToRequestId = responseToRequestId,
 			targetSeat = targetSeat, gameGeneration = scope.gameGeneration, handNum = handNum,
@@ -2009,8 +2017,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			normalizedBid(dto.cmdId, dto.seat, roomSeatToWirePlayerId(dto.seat).orEmpty(), dto.amount, dto.isBlind,
 				dto.role == WireBidRole.TEAM_TOTAL, payload.handNum)
 		}
-		var hand: Hand = initialHand
-		var players = state.players
+		// Rebuild from a pre-bid baseline, not from whatever this device currently has — the
+		// snapshot is authoritative and may legitimately omit a bid this device applied locally
+		// (e.g. the host hadn't yet retained that seat when it built the snapshot); merging onto
+		// stale state would leave bids the fact store no longer knows about sitting in the UI.
+		var (hand, players) = BidReconciler.resetBidBaseline(initialHand, state.players)
 		for (action in actions) {
 			val canonicalId = roomSeatToCanonicalId(action.senderSeat)
 			val (newHand, newPlayers) = BidReconciler.applyBidFact(hand, players, canonicalId, state.gameType, action)

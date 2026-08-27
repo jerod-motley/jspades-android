@@ -346,14 +346,20 @@ class BidReconcilerTest {
     // ── New: a bid-only snapshot must not silently "resolve" a non-bid recovery (finding 1) ──
 
     @Test fun onlyABidScopedSemanticKeyAuthorizesABidRecoverySnapshot() {
-        val bidKey = MPSemanticKey(MPActionType.BID, 1, 1, seat = 1).toString()
-        val playKey = MPSemanticKey(MPActionType.CARD_PLAY, 1, 1, trickNum = 1, trickPlayNum = 2).toString()
-        assertTrue(BidReconciler.isBidScopedRecoveryKey(bidKey))
-        assertFalse("a card-play conflict must not be treated as bid-resolvable", BidReconciler.isBidScopedRecoveryKey(playKey))
+        assertTrue(BidReconciler.isBidScopedRecoveryKey(BidReconciler.BID_CONFLICT_SEMANTIC_KEY_TAG))
+        assertFalse("a card-play conflict must not be treated as bid-resolvable",
+            BidReconciler.isBidScopedRecoveryKey(MPSemanticKey(MPActionType.CARD_PLAY, 1, 1, trickNum = 1, trickPlayNum = 2).toString()))
         // onTerminalDeliveryFailure never sets semanticKey at all — the common real-world case
         // (any message type's retry exhaustion, not just bids) must also stay unresolved.
         assertFalse("absent semanticKey (e.g. a delivery-timeout request) must not be treated as a bid conflict",
             BidReconciler.isBidScopedRecoveryKey(null))
+    }
+
+    /** Cross-platform regression: the tag must be a short, wire-stable literal — not a
+     * platform-specific default struct dump — or Android and iOS silently fail to recognize
+     * each other's bid-conflict resync requests in either direction. */
+    @Test fun bidConflictSemanticKeyTagIsTheCrossPlatformStableLiteral() {
+        assertEquals("bid", BidReconciler.BID_CONFLICT_SEMANTIC_KEY_TAG)
     }
 
     // ── New: clearing a superseded fact must also free its own cmdId for re-evaluation (finding 4) ──
@@ -384,5 +390,39 @@ class BidReconcilerTest {
         assertEquals(GamePhase.BidReview, BidReconciler.derivedBidPhase(strict = true, bidCount = 4, playerCount = 4))
         // Non-strict (legacy) rooms never auto-advance to BidReview from fact completeness alone.
         assertEquals(GamePhase.Bid, BidReconciler.derivedBidPhase(strict = false, bidCount = 4, playerCount = 4))
+    }
+
+    // ── New: replaying a snapshot must not leave stale bid state for seats it omits (found on review) ──
+
+    @Test fun resetBidBaselineClearsEverySeatBeforeReplayingAPartialSnapshot() {
+        val players = roster()
+        // All four seats have already bid locally...
+        var hand = emptyHand()
+        var ps = players
+        for (seat in 0..3) {
+            // One TEAM_TOTAL bidder per team (seats 0 and 1: south=team0, west=team1) so both
+            // teamBids entries actually get set, matching a real completed hand.
+            val role = if (seat == 0 || seat == 1) WireBidRole.TEAM_TOTAL else WireBidRole.INDIVIDUAL
+            val (h, p) = BidReconciler.applyBidFact(hand, ps, canonical[seat], GameType.HOUSE_RULES, bid(seat, 9, role))
+            hand = h; ps = p
+        }
+        assertTrue(ps.all { it.runtimeFlags.didBid })
+        assertTrue(hand.teamBids.all { it == 9 })
+
+        // ...but the authoritative recovery snapshot only knows about seat 1 (e.g. the host
+        // hadn't retained the other seats' bids yet when it built the snapshot). Naively
+        // replaying just that one fact onto the existing hand would leave seats 0/2/3's stale
+        // amount=9 sitting in perPlayer/teamBids with no backing fact anymore.
+        val (resetHand, resetPlayers) = BidReconciler.resetBidBaseline(hand, ps)
+        assertTrue("reset must clear didBid for every seat, not just the ones in the new payload",
+            resetPlayers.none { it.runtimeFlags.didBid })
+        assertTrue(resetHand.teamBids.all { it == 0 })
+        assertTrue(resetHand.perPlayer.values.all { it.bid == 0 && !it.bidPlaced && !it.isBlind })
+
+        val (finalHand, finalPlayers) = BidReconciler.applyBidFact(resetHand, resetPlayers, "west", GameType.HOUSE_RULES,
+            bid(1, 3, WireBidRole.TEAM_TOTAL))
+        assertEquals(3, finalHand.teamBids[1])
+        assertEquals("team 0's stale total must be gone, not merged with the old value", 0, finalHand.teamBids[0])
+        assertEquals("only west's didBid should be set post-reset", listOf("west"), finalPlayers.filter { it.runtimeFlags.didBid }.map { it.id })
     }
 }

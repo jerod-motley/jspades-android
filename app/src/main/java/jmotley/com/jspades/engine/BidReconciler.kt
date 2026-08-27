@@ -103,6 +103,24 @@ object BidReconciler {
     }
 
     /**
+     * Reset [hand]/[players] to their pre-bid baseline — every player's bid/bidPlaced/isBlind/
+     * didBid cleared, team bids zeroed — while preserving everything else (dealt cards,
+     * tricksWon, team-blind decisions, kitty state). Required before replaying an authoritative
+     * bid-recovery snapshot: the snapshot may legitimately omit a bid this device previously
+     * applied locally (e.g. the host simply hadn't retained that seat's bid yet when it built
+     * the snapshot), and merging new facts onto a hand that still carries the old ones would
+     * leave stale bid state — visible in the UI and to phase derivation — that the semantic
+     * fact store no longer has any record of, silently diverging from what was just installed
+     * as authoritative.
+     */
+    fun resetBidBaseline(hand: Hand, players: List<Player>): Pair<Hand, List<Player>> {
+        val perPlayer = hand.perPlayer.mapValues { (_, state) -> state.copy(bid = 0, bidPlaced = false, isBlind = false) }
+        val newHand = hand.copy(perPlayer = perPlayer, teamBids = hand.teamBids.map { 0 })
+        val newPlayers = players.map { it.copy(runtimeFlags = it.runtimeFlags.copy(didBid = false)) }
+        return newHand to newPlayers
+    }
+
+    /**
      * The only authoritative source for the post-bid logical phase: never accept a claimed phase
      * (e.g. from a recovery snapshot) as input. `strict` gates the stricter "all seats have bid"
      * completion rule the same way live bid application already does.
@@ -194,15 +212,27 @@ object BidReconciler {
         currentGateRequestId == null || responseToRequestId == currentGateRequestId
 
     /**
-     * Best-effort discriminator for whether a `resyncRequest`'s `semanticKey` identifies a BID
-     * conflict specifically, as opposed to a play conflict, delivery timeout, impossible
-     * progress, or reconnect divergence — none of which a bid-only recovery snapshot can
-     * resolve. `semanticKey` is currently carried as a free-form diagnostic string
-     * (`MPSemanticKey.toString()`), not a validated typed field; until the wire protocol adds an
-     * explicit, validated snapshot-kind discriminator, an unrecognized or absent key must be
-     * treated as "not a bid conflict" — a host that cannot positively identify the request as
-     * bid-scoped must leave the scope frozen rather than falsely "resolve" it with bid facts.
+     * Stable, cross-platform, exact-match tag sent as `resyncRequest.semanticKey` for a bid
+     * conflict specifically. Must be byte-identical to iOS's `BidReconciler.bidConflictSemanticKeyTag`
+     * — this is currently a free-form diagnostic wire string, not a validated typed field, so
+     * nothing else enforces agreement between platforms. Previously this used
+     * `action.semanticKey.toString()` (Kotlin's default data-class dump, e.g.
+     * "MPSemanticKey(actionType=BID, ...)") on the Android send side while iOS both sent and
+     * exact-matched a short literal — every cross-platform direction silently failed to
+     * recognize the other's bid-conflict request and left the host frozen with no snapshot ever
+     * sent. Do not change this value without updating iOS in the same change.
+     */
+    const val BID_CONFLICT_SEMANTIC_KEY_TAG = "bid"
+
+    /**
+     * Discriminator for whether a `resyncRequest`'s `semanticKey` identifies a BID conflict
+     * specifically, as opposed to a play conflict, delivery timeout, impossible progress, or
+     * reconnect divergence — none of which a bid-only recovery snapshot can resolve. Until the
+     * wire protocol adds an explicit, validated snapshot-kind discriminator, an unrecognized or
+     * absent key must be treated as "not a bid conflict" — a host that cannot positively
+     * identify the request as bid-scoped must leave the scope frozen rather than falsely
+     * "resolve" it with bid facts.
      */
     fun isBidScopedRecoveryKey(semanticKey: String?): Boolean =
-        semanticKey != null && semanticKey.contains("actionType=${MPActionType.BID.name}")
+        semanticKey == BID_CONFLICT_SEMANTIC_KEY_TAG
 }
