@@ -18,10 +18,17 @@ data class MPRecoveryGate(
     val recoveryRound: Int = 1
 )
 
+/** Identity of an already-applied snapshot: the FULL scope (generation, kind, and — critically —
+ * handNum), not just generation, since snapshot versions are monotonic per scope and each hand
+ * legitimately restarts at version 1. Dropping handNum from this identity (as a prior version of
+ * this class did) makes hand 2's version-1 snapshot collide with hand 1's already-recorded
+ * version-1 entry for the same generation/targetSeat and get wrongly classified STALE. */
+private data class AppliedSnapshotKey(val scope: MPRecoveryScope, val snapshotVersion: Long, val targetSeat: Int)
+
 /** Serialized recovery state. Old attempts can never clear a newer gate. */
 class MPRecoveryCoordinator(private val maxRounds: Int = 3) {
     private val gates = linkedMapOf<MPRecoveryScope, MPRecoveryGate>()
-    private val appliedSnapshots = mutableSetOf<Triple<Int, Long, Int>>()
+    private val appliedSnapshots = mutableSetOf<AppliedSnapshotKey>()
     private val latestSnapshotVersion = mutableMapOf<MPRecoveryScope, Long>()
 
     fun currentGate(): MPRecoveryGate? = gates.values.lastOrNull()
@@ -42,7 +49,7 @@ class MPRecoveryCoordinator(private val maxRounds: Int = 3) {
     }
 
     fun classifySnapshot(scope: MPRecoveryScope, snapshotVersion: Long, targetSeat: Int): MPRetentionResult {
-        val identity = Triple(scope.gameGeneration, snapshotVersion, targetSeat)
+        val identity = AppliedSnapshotKey(scope, snapshotVersion, targetSeat)
         if (identity in appliedSnapshots || snapshotVersion <= (latestSnapshotVersion[scope] ?: -1)) return MPRetentionResult.STALE
         return MPRetentionResult.RETAINED
     }
@@ -61,7 +68,7 @@ class MPRecoveryCoordinator(private val maxRounds: Int = 3) {
      * bookkeeping must still be recorded so a retried delivery of the same snapshot is
      * classified `STALE` instead of being reapplied on every retry. */
     fun recordAppliedSnapshot(scope: MPRecoveryScope, snapshotVersion: Long, targetSeat: Int) {
-        appliedSnapshots += Triple(scope.gameGeneration, snapshotVersion, targetSeat)
+        appliedSnapshots += AppliedSnapshotKey(scope, snapshotVersion, targetSeat)
         latestSnapshotVersion[scope] = snapshotVersion
     }
 }

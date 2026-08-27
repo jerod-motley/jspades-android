@@ -253,6 +253,11 @@ class MPAdapter(
 	)
 	private val pendingReceipts = ConcurrentHashMap<String, PendingReceipt>()
 
+	/** Callbacks registered via [onReceiptComplete], fired exactly once when the matching cmdId's
+	 * outstanding receipt is fully acknowledged, and discarded (never fired) if delivery times out
+	 * instead — see [trackForReceipt]. */
+	private val receiptCompletionCallbacks = ConcurrentHashMap<String, () -> Unit>()
+
     @Volatile
     private var seatPlayerMap: Map<String, WireSeatPlayer> = emptyMap()
 	@Volatile
@@ -385,6 +390,7 @@ class MPAdapter(
 		if (pending.acknowledgedSeats.containsAll(pending.expectedSeats)) {
 			pendingReceipts.remove(msg.ackedCmdId)
 			Log.d(TAG, "receipt complete cmdId=${msg.ackedCmdId.take(8)}")
+			receiptCompletionCallbacks.remove(msg.ackedCmdId)?.invoke()
 		}
 	}
 
@@ -525,6 +531,18 @@ class MPAdapter(
 
     fun sendResyncRequest(message: ResyncRequestMessage) = dispatch(message)
     fun sendStateSnapshot(message: StateSnapshotMessage) = dispatch(message)
+
+	/** Registers [callback] to fire exactly once [cmdId]'s outstanding receipt is fully
+	 * acknowledged by every expected target seat — proof the peer actually has the data, not
+	 * merely that a send call was made (a synchronous "socket.send returned" cannot distinguish
+	 * a live connection from a silently-dropped frame on a stale one). Call this immediately
+	 * after the `dispatch`/`send...` call that produced [cmdId], since [trackForReceipt] creates
+	 * the pending-receipt bookkeeping synchronously during that call. If delivery times out
+	 * instead of being acknowledged, the callback is discarded, never fired — the caller must
+	 * treat "never fires" as "delivery did not succeed," not assume success after a timeout. */
+	fun onReceiptComplete(cmdId: String, callback: () -> Unit) {
+		receiptCompletionCallbacks[cmdId] = callback
+	}
 
     fun sendDeal(
         handNum: Int,
@@ -714,6 +732,9 @@ class MPAdapter(
 			if (pendingReceipts[cmdId] === pending) {
 				Log.e(TAG, "receipt timeout cmdId=${cmdId.take(8)} missing=${expected - pending.acknowledgedSeats}")
 				pendingReceipts.remove(cmdId, pending)
+				// Discard without firing — delivery did not succeed, so a registered
+				// onReceiptComplete callback (e.g. bid-recovery gate completion) must never run.
+				receiptCompletionCallbacks.remove(cmdId)
 				delegate.onTerminalDeliveryFailure(cmdId, expected - pending.acknowledgedSeats,
 					pending.gameGeneration, pending.handNum)
 			}

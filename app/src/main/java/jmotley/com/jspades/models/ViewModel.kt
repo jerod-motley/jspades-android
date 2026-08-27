@@ -1753,40 +1753,49 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	private val mpBidSnapshotVersions = mutableMapOf<MPRecoveryScope, Long>()
 	private val mpBidSnapshotJson = Json { ignoreUnknownKeys = true }
 
+	private data class SentSnapshot(val snapshotId: String, val version: Long, val cmdId: String)
+
 	/** Host-side: build the bid-recovery snapshot for [scope] and send it to [targetSeat].
-	 * Returns the (snapshotId, version) actually sent, so a self-heal caller can complete its
-	 * own gate using the identical identifiers — or null if no send actually happened ([scope]
-	 * has no hand, or [mpAdapter] isn't connected yet), so the caller must not treat this as a
-	 * successful hand-off and must not clear/complete anything on the strength of it. */
-	private fun sendBidRecoverySnapshot(scope: MPRecoveryScope, targetSeat: Int, responseToRequestId: String?): Pair<String, Long>? {
+	 * Returns the identifiers actually sent, so a caller can correlate completion against them —
+	 * or null if no send was even attempted ([scope] has no hand, or [mpAdapter] isn't wired up).
+	 * A non-null return is *not* proof of delivery — see [sendSnapshotAndSelfComplete], which is
+	 * the only caller and which gates actual gate-completion on the wire receipt, not this call
+	 * returning. */
+	private fun sendBidRecoverySnapshot(scope: MPRecoveryScope, targetSeat: Int, responseToRequestId: String?): SentSnapshot? {
 		val handNum = scope.handNum ?: return null
 		val adapter = mpAdapter ?: return null
 		val payload = BidReconciler.buildRecoverySnapshotPayload(mpSemanticFacts, scope.gameGeneration, handNum, _state.value.phase.name)
 		val version = (mpBidSnapshotVersions[scope] ?: 0L) + 1
 		mpBidSnapshotVersions[scope] = version
 		val snapshotId = UUID.randomUUID().toString()
+		val cmdId = UUID.randomUUID().toString()
 		adapter.sendStateSnapshot(StateSnapshotMessage(
-			cmdId = UUID.randomUUID().toString(), seat = localMPSeat, playerId = localWirePlayerId,
+			cmdId = cmdId, seat = localMPSeat, playerId = localWirePlayerId,
 			snapshotId = snapshotId, responseToRequestId = responseToRequestId,
 			targetSeat = targetSeat, gameGeneration = scope.gameGeneration, handNum = handNum,
 			snapshotVersion = version, logicalState = mpBidSnapshotJson.encodeToString(payload),
 			retainedCmdIds = payload.bids.map { it.cmdId }))
-		return snapshotId to version
+		return SentSnapshot(snapshotId, version, cmdId)
 	}
 
-	/** Host-side: send the bid-recovery snapshot for [scope] and, only if the send actually
-	 * succeeded, immediately self-complete [gate] — the host is authoritative and doesn't need
-	 * confirmation from the peer to resume, but a send that never happened must never be treated
-	 * as done (see [sendBidRecoverySnapshot]'s null contract). Used by both the self-heal path
-	 * (a host-detected conflict, no requestId to correlate against) and the request/response path
-	 * (a client's resyncRequest, correlated to its own requestId). Without this, the host's own
-	 * gate — installed by [freezeMPRecovery] before either path sends anything — is never cleared
-	 * by anything else in this class, so answering a single resync request would otherwise freeze
-	 * the host's own gameplay for that scope permanently. */
+	/** Host-side: send the bid-recovery snapshot for [scope] and self-complete [gate] once the
+	 * target has actually **acknowledged receiving it** — not merely once the send call returned.
+	 * A synchronous "sendStateSnapshot returned" or even "the adapter had a live send closure"
+	 * cannot prove the frame reached the peer (the underlying transport can silently drop a frame
+	 * on a stale connection with no signal back to the caller); only a genuine `receiptAck` for
+	 * this specific cmdId does. If delivery times out instead, [MPAdapter.onReceiptComplete]'s
+	 * callback is discarded unfired, so the gate is correctly left frozen rather than falsely
+	 * resumed — [onTerminalDeliveryFailure] handles that path the same way it does for any other
+	 * reliable send. Used by both the self-heal path (a host-detected conflict, no requestId to
+	 * correlate against) and the request/response path (a client's resyncRequest, correlated to
+	 * its own requestId). Without this, the host's own gate — installed by [freezeMPRecovery]
+	 * before either path sends anything — is never cleared by anything else in this class, so
+	 * answering a single resync request would otherwise freeze the host's own gameplay for that
+	 * scope permanently. */
 	private fun sendSnapshotAndSelfComplete(scope: MPRecoveryScope, gate: MPRecoveryGate, targetSeat: Int, responseToRequestId: String?) {
-		val sent = sendBidRecoverySnapshot(scope, targetSeat, responseToRequestId)
-		if (sent != null) {
-			mpRecovery.complete(scope, gate.requestId, sent.first, sent.second, localMPSeat)
+		val sent = sendBidRecoverySnapshot(scope, targetSeat, responseToRequestId) ?: return
+		mpAdapter?.onReceiptComplete(sent.cmdId) {
+			mpRecovery.complete(scope, gate.requestId, sent.snapshotId, sent.version, localMPSeat)
 		}
 	}
 

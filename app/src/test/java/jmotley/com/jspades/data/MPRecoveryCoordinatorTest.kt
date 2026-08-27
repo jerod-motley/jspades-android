@@ -48,4 +48,24 @@ class MPRecoveryCoordinatorTest {
         assertTrue(coordinator.complete(next, "r2", "s2", 2, 1))
         assertTrue(coordinator.isFrozen(4, 2))
     }
+
+    /** Found on review: snapshot versions are monotonic PER SCOPE, so hand 2 legitimately
+     * restarts at version 1 — the applied-snapshot identity must include handNum, or hand 2's
+     * version-1 snapshot collides with hand 1's already-recorded version-1 entry for the same
+     * generation/targetSeat and gets wrongly classified STALE, leaving that hand unrecoverable. */
+    @Test fun appliedSnapshotIdentityDoesNotCollideAcrossHandsAtTheSameVersion() {
+        val coordinator = MPRecoveryCoordinator()
+        val hand1 = MPRecoveryScope(4, MPRecoveryScopeKind.HAND, 1)
+        val hand2 = MPRecoveryScope(4, MPRecoveryScopeKind.HAND, 2)
+
+        coordinator.freeze(hand1, MPRecoveryReason.CONFLICTING_FACT, "r-hand1")
+        assertTrue(coordinator.complete(hand1, "r-hand1", "s-hand1", 1, targetSeat = 1))
+
+        // Hand 2's very first recovery snapshot for the same target seat also starts at
+        // version 1 — this must NOT be classified stale because of hand 1's entry.
+        assertEquals(MPRetentionResult.RETAINED, coordinator.classifySnapshot(hand2, 1, targetSeat = 1))
+        coordinator.freeze(hand2, MPRecoveryReason.CONFLICTING_FACT, "r-hand2")
+        assertTrue(coordinator.complete(hand2, "r-hand2", "s-hand2", 1, targetSeat = 1))
+        assertEquals(MPRetentionResult.STALE, coordinator.classifySnapshot(hand2, 1, targetSeat = 1))
+    }
 }
