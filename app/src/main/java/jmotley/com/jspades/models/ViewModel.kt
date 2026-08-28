@@ -1473,6 +1473,10 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			return
 		}
 		mpGameGeneration = gameGeneration
+		// handNum is per-generation — reset to the pre-deal sentinel so onDeal's staleness
+		// guard doesn't drop the new game's handNum=1 as "older than" the previous game's
+		// final hand. Re-set by onDeal when the host's first deal for this generation arrives.
+		mpCurrentHandNum = -1
 
 		// Iterate by canonical index so players[] is canonical-ordered (south=0…east=3).
 		// PhaseManager uses players[leaderIndex] and players[leaderIndex-1] as canonical
@@ -2225,6 +2229,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			// one if it ever re-processes its own echo) that this is a genuine restart, not
 			// configuration recovery — see mpGameGeneration's doc.
 			mpGameGeneration++
+			// handNum is scoped per generation (semantic keys are (TYPE, generation, hand, …)).
+			// Reset so broadcastDeal() sends handNum=1 for the new game rather than continuing
+			// the previous game's count — a stale-but-higher handNum trips guest-side future/
+			// staleness bounds (iOS `applyTemporalFact`, Android `onDeal`).
+			mpCurrentHandNum = 0
 			// Re-announces settings/roster before the upcoming broadcastDeal(); this is what
 			// carries the score reset to guests — see onGameConfig.
 			mpAdapter?.sendGameConfig(current.toWireGameConfig(), mpRoomSeatPlayers, mpGameGeneration)
