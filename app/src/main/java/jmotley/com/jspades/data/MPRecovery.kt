@@ -54,6 +54,12 @@ class MPRecoveryCoordinator(private val maxRounds: Int = 3) {
         return MPRetentionResult.RETAINED
     }
 
+    /** Lighter recovery path (trick-state re-broadcast, todo.md fix #4): drop the gate for
+     * [scope] once an authoritative correction for that scope has been applied. Unlike
+     * [complete] this correlates no requestId and records no snapshot version — the trick
+     * re-broadcast carries neither and is idempotent. Returns true if a gate was removed. */
+    fun clear(scope: MPRecoveryScope): Boolean = gates.remove(scope) != null
+
     fun complete(scope: MPRecoveryScope, requestId: String?, snapshotId: String, snapshotVersion: Long, targetSeat: Int): Boolean {
         val current = gates[scope] ?: return false
         if (current.requestId != requestId) return false

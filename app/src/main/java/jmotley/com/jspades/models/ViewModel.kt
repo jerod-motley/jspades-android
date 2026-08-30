@@ -42,6 +42,7 @@ import jmotley.com.jspades.engine.PhaseManager
 import jmotley.com.jspades.logging.PlayLogger
 import jmotley.com.jspades.networking.MPAdapter
 import jmotley.com.jspades.networking.MPAdapterDelegate
+import jmotley.com.jspades.networking.MPTrickStateApply
 import jmotley.com.jspades.networking.gameTypeToWireString
 import jmotley.com.jspades.networking.hostWireGameConfig
 import jmotley.com.jspades.networking.toWireGameConfig
@@ -1080,6 +1081,14 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	 */
 	private var mpPlayAgainRequestedSeats: MutableSet<Int> = mutableSetOf()
 
+	/**
+	 * Non-host only: authoritative trick winner (canonicalId) per 1-based trickNum, from the
+	 * host's `trickResolved` broadcast, when it arrived before this client resolved that trick
+	 * locally. [handleTrickResolve] consults and removes the entry; [onTrickResolved] handles
+	 * the (more common) case where it arrives after the local resolve. Cleared each hand.
+	 */
+	internal val mpAuthoritativeTrickWinner: MutableMap<Int, String> = mutableMapOf()
+
 	/** True if this device is the game host (deals, proxies CPUs, broadcasts all host actions). */
 	var isMPHost: Boolean = false
 
@@ -1384,6 +1393,38 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		}
 	}
 
+	/**
+	 * Host only: broadcast the authoritative winner of the trick [trickNum] (1-based) that
+	 * just resolved, so every client can cross-check its local trick-winner computation and
+	 * adopt the host's on a disagreement (todo.md fix #3). [winnerCanonicalId] is the host's
+	 * locally-computed winner — on the host that value *is* authoritative.
+	 */
+	internal fun broadcastTrickResolved(trickNum: Int, winnerCanonicalId: String) {
+		val adapter = mpAdapter ?: return
+		if (!isMPHost) return
+		val canonicalIdx = listOf("south", "west", "north", "east").indexOf(winnerCanonicalId)
+		if (canonicalIdx < 0) return
+		val winnerRoomSeat = canonicalIdxToRoomSeat(canonicalIdx)
+		Log.d(MP_TAG, "broadcastTrickResolved hand=$mpCurrentHandNum trick=$trickNum winner=$winnerCanonicalId roomSeat=$winnerRoomSeat")
+		adapter.sendTrickResolved(mpCurrentHandNum, trickNum, winnerRoomSeat)
+	}
+
+	/**
+	 * Non-host trick-resolution hook: return the winner [handleTrickResolve] should actually
+	 * award for [trickNum], preferring the host's authoritative `trickResolved` value when it
+	 * arrived before the local resolve. A disagreement is logged as `mp_desync`. On the host
+	 * (or with no staged authoritative value) this is a pass-through of [locallyComputedId].
+	 */
+	internal fun mpTrickWinnerFor(trickNum: Int, locallyComputedId: String): String {
+		if (mpAdapter == null || isMPHost) return locallyComputedId
+		val authoritative = mpAuthoritativeTrickWinner.remove(trickNum) ?: return locallyComputedId
+		if (authoritative != locallyComputedId) {
+			Log.e(MP_TAG, "telemetry event=mp_desync action=trickResolve trickNum=$trickNum " +
+				"localWinner=$locallyComputedId hostWinner=$authoritative — adopting host")
+		}
+		return authoritative
+	}
+
 	/** Broadcast a blind offer to all clients. Host only. */
 	internal fun broadcastBlindOffer(teamSeats: List<Int>, decidingSeats: List<Int>) {
 		val adapter = mpAdapter ?: return
@@ -1536,6 +1577,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		val dealPhaseBefore = _state.value.phase
 		mpCurrentHandNum = handNum
 		mpReadyForNextHandSeats.clear()
+		mpAuthoritativeTrickWinner.clear()
 
 		val n = _state.value.players.size
 		val canonicalIds = listOf("south", "west", "north", "east")
@@ -1870,13 +1912,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		}
 		val n = _state.value.players.size
 		val playedCount = _state.value.currentTrick.plays.count { it != null }
-		if (playedCount >= n) {
-			Log.w(MP_TAG, "onPlayCard DROPPED trick already complete trickPlayNum=$trickPlayNum playedCount=$playedCount")
-			return MPRetentionResult.STALE
-		}
-		if (trickPlayNum - 1 != playedCount) {
-			Log.w(MP_TAG, "onPlayCard DROPPED out-of-order trickPlayNum=$trickPlayNum playedCount=$playedCount")
-			return MPRetentionResult.STALE
+		if (playedCount >= n || trickPlayNum - 1 != playedCount) {
+			return classifyNonContiguousPlay(action, trickNum, trickPlayNum, cardUid, playedCount)
 		}
 		val canonicalId = roomSeatToCanonicalId(seat)
 		if (orderedPlayInboxEnabled) {
@@ -1932,16 +1969,239 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		return MPRetentionResult.RETAINED
 	}
 
+	/**
+	 * An incoming *retained* play (already past semantic-fact registration) whose slot is not
+	 * the next contiguous one — [trickPlayNum] does not line up with the local [playedCount], or
+	 * the trick is already full. Classify it instead of silently dropping it:
+	 *
+	 *  - a play for a trick this client already resolved and archived → [MPRetentionResult.STALE] no-op.
+	 *  - the exact same card already sitting in the play-order slot it claims → [MPRetentionResult.DUPLICATE] no-op.
+	 *  - anything else → this client's trick state has forked from the sender's (a different card
+	 *    in the slot, a wrong local leader / slot count). This used to be logged as a routine
+	 *    "DROPPED out-of-order" and swallowed — often the very play the hand is blocked on.
+	 *    Always emit a high-severity `mp_desync` event so the condition is never invisible, and
+	 *    when recovery is negotiated ([semanticRecoveryEnabled]) freeze the hand and request a
+	 *    real resync (mp-arch.md:255-268). TODO(todo.md fix #4 — trick-state snapshot): until
+	 *    `onResyncRequest` services trick scope the host cannot actually answer this, so without
+	 *    recovery negotiated we still return STALE rather than freeze into an unrecoverable hang.
+	 */
+	private fun classifyNonContiguousPlay(
+		action: MPNormalizedAction, trickNum: Int, trickPlayNum: Int, cardUid: String, playedCount: Int,
+	): MPRetentionResult {
+		val s = _state.value
+		val localCurrentTrick = s.discard.size / s.players.size.coerceAtLeast(1) + 1
+		if (trickNum < localCurrentTrick) {
+			Log.w(MP_TAG, "onPlayCard STALE archived-trick cmd=${action.cmdId} trickNum=$trickNum localCurrentTrick=$localCurrentTrick")
+			return MPRetentionResult.STALE
+		}
+		// Android stores plays in play order (playCard fills the first null slot), so the slot a
+		// play claiming position trickPlayNum occupies is simply index trickPlayNum - 1.
+		val occupant = s.currentTrick.plays.getOrNull(trickPlayNum - 1)
+		if (occupant?.card?.uid == cardUid) {
+			Log.w(MP_TAG, "onPlayCard DUPLICATE occupied-slot cmd=${action.cmdId} trickPlayNum=$trickPlayNum card=$cardUid")
+			return MPRetentionResult.DUPLICATE
+		}
+		Log.e(MP_TAG, "telemetry event=mp_desync action=playCard cmd=${action.cmdId} " +
+			"trickNum=$trickNum trickPlayNum=$trickPlayNum localCurrentTrick=$localCurrentTrick " +
+			"localPlayedCount=$playedCount localLeaderIndex=${s.leaderIndex} " +
+			"incomingCard=$cardUid slotCard=${occupant?.card?.uid} recoveryEnabled=$semanticRecoveryEnabled")
+		if (semanticRecoveryEnabled) {
+			handlePlayConflict(action, "trick-slot-desync trickPlayNum=$trickPlayNum localPlayedCount=$playedCount " +
+				"slotCard=${occupant?.card?.uid} incoming=$cardUid")
+			mpSemanticFacts.invalidate(action, MPRetentionResult.CONFLICT)
+			return MPRetentionResult.CONFLICT
+		}
+		return MPRetentionResult.STALE
+	}
+
+	/**
+	 * Host's authoritative trick winner (todo.md fix #3). Cross-check + adopt, no capability gate:
+	 *
+	 *  - host / stale generation / other hand → no-op.
+	 *  - trick not yet resolved locally → stash the winner for [mpTrickWinnerFor] to apply when
+	 *    [PhaseManager.handleTrickResolve] runs.
+	 *  - trick already resolved and the winner agrees → no-op.
+	 *  - trick already resolved and the winner *disagrees* → `mp_desync`; when the next trick
+	 *    has not started yet, adopt the host's winner as next leader and move the mis-awarded
+	 *    trick. If the next trick already has plays, leave state alone — retro-editing the
+	 *    leader would misalign those plays; step 2's `mp_desync` guard is the backstop.
+	 */
+	override fun onTrickResolved(message: TrickResolvedMessage): MPRetentionResult {
+		val gen = message.gameGeneration ?: mpGameGeneration
+		if (gen != mpGameGeneration || message.handNum != mpCurrentHandNum) return MPRetentionResult.STALE
+		if (isMPHost) return MPRetentionResult.RETAINED
+		val s = _state.value
+		val n = s.players.size.coerceAtLeast(1)
+		// Reject malformed authenticated traffic: trickNum must be a real trick and winnerSeat
+		// a real seat, so garbage entries can't accumulate in mpAuthoritativeTrickWinner.
+		if (message.trickNum < 1 || message.trickNum > s.gameType.cardsPerPlayer || message.winnerSeat !in 0 until n) {
+			Log.w(MP_TAG, "onTrickResolved REJECTED malformed trickNum=${message.trickNum} winnerSeat=${message.winnerSeat}")
+			return MPRetentionResult.REJECTED
+		}
+		val hostWinnerId = roomSeatToCanonicalId(message.winnerSeat)
+		val localCurrentTrick = s.discard.size / n + 1
+		if (message.trickNum >= localCurrentTrick) {
+			// Only the current unresolved trick or the immediately-next one is plausible;
+			// anything further ahead is malformed, not a real timing skew.
+			if (message.trickNum > localCurrentTrick + 1) {
+				Log.w(MP_TAG, "onTrickResolved STALE far-future trickNum=${message.trickNum} localCurrentTrick=$localCurrentTrick")
+				return MPRetentionResult.STALE
+			}
+			mpAuthoritativeTrickWinner[message.trickNum] = hostWinnerId
+			return MPRetentionResult.RETAINED
+		}
+		if (message.trickNum != localCurrentTrick - 1) return MPRetentionResult.STALE
+		val nextTrickStarted = s.currentTrick.plays.any { it != null }
+		val localWinnerId = s.players.getOrNull(s.leaderIndex)?.id
+		if (hostWinnerId == localWinnerId) return MPRetentionResult.RETAINED
+		Log.e(MP_TAG, "telemetry event=mp_desync action=trickResolved cmd=${message.cmdId} " +
+			"hand=${message.handNum} trickNum=${message.trickNum} localWinner=$localWinnerId hostWinner=$hostWinnerId " +
+			"nextTrickStarted=$nextTrickStarted localLeaderIndex=${s.leaderIndex}")
+		if (!nextTrickStarted && localWinnerId != null) adoptTrickWinner(localWinnerId, hostWinnerId)
+		return MPRetentionResult.RETAINED
+	}
+
+	/**
+	 * Move the most-recently-resolved trick's award from [fromCanonicalId] to [toCanonicalId]
+	 * and set [toCanonicalId] as the next leader. Only valid when the next trick has not
+	 * started (caller checks).
+	 */
+	private fun adoptTrickWinner(fromCanonicalId: String, toCanonicalId: String) {
+		val current = _state.value
+		val toIdx = current.players.indexOfFirst { it.id == toCanonicalId }
+		if (toIdx < 0) return
+		val phaseHands = current.phaseHands.toMutableMap()
+		val dealHands = phaseHands[GamePhase.Deal]?.toMutableList() ?: return
+		val hand = dealHands.lastOrNull() ?: return
+		val perPlayer = hand.perPlayer.toMutableMap()
+		(perPlayer[fromCanonicalId] ?: PlayerHandState()).let {
+			perPlayer[fromCanonicalId] = it.copy(tricksWon = (it.tricksWon - 1).coerceAtLeast(0))
+		}
+		(perPlayer[toCanonicalId] ?: PlayerHandState()).let {
+			perPlayer[toCanonicalId] = it.copy(tricksWon = it.tricksWon + 1)
+		}
+		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
+		phaseHands[GamePhase.Deal] = dealHands
+		_state.value = current.copy(phaseHands = phaseHands, leaderIndex = toIdx)
+		Log.w(MP_TAG, "adoptTrickWinner from=$fromCanonicalId to=$toCanonicalId newLeaderIndex=$toIdx")
+	}
+
 	private fun handlePlayConflict(action: MPNormalizedAction, reason: String) {
 		val existing = mpSemanticFacts.fact(action.semanticKey)
 		val scope = MPRecoveryScope(action.gameGeneration, MPRecoveryScopeKind.HAND, action.handNum)
 		val shouldRequest = mpRecovery.gate(scope) == null
 		val gate = mpRecovery.freeze(scope, MPRecoveryReason.CONFLICTING_FACT)
 		Log.e(MP_TAG, "telemetry event=mp_conflict action=playCard reason=$reason generation=${action.gameGeneration} hand=${action.handNum} key=${action.semanticKey} requestId=${gate.requestId} recoveryRound=${gate.recoveryRound} firstCmd=${existing?.cmdId} secondCmd=${action.cmdId} first=${existing?.payload} second=${action.payload}")
-		if (shouldRequest && !isMPHost && gate.requestId != null) mpAdapter?.sendResyncRequest(ResyncRequestMessage(
-			UUID.randomUUID().toString(), localMPSeat, localWirePlayerId, gate.requestId, localMPSeat,
-			action.gameGeneration, action.handNum, WireRecoveryReason.CONFLICTING_FACT,
-			action.semanticKey.toString(), listOfNotNull(existing?.cmdId, action.cmdId)))
+		if (isMPHost) {
+			// Host is authoritative and never waits to unfreeze itself: send the conflicting
+			// sender the current authoritative trick state, then self-clear (todo.md fix #4).
+			sendTrickState(action.senderSeat, action.handNum, responseToRequestId = null)
+			mpRecovery.clear(scope)
+		} else if (shouldRequest && gate.requestId != null) {
+			mpAdapter?.sendResyncRequest(ResyncRequestMessage(
+				UUID.randomUUID().toString(), localMPSeat, localWirePlayerId, gate.requestId, localMPSeat,
+				action.gameGeneration, action.handNum, WireRecoveryReason.CONFLICTING_FACT,
+				action.semanticKey.toString(), listOfNotNull(existing?.cmdId, action.cmdId)))
+		}
+	}
+
+	/**
+	 * Host only: send [targetSeat] the authoritative in-progress trick state for [handNum]
+	 * so it can replace a forked local trick and unfreeze (todo.md fix #4). Lighter than the
+	 * versioned bid-recovery snapshot — no version, idempotent.
+	 */
+	private fun sendTrickState(targetSeat: Int, handNum: Int, responseToRequestId: String?) {
+		val adapter = mpAdapter ?: return
+		if (!isMPHost) return
+		val s = _state.value
+		val n = s.players.size.coerceAtLeast(1)
+		val canonicalIds = listOf("south", "west", "north", "east")
+		val leaderRoomSeat = canonicalIdxToRoomSeat(s.leaderIndex.coerceIn(0, canonicalIds.lastIndex))
+		val trickNum = s.discard.size / n + 1
+		val plays = s.currentTrick.plays.filterNotNull().map { play ->
+			val cIdx = canonicalIds.indexOf(play.playerId).coerceAtLeast(0)
+			canonicalIdxToRoomSeat(cIdx) to play.card
+		}
+		val liveHand = s.phaseHands[GamePhase.Deal]?.lastOrNull()?.perPlayer ?: emptyMap()
+		val handsBySeat = buildMap<Int, List<Card>> {
+			canonicalIds.forEachIndexed { cIdx, cid -> liveHand[cid]?.let { put(canonicalIdxToRoomSeat(cIdx), it.hand) } }
+		}
+		val booksBySeat = buildMap<Int, Int> {
+			canonicalIds.forEachIndexed { cIdx, cid -> put(canonicalIdxToRoomSeat(cIdx), liveHand[cid]?.tricksWon ?: 0) }
+		}
+		Log.w(MP_TAG, "sendTrickState → seat=$targetSeat hand=$handNum trick=$trickNum leaderSeat=$leaderRoomSeat plays=${plays.size} spadesBroken=${s.spadesBroken}")
+		adapter.sendTrickState(targetSeat, handNum, trickNum, leaderRoomSeat, s.spadesBroken,
+			plays, handsBySeat, booksBySeat, responseToRequestId)
+	}
+
+	override fun onTrickState(apply: MPTrickStateApply): MPRetentionResult {
+		if (apply.gameGeneration != mpGameGeneration || apply.handNum != mpCurrentHandNum) return MPRetentionResult.STALE
+		if (isMPHost || apply.targetSeat != localMPSeat) return MPRetentionResult.STALE
+		val current = _state.value
+		val n = current.players.size
+		val canonicalIds = listOf("south", "west", "north", "east")
+
+		// Staleness guard — a trickState is only "idempotent" while the hand has not advanced
+		// past it. Reject one for a trick this client already archived, or one carrying fewer
+		// plays than the trick in progress already has, so a late / reordered redelivery of an
+		// earlier state cannot un-play cards or roll books/leader backwards. Also reject one
+		// more than one trick ahead: the lighter path carries no archived tricks, so it cannot
+		// reconcile a client that fell multiple resolutions behind.
+		val localCurrentTrick = current.discard.size / n.coerceAtLeast(1) + 1
+		val localPlayed = current.currentTrick.plays.count { it != null }
+		if (apply.trickNum < localCurrentTrick || apply.trickNum > localCurrentTrick + 1 ||
+			(apply.trickNum == localCurrentTrick && apply.plays.size < localPlayed)) {
+			Log.w(MP_TAG, "onTrickState STALE trickNum=${apply.trickNum} plays=${apply.plays.size} localTrick=$localCurrentTrick localPlayed=$localPlayed")
+			return MPRetentionResult.STALE
+		}
+		// If a recovery gate is active for this hand and the message correlates to a specific
+		// request, it must be the request we are waiting on (rejects a superseded round's reply).
+		val scope = MPRecoveryScope(apply.gameGeneration, MPRecoveryScopeKind.HAND, apply.handNum)
+		val gate = mpRecovery.gate(scope)
+		if (gate != null && apply.responseToRequestId != null && apply.responseToRequestId != gate.requestId) {
+			Log.w(MP_TAG, "onTrickState STALE requestId mismatch expected=${gate.requestId} got=${apply.responseToRequestId}")
+			return MPRetentionResult.STALE
+		}
+
+		val dealHands = current.phaseHands[GamePhase.Deal]?.toMutableList()
+		val hand = dealHands?.lastOrNull()
+		if (dealHands == null || hand == null) {
+			Log.e(MP_TAG, "onTrickState REJECTED no installed Deal hand for hand=${apply.handNum}")
+			return MPRetentionResult.REJECTED
+		}
+		val perPlayer = hand.perPlayer.toMutableMap()
+		for ((roomSeat, cards) in apply.handsBySeat) {
+			val cid = roomSeatToCanonicalId(roomSeat)
+			perPlayer[cid] = (perPlayer[cid] ?: PlayerHandState()).copy(hand = cards.sortedForDisplay())
+		}
+		for ((roomSeat, books) in apply.booksBySeat) {
+			val cid = roomSeatToCanonicalId(roomSeat)
+			perPlayer[cid] = (perPlayer[cid] ?: PlayerHandState()).copy(tricksWon = books)
+		}
+		dealHands[dealHands.lastIndex] = hand.copy(perPlayer = perPlayer)
+		val orderedPlays = apply.plays.map { (roomSeat, card) -> Play(roomSeatToCanonicalId(roomSeat), card) }
+		val trickPlays: List<Play?> = (orderedPlays + List(n) { null }).take(n)
+		val leaderIdx = canonicalIds.indexOf(roomSeatToCanonicalId(apply.leaderSeat))
+			.takeIf { it in 0 until n } ?: current.leaderIndex
+		val phaseHands = current.phaseHands.toMutableMap().apply { put(GamePhase.Deal, dealHands) }
+		_state.value = current.copy(
+			currentTrick = Trick(plays = trickPlays),
+			leaderIndex = leaderIdx,
+			spadesBroken = apply.spadesBroken,
+			phaseHands = phaseHands)
+		// The restored trick is now the single source of truth for this hand's card plays.
+		// Drop the retained + staged CARD_PLAY facts it supersedes — otherwise the stale
+		// conflicting fact makes the next authoritative retry re-conflict and re-freeze, and
+		// drainSemanticFacts() below would replay pre-recovery staged plays onto fresh state.
+		mpSemanticFacts.clearFacts { it.type == MPActionType.CARD_PLAY && it.gameGeneration == apply.gameGeneration && it.handNum == apply.handNum }
+		mpSemanticFacts.clearPending { it.type == MPActionType.CARD_PLAY && it.gameGeneration == apply.gameGeneration && it.handNum == apply.handNum }
+		mpRecovery.clear(scope)
+		mpAuthoritativeTrickWinner.clear()
+		Log.w(MP_TAG, "onTrickState APPLIED hand=${apply.handNum} trick=${apply.trickNum} leaderIdx=$leaderIdx plays=${orderedPlays.size} spadesBroken=${apply.spadesBroken} — recovery cleared")
+		advancePhase(if (orderedPlays.size >= n) GamePhase.TrickResolve else GamePhase.Trick)
+		drainSemanticFacts()
+		phaseManager.execute()
+		return MPRetentionResult.RETAINED
 	}
 
 	private fun retainTemporalFact(action: MPNormalizedAction,
@@ -2004,8 +2264,15 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			// would stay frozen forever after answering a single client resync request. The host
 			// is authoritative, so once its correction is actually sent, it resumes immediately.
 			sendSnapshotAndSelfComplete(scope, gate, targetSeat = message.requesterSeat, responseToRequestId = message.requestId)
+		} else if (message.handNum != null) {
+			// Trick-scope (or any non-bid hand-scope) recovery: re-broadcast the authoritative
+			// in-progress trick state to the requester, then self-clear. Lighter than the
+			// versioned bid snapshot — no version, idempotent (todo.md fix #4).
+			val scope = MPRecoveryScope(message.gameGeneration, MPRecoveryScopeKind.HAND, message.handNum)
+			sendTrickState(message.requesterSeat, message.handNum, responseToRequestId = message.requestId)
+			mpRecovery.clear(scope)
 		} else {
-			Log.w(MP_TAG, "onResyncRequest FROZEN-NO-SNAPSHOT unsupported recovery scope reason=${message.reason} semanticKey=${message.semanticKey} — Slice 3 only resolves bid conflicts")
+			Log.w(MP_TAG, "onResyncRequest FROZEN-NO-SNAPSHOT generation-scope recovery reason=${message.reason} semanticKey=${message.semanticKey}")
 		}
 		return MPRetentionResult.RETAINED
 	}

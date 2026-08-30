@@ -21,6 +21,9 @@ import jmotley.com.jspades.data.PlayCardMessage
 import jmotley.com.jspades.data.Rank
 import jmotley.com.jspades.data.ReadyForNextHandMessage
 import jmotley.com.jspades.data.RequestPlayAgainMessage
+import jmotley.com.jspades.data.TrickResolvedMessage
+import jmotley.com.jspades.data.TrickStateMessage
+import jmotley.com.jspades.data.TrickStatePlay
 import jmotley.com.jspades.data.ReceiptAckMessage
 import jmotley.com.jspades.data.ResyncRequestMessage
 import jmotley.com.jspades.data.StateSnapshotMessage
@@ -54,7 +57,7 @@ internal fun rebuildRelayEnvelopeForDecoding(raw: String): String? = runCatching
     val obj = relayRebuildJson.parseToJsonElement(raw).jsonObject
     val type = (obj["type"] as? JsonPrimitive)?.content ?: return@runCatching null
     if (type !in setOf("gameConfig", "deal", "blindOffer", "blindResponse", "bid", "playCard",
-            "readyForNextHand", "requestPlayAgain", "blindPhaseComplete", "receiptAck",
+            "trickResolved", "trickState", "readyForNextHand", "requestPlayAgain", "blindPhaseComplete", "receiptAck",
             "resyncRequest", "stateSnapshot")) return@runCatching null
     val payloadObj = obj["payload"] as? JsonObject ?: return@runCatching null
 
@@ -159,6 +162,24 @@ fun GameState.toWireGameConfig(): WireGameConfig = WireGameConfig(
     gameLength              = gameLength.name
 )
 
+/**
+ * Adapter → delegate form of a [TrickStateMessage]: wire cardIds already decoded to [Card],
+ * seats kept as room seats. [plays] are in play order; [handsBySeat]/[booksBySeat] are keyed
+ * by room seat. See [MPAdapterDelegate.onTrickState] (todo.md fix #4).
+ */
+data class MPTrickStateApply(
+    val handNum: Int,
+    val trickNum: Int,
+    val leaderSeat: Int,
+    val spadesBroken: Boolean,
+    val plays: List<Pair<Int, Card>>,
+    val handsBySeat: Map<Int, List<Card>>,
+    val booksBySeat: Map<Int, Int>,
+    val targetSeat: Int,
+    val responseToRequestId: String?,
+    val gameGeneration: Int,
+)
+
 // ── Delegate interface ────────────────────────────────────────────────────────
 
 /**
@@ -185,6 +206,10 @@ interface MPAdapterDelegate {
     fun onBlindPhaseComplete(action: MPNormalizedAction): MPRetentionResult
     fun onBid(action: MPNormalizedAction): MPRetentionResult
     fun onPlayCard(action: MPNormalizedAction): MPRetentionResult
+    /** Host's authoritative trick winner; default no-op so non-updated delegates ignore it. */
+    fun onTrickResolved(message: TrickResolvedMessage): MPRetentionResult = MPRetentionResult.RETAINED
+    /** Host's authoritative in-progress trick state, used to unfreeze a trick-phase desync. */
+    fun onTrickState(apply: MPTrickStateApply): MPRetentionResult = MPRetentionResult.RETAINED
     fun onReadyForNextHand(action: MPNormalizedAction): MPRetentionResult
     fun onRequestPlayAgain(action: MPNormalizedAction): MPRetentionResult
     fun onResyncRequest(message: ResyncRequestMessage): MPRetentionResult = MPRetentionResult.RETAINED
@@ -207,6 +232,8 @@ internal fun validateNegotiatedWireFields(msg: WireMessage, capabilities: Set<St
 			is BlindPhaseCompleteMessage -> msg.gameGeneration
 			is BidMessage -> msg.gameGeneration
 			is PlayCardMessage -> msg.gameGeneration
+			is TrickResolvedMessage -> msg.gameGeneration
+			is TrickStateMessage -> msg.gameGeneration
 			is ReadyForNextHandMessage -> msg.gameGeneration
 			is RequestPlayAgainMessage -> msg.gameGeneration
 			else -> null
@@ -353,6 +380,8 @@ class MPAdapter(
 			is BlindPhaseCompleteMessage -> msg.gameGeneration to msg.handNum
 			is BidMessage -> msg.gameGeneration to msg.handNum
 			is PlayCardMessage -> msg.gameGeneration to msg.handNum
+			is TrickResolvedMessage -> msg.gameGeneration to msg.handNum
+			is TrickStateMessage -> msg.gameGeneration to msg.handNum
 			is ReadyForNextHandMessage -> msg.gameGeneration to msg.handNum
 			is RequestPlayAgainMessage -> msg.gameGeneration to null
 			is ResyncRequestMessage -> msg.gameGeneration to msg.handNum
@@ -373,6 +402,8 @@ class MPAdapter(
             is BlindResponseMessage -> handleBlindResponse(msg)
             is BidMessage           -> handleBid(msg)
             is PlayCardMessage      -> handlePlayCard(msg)
+            is TrickResolvedMessage -> delegate.onTrickResolved(msg)
+            is TrickStateMessage    -> toTrickStateApply(msg)?.let { delegate.onTrickState(it) } ?: MPRetentionResult.REJECTED
             is ReadyForNextHandMessage -> handleReadyForNextHand(msg)
             is RequestPlayAgainMessage -> handleRequestPlayAgain(msg)
             is BlindPhaseCompleteMessage -> handleBlindPhaseComplete(msg)
@@ -610,6 +641,57 @@ class MPAdapter(
             cardId = cardToWireId(card), gameGeneration = delegate.currentGameGeneration()))
     }
 
+    /**
+     * Host only: broadcast the authoritative winner of the trick just resolved so every
+     * client can cross-check its own locally-computed winner and adopt the host's on a
+     * disagreement (todo.md fix #3). [winnerSeat] is a room seat; [trickNum] is 1-based.
+     */
+    fun sendTrickResolved(handNum: Int, trickNum: Int, winnerSeat: Int, cmdId: String = nextCmdId()) {
+        dispatch(TrickResolvedMessage(cmdId = cmdId, seat = localSeat, playerId = localPlayerId,
+            handNum = handNum, trickNum = trickNum, winnerSeat = winnerSeat,
+            gameGeneration = delegate.currentGameGeneration()))
+    }
+
+    /**
+     * Host only: send [targetSeat] the authoritative in-progress trick state so it can
+     * replace a forked local trick and unfreeze (todo.md fix #4). Seats are room seats;
+     * [plays] are in play order; [handsBySeat]/[booksBySeat] are keyed by room seat.
+     */
+    fun sendTrickState(
+        targetSeat: Int, handNum: Int, trickNum: Int, leaderSeat: Int, spadesBroken: Boolean,
+        plays: List<Pair<Int, Card>>, handsBySeat: Map<Int, List<Card>>, booksBySeat: Map<Int, Int>,
+        responseToRequestId: String? = null, cmdId: String = nextCmdId()
+    ) {
+        dispatch(TrickStateMessage(
+            cmdId = cmdId, seat = localSeat, playerId = localPlayerId,
+            handNum = handNum, trickNum = trickNum, leaderSeat = leaderSeat, spadesBroken = spadesBroken,
+            plays = plays.map { (seat, card) -> TrickStatePlay(seat, cardToWireId(card)) },
+            handsBySeat = handsBySeat.entries.associate { (s, cs) -> s.toString() to cs.map { cardToWireId(it) } },
+            booksBySeat = booksBySeat.entries.associate { (s, b) -> s.toString() to b },
+            targetSeat = targetSeat, responseToRequestId = responseToRequestId,
+            gameGeneration = delegate.currentGameGeneration()))
+    }
+
+    /** Decode a [TrickStateMessage] into the delegate form, converting wire cardIds to [Card].
+     *  Returns null if any card fails to convert (never apply a partial trick state). */
+    private fun toTrickStateApply(msg: TrickStateMessage): MPTrickStateApply? {
+        val plays = msg.plays.map { it.seat to (wireIdToCard(it.cardId) ?: return null) }
+        val hands = buildMap<Int, List<Card>> {
+            for ((seatKey, ids) in msg.handsBySeat) {
+                val seat = seatKey.toIntOrNull() ?: return null
+                put(seat, ids.map { wireIdToCard(it) ?: return null })
+            }
+        }
+        val books = buildMap<Int, Int> {
+            for ((seatKey, b) in msg.booksBySeat) put(seatKey.toIntOrNull() ?: return null, b)
+        }
+        return MPTrickStateApply(
+            handNum = msg.handNum, trickNum = msg.trickNum, leaderSeat = msg.leaderSeat,
+            spadesBroken = msg.spadesBroken, plays = plays, handsBySeat = hands, booksBySeat = books,
+            targetSeat = msg.targetSeat, responseToRequestId = msg.responseToRequestId,
+            gameGeneration = msg.gameGeneration ?: delegate.currentGameGeneration())
+    }
+
     /** Non-host only: signal that the local player has pressed "Next Hand" and is waiting. */
     fun sendReadyForNextHand(handNum: Int) {
         dispatch(ReadyForNextHandMessage(cmdId = nextCmdId(), seat = localSeat, playerId = localPlayerId,
@@ -655,6 +737,8 @@ class MPAdapter(
         val extra = when (msg) {
             is BidMessage           -> "hand=${msg.handNum} amount=${msg.amount} blind=${msg.isBlind}"
             is PlayCardMessage      -> "hand=${msg.handNum} trick=${msg.trickNum} play=${msg.trickPlayNum} card=${msg.cardId}"
+            is TrickResolvedMessage -> "hand=${msg.handNum} trick=${msg.trickNum} winnerSeat=${msg.winnerSeat}"
+            is TrickStateMessage    -> "hand=${msg.handNum} trick=${msg.trickNum} leaderSeat=${msg.leaderSeat} plays=${msg.plays.size} target=${msg.targetSeat}"
             is DealMessage          -> "hand=${msg.handNum} dealer=${msg.dealerSeat}"
             is BlindResponseMessage -> "hand=${msg.handNum} accepted=${msg.accepted}"
             is ReadyForNextHandMessage -> "hand=${msg.handNum}"
@@ -696,6 +780,8 @@ class MPAdapter(
 			val actionScope = when (msg) {
 				is BidMessage -> msg.gameGeneration to msg.handNum
 				is PlayCardMessage -> msg.gameGeneration to msg.handNum
+				is TrickResolvedMessage -> msg.gameGeneration to msg.handNum
+				is TrickStateMessage -> msg.gameGeneration to msg.handNum
 				is DealMessage -> msg.gameGeneration to msg.handNum
 				is BlindOfferMessage -> msg.gameGeneration to msg.handNum
 				is BlindResponseMessage -> msg.gameGeneration to msg.handNum

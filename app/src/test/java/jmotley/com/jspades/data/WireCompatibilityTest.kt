@@ -118,4 +118,95 @@ class WireCompatibilityTest {
 		assertEquals("play-1", ack.ackedCmdId)
 		assertEquals(1, ack.seat)
 	}
+
+	/** todo.md fix #3: the host's authoritative trick winner. Must round-trip through the
+	 *  sealed [WireMessage] discriminator and stay cross-platform-shaped with iOS's
+	 *  `MPWireTrickResolved` (flat `handNum` / `trickNum` / `winnerSeat` / optional `gameGeneration`). */
+	@Test
+	fun trickResolvedRoundTripsThroughTheSealedDiscriminatorAndKeepsGenerationOptional() {
+		val legacy = json.decodeFromString<TrickResolvedMessage>(
+			"""{"cmdId":"tr-1","seat":0,"playerId":"host","handNum":1,"trickNum":12,"winnerSeat":2}"""
+		)
+		assertNull(legacy.gameGeneration)
+		assertEquals(12, legacy.trickNum)
+		assertEquals(2, legacy.winnerSeat)
+
+		val msg = TrickResolvedMessage(
+			cmdId = "tr-2", seat = 0, playerId = "host",
+			handNum = 3, trickNum = 5, winnerSeat = 1, gameGeneration = 7
+		)
+		val encoded = json.encodeToString(WireMessage.serializer(), msg)
+		assertTrue("expected \"type\":\"trickResolved\" in $encoded", encoded.contains("\"type\":\"trickResolved\""))
+
+		val decoded = json.decodeFromString(WireMessage.serializer(), encoded)
+		assertTrue(decoded is TrickResolvedMessage)
+		assertEquals(msg, decoded)
+		assertEquals(7, (decoded as TrickResolvedMessage).gameGeneration)
+	}
+
+	/** todo.md fix #4: the host's authoritative in-progress trick state, used to unfreeze a
+	 *  trick-phase desync. Nested map/list fields must survive the sealed-discriminator
+	 *  round-trip and the relay-envelope rebuild (JSON-string inflation). */
+	@Test
+	fun trickStateRoundTripsNestedCollectionsThroughTheSealedDiscriminator() {
+		val msg = TrickStateMessage(
+			cmdId = "ts-1", seat = 0, playerId = "host", handNum = 1, trickNum = 12,
+			leaderSeat = 2, spadesBroken = true,
+			plays = listOf(TrickStatePlay(2, "8_3"), TrickStatePlay(3, "4_1")),
+			handsBySeat = mapOf("2" to listOf("10_3", "11_3"), "3" to listOf("2_1")),
+			booksBySeat = mapOf("0" to 4, "1" to 3, "2" to 4, "3" to 1),
+			targetSeat = 1, responseToRequestId = "req-9", gameGeneration = 5,
+		)
+		val encoded = json.encodeToString(WireMessage.serializer(), msg)
+		assertTrue("expected \"type\":\"trickState\" in $encoded", encoded.contains("\"type\":\"trickState\""))
+
+		val decoded = json.decodeFromString(WireMessage.serializer(), encoded)
+		assertTrue(decoded is TrickStateMessage)
+		assertEquals(msg, decoded)
+	}
+
+	@Test
+	fun trickStateRebuildsFromARelayEnvelope() {
+		val plays = """[{\"seat\":2,\"cardId\":\"8_3\"},{\"seat\":3,\"cardId\":\"4_1\"}]"""
+		val hands = """{\"2\":[\"10_3\"],\"3\":[\"2_1\"]}"""
+		val books = """{\"0\":4,\"1\":3,\"2\":4,\"3\":1}"""
+		val relayFrame = """{"type":"trickState","cmdId":"ts-2","roomId":"LBHLLD","fromPlayerId":"host",""" +
+			""""payload":{"seat":"0","playerId":"host","handNum":"1","trickNum":"12","leaderSeat":"2",""" +
+			""""spadesBroken":"true","plays":"$plays","handsBySeat":"$hands","booksBySeat":"$books",""" +
+			""""targetSeat":"1","responseToRequestId":"req-9","gameGeneration":"5"}}"""
+
+		val rebuilt = jmotley.com.jspades.networking.rebuildRelayEnvelopeForDecoding(relayFrame)
+		assertTrue("relay frame should be recognised as a game action", rebuilt != null)
+		val decoded = json.decodeFromString(WireMessage.serializer(), rebuilt!!)
+		assertTrue(decoded is TrickStateMessage)
+		decoded as TrickStateMessage
+		assertEquals(12, decoded.trickNum)
+		assertEquals(2, decoded.leaderSeat)
+		assertTrue(decoded.spadesBroken)
+		assertEquals(listOf(TrickStatePlay(2, "8_3"), TrickStatePlay(3, "4_1")), decoded.plays)
+		assertEquals(listOf("10_3"), decoded.handsBySeat["2"])
+		assertEquals(4, decoded.booksBySeat["2"])
+		assertEquals(1, decoded.targetSeat)
+	}
+
+	/** The relay strips every top-level field except type/cmdId/payload, so a relay-forwarded
+	 *  `trickResolved` frame must still rebuild into a decodable [TrickResolvedMessage] — i.e.
+	 *  the type has to be in `rebuildRelayEnvelopeForDecoding`'s allowlist. */
+	@Test
+	fun trickResolvedRebuildsFromARelayEnvelope() {
+		val relayFrame = """{"type":"trickResolved","cmdId":"tr-3","roomId":"LBHLLD","fromPlayerId":"host",""" +
+			""""payload":{"seat":"0","playerId":"host","handNum":"4","trickNum":"9","winnerSeat":"3","gameGeneration":"2"}}"""
+
+		val rebuilt = jmotley.com.jspades.networking.rebuildRelayEnvelopeForDecoding(relayFrame)
+		assertTrue("relay frame should be recognised as a game action", rebuilt != null)
+
+		val decoded = json.decodeFromString(WireMessage.serializer(), rebuilt!!)
+		assertTrue(decoded is TrickResolvedMessage)
+		decoded as TrickResolvedMessage
+		assertEquals("tr-3", decoded.cmdId)
+		assertEquals(4, decoded.handNum)
+		assertEquals(9, decoded.trickNum)
+		assertEquals(3, decoded.winnerSeat)
+		assertEquals(2, decoded.gameGeneration)
+	}
 }

@@ -329,6 +329,63 @@ data class PlayCardMessage(
     val gameGeneration: Int? = null
 ) : WireMessage()
 
+/**
+ * host → all. Sent by the host immediately after it resolves a completed trick so every
+ * client can cross-check its own locally-computed winner against the host's authoritative
+ * one. Additive and NOT capability-gated: a peer that does not understand the type simply
+ * fails to parse it and keeps its local result. [winnerSeat] is the 1-based-room seat that
+ * won the trick and therefore leads the next one; [trickNum] is 1-based.
+ *
+ * A client that disagrees logs `mp_desync` and adopts [winnerSeat] as the next leader (when
+ * the next trick has not started yet), moving the mis-awarded trick, rather than letting
+ * each peer's local trick-winner function silently fork `leaderIndex` (todo.md fix #3).
+ */
+@Serializable
+@SerialName("trickResolved")
+data class TrickResolvedMessage(
+    override val cmdId: String,
+    override val seat: Int,
+    override val playerId: String,
+    val handNum: Int,
+    val trickNum: Int,
+    val winnerSeat: Int,
+    val gameGeneration: Int? = null
+) : WireMessage()
+
+/** One card played in the in-progress trick, in play order. [seat] is a room seat. */
+@Serializable
+data class TrickStatePlay(val seat: Int, val cardId: String)
+
+/**
+ * host → one client. The authoritative in-progress trick state for [handNum], sent in
+ * response to a trick-scoped `resyncRequest` (or proactively by a host that detected the
+ * conflict itself). The client replaces its forked trick state wholesale and unfreezes —
+ * a lighter alternative to the versioned bid-recovery [StateSnapshotMessage]: it carries no
+ * version and is idempotent (replacing trick state with the same authoritative values twice
+ * is a no-op). Additive and NOT capability-gated (todo.md fix #4).
+ *
+ * [leaderSeat] is the room seat leading the current trick; [trickNum] is 1-based;
+ * [plays] are the cards played so far this trick, in order; [handsBySeat]/[booksBySeat] are
+ * keyed by room-seat string → live remaining cards / tricks won.
+ */
+@Serializable
+@SerialName("trickState")
+data class TrickStateMessage(
+    override val cmdId: String,
+    override val seat: Int,
+    override val playerId: String,
+    val handNum: Int,
+    val trickNum: Int,
+    val leaderSeat: Int,
+    val spadesBroken: Boolean,
+    val plays: List<TrickStatePlay>,
+    val handsBySeat: Map<String, List<String>>,
+    val booksBySeat: Map<String, Int>,
+    val targetSeat: Int,
+    val responseToRequestId: String? = null,
+    val gameGeneration: Int? = null
+) : WireMessage()
+
 /** Receipt-only acknowledgement. Duplicate commands are acknowledged again. */
 @Serializable
 @SerialName("receiptAck")

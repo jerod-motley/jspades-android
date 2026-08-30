@@ -916,6 +916,20 @@ class PhaseManager(
             return
         }
 
+        // Host-authoritative in multiplayer: CPU card plays are generated and broadcast by
+        // the host only. A non-host client must NOT run the CPU selection/play loop — it
+        // waits for the host's authoritative `playCard` (delivered via
+        // ViewModel.applyRetainedPlay), exactly as it waits for a remote human above and for
+        // the host's blindOffer in handleBlindBid. Running PlayEngine.selectCard here lets a
+        // non-host apply a CPU card the host never sent, forking trick membership and
+        // leaderIndex against the host with no resync path back.
+        if (viewModel.mpAdapter != null && !viewModel.isMPHost) {
+            Log.d(MP_TAG, "handleTrick non-host CPU $nextPlayer — waiting for host's play → TrickMP")
+            viewModel.advancePhase(GamePhase.TrickMP)
+            dispatch()
+            return
+        }
+
         val card = PlayEngine.selectCard(nextPlayer, s)
         Log.d(MP_TAG, "handleTrick CPU $nextPlayer selected card=${card.uid}")
         viewModel.broadcastCPUPlay(nextPlayer, card)  // before playCard: trickPlayNum uses pre-play slot count
@@ -949,8 +963,11 @@ class PhaseManager(
         val leadPlay   = plays.first()
         val leadCard   = leadPlay.card
         val leaderId   = leadPlay.playerId
-        val winnerPlay = PlayEngine.computeTrickWinner(s.currentTrick.plays)
-        val winnerId   = winnerPlay.playerId
+        // 1-based number of the trick being resolved (currentTrick not yet collected).
+        val trickNum   = s.discard.size / s.players.size.coerceAtLeast(1) + 1
+        // Non-host: adopt the host's authoritative winner if its `trickResolved` already
+        // arrived; otherwise this is the local computeTrickWinner value (todo.md fix #3).
+        val winnerId   = viewModel.mpTrickWinnerFor(trickNum, PlayEngine.computeTrickWinner(s.currentTrick.plays).playerId)
 
         // Break spades if trump was played on a non-trump lead (Classic gate)
         if (!isTrump(leadCard) && !s.spadesBroken) {
@@ -970,6 +987,10 @@ class PhaseManager(
         }
 
         viewModel.awardTrick(winnerId)
+
+        // Host: broadcast the authoritative winner so clients can cross-check their own
+        // computeTrickWinner and adopt on a disagreement instead of forking leaderIndex.
+        if (viewModel.isMPHost) viewModel.broadcastTrickResolved(trickNum, winnerId)
 
         val booksAfterAward = viewModel.state.value.phaseHands[GamePhase.Deal]?.lastOrNull()
             ?.perPlayer?.mapValues { it.value.tricksWon } ?: emptyMap()

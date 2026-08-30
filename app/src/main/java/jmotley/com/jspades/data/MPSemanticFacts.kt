@@ -102,6 +102,13 @@ class MPSemanticFactStore {
         stale.values.forEach { resultsByCommand.remove(it.cmdId) }
     }
 
+    /** Drop every *staged* (not-yet-applied) fact matching [predicate]. Used when an
+     * authoritative recovery snapshot supersedes a scope: staged actions from before the
+     * snapshot must not be drained onto the freshly-restored state. */
+    fun clearPending(predicate: (MPNormalizedAction) -> Boolean) {
+        pendingByKey.entries.filter { predicate(it.value) }.forEach { pendingByKey.remove(it.key) }
+    }
+
     /** Install [action] as authoritative, bypassing normal conflict comparison. Used only to
      * apply a host-authored recovery snapshot, whose facts are truth by definition rather than
      * something to compare against whatever this store already holds. */
