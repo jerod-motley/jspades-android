@@ -369,7 +369,18 @@ data class GameState(
      * state on [EndGameView]. Cleared by [GameViewModel.onGameConfig], which fires for
      * both the very first game and every subsequent Play Again restart.
      */
-    val mpPlayAgainRequested: Boolean = false
+    val mpPlayAgainRequested: Boolean = false,
+    /**
+     * True once a non-host multiplayer client's "Play Again" request has gone unanswered
+     * past [GameViewModel.PLAY_AGAIN_TIMEOUT_MS] (host never broadcast the new-game
+     * `gameConfig` — e.g. its app is wedged behind an ad, or it left). Set by the timeout
+     * in [GameViewModel.requestPlayAgainFromHost] alongside clearing [mpPlayAgainRequested],
+     * so [EndGameView] swaps "Waiting for host..." for a retry hint and re-enables the
+     * button. The client never retries or restarts on its own — only another explicit
+     * button press re-sends. Cleared by [GameViewModel.onGameConfig] on a real restart and
+     * by a fresh [GameViewModel.requestPlayAgainFromHost] press.
+     */
+    val mpPlayAgainTimedOut: Boolean = false
 )
 
 /**

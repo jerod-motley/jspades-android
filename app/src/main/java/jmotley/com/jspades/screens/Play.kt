@@ -102,6 +102,7 @@ fun PlayScreen(
     viewModel: GameViewModel = viewModel()
 ) {
     val state by viewModel.state.collectAsState()
+    val mpSessionEnded by viewModel.mpSessionEnded.collectAsState()
     val resolvedGameType = GameType.fromLabel(gameType)
 
     // Drives the gold winner flash in DiamondView — set from TrickWon events below.
@@ -378,6 +379,21 @@ fun PlayScreen(
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(top = 4.dp, start = 4.dp)
+            )
+        }
+
+        // ── MP session-ended dialog (server idle-boot, or the host left) ──────────
+        // Blocking: the game can't continue, so the only action is to leave. This is the
+        // client-side recovery for the "un-closeable ad froze the host" incident — the
+        // guest no longer sits on a dead game screen with no explanation.
+        mpSessionEnded?.let { reason ->
+            AlertDialog(
+                onDismissRequest = { },
+                title = { Text("Disconnected") },
+                text = { Text(reason) },
+                confirmButton = {
+                    TextButton(onClick = onNavigateBack) { Text("Leave") }
+                }
             )
         }
 

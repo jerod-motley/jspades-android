@@ -156,6 +156,9 @@ sealed class SpadesMPMessage {
     data class PlayerJoined(val roomId: String, val playerId: String, val seatIndex: Int) : SpadesMPMessage()
     data class PlayerInfo(val personId: String, val roomId: String, val displayName: String) : SpadesMPMessage()
     data class PlayerDisconnected(val personId: String) : SpadesMPMessage()
+    /** Relay evicted [personId] for inactivity (`reason` is typically "idle"). May be the
+     * local player — including the host booting itself while its app is wedged. */
+    data class PlayerBooted(val personId: String, val reason: String) : SpadesMPMessage()
     data class PlayerReconnected(val personId: String) : SpadesMPMessage()
     data class RoomFull(val roomId: String) : SpadesMPMessage()
     data class GameState(val personId: String, val roomId: String, val cmdId: String, val sequence: Int, val data: GameObj) : SpadesMPMessage()
@@ -550,6 +553,10 @@ fun parseIncoming(raw: String): SpadesMPMessage = try {
             seatIndex = obj["seatIndex"]?.jsonPrimitive?.intOrNull ?: -1
         )
         "PlayerDisconnected" -> SpadesMPMessage.PlayerDisconnected(personId)
+        "PlayerBooted" -> SpadesMPMessage.PlayerBooted(
+            personId,
+            reason = payload["reason"] ?: obj["reason"]?.jsonPrimitive?.content ?: ""
+        )
         "PlayerReconnected" -> SpadesMPMessage.PlayerReconnected(personId)
         "RoomFull" -> SpadesMPMessage.RoomFull(roomId)
         else -> SpadesMPMessage.Unknown(raw)

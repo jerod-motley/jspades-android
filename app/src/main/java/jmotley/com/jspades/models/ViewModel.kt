@@ -4,7 +4,9 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -77,6 +79,15 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 
 	private val _state = MutableStateFlow(GameState())
 	val state: StateFlow<GameState> = _state
+
+	/**
+	 * Non-null once an in-progress multiplayer game can no longer continue for the local
+	 * player — the server idle-booted us, or (for a guest) the host left the room. Carries
+	 * a user-facing reason; [jmotley.com.jspades.screens.PlayScreen] shows a blocking
+	 * dialog and leaves. Wired up in [startMPSessionIfPending].
+	 */
+	private val _mpSessionEnded = MutableStateFlow<String?>(null)
+	val mpSessionEnded: StateFlow<String?> = _mpSessionEnded
 
 	/**
 	 * One-shot animation events emitted by [PhaseManager] after each CPU action.
@@ -1023,6 +1034,13 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	 * moment it arrives.
 	 */
 	private var mpGameGeneration: Int = 0
+
+	/** Non-host client only: the pending "Play Again" wait timer armed by
+	 * [requestPlayAgainFromHost]. Cancelled when the host's new-game `gameConfig` actually
+	 * arrives ([onGameConfig]), when the game restarts locally ([playAgain]), or on
+	 * session teardown. Never re-sends the request — on timeout it only re-enables the UI. */
+	private var mpPlayAgainTimeoutJob: Job? = null
+
 	private var strictBidSemanticsEnabled: Boolean = false
 	private var orderedPlayInboxEnabled: Boolean = false
 	private var semanticRecoveryEnabled: Boolean = false
@@ -1129,9 +1147,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	}
 
 	fun clearMPWaitingState() {
+		cancelPlayAgainTimeout()
 		_state.value = _state.value.copy(
 			mpNextHandRequested = false,
-			mpPlayAgainRequested = false
+			mpPlayAgainRequested = false,
+			mpPlayAgainTimedOut = false
 		)
 	}
 
@@ -1248,6 +1268,29 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		session.rawMessageHook = adapter::receive
 		session.onConnectionLost = ::clearMPWaitingState
 		attachMPAdapter(adapter, localSeat)
+
+		// Active-game recovery: leave with an explanation when the room can no longer
+		// continue for this player. Two triggers —
+		//   1. the server idle-booted us (OnlineSession.sessionEnded), or
+		//   2. (guest only) the host left, so the host-authoritative game is dead.
+		val hostWireId = lobby.hostPlayerId
+		viewModelScope.launch {
+			session.sessionEnded.collect { reason ->
+				if (reason != null && _mpSessionEnded.value == null) {
+					Log.w(MP_TAG, "MP session ended: $reason")
+					_mpSessionEnded.value = reason
+				}
+			}
+		}
+		viewModelScope.launch {
+			session.disconnectedPlayer.collect { departedId ->
+				if (departedId == null || _mpSessionEnded.value != null) return@collect
+				if (!isMPHost && departedId == hostWireId) {
+					Log.w(MP_TAG, "MP host left ($departedId) — ending session for guest")
+					_mpSessionEnded.value = "The host left the game."
+				}
+			}
+		}
 
 		if (MPSession.isHost) {
 			check(gameType == GameType.HOUSE_RULES) {
@@ -1557,8 +1600,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			gameLength           = runCatching { GameLength.valueOf(config.gameLength) }.getOrElse { GameLength.MEDIUM },
 			score                = Score(),
 			lastHandScore        = Score(),
-			mpPlayAgainRequested = false
+			mpPlayAgainRequested = false,
+			mpPlayAgainTimedOut  = false
 		)
+		// The real restart arrived — stop the non-host "Play Again" wait timer.
+		cancelPlayAgainTimeout()
 		// Phase stays at Lobby — wait for the host's `deal` message to start the hand.
 	}
 
@@ -2452,8 +2498,29 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	 */
 	fun requestPlayAgainFromHost() {
 		if (_state.value.mpPlayAgainRequested) return
-		mpAdapter?.sendRequestPlayAgain(mpGameGeneration)
-		_state.value = _state.value.copy(mpPlayAgainRequested = true)
+		val requestedGeneration = mpGameGeneration
+		mpAdapter?.sendRequestPlayAgain(requestedGeneration)
+		// A fresh press clears any prior timed-out state — this is the only path that
+		// re-sends the request (never an automatic retry).
+		_state.value = _state.value.copy(mpPlayAgainRequested = true, mpPlayAgainTimedOut = false)
+		mpPlayAgainTimeoutJob?.cancel()
+		mpPlayAgainTimeoutJob = viewModelScope.launch {
+			delay(PLAY_AGAIN_TIMEOUT_MS)
+			// Still on the same generation ⇒ the host never broadcast the new-game
+			// gameConfig (it would have advanced mpGameGeneration). Surface a retry prompt
+			// and re-enable the button. Do NOT re-send or restart — only an explicit press.
+			if (_state.value.mpPlayAgainRequested && mpGameGeneration == requestedGeneration) {
+				Log.w(MP_TAG, "requestPlayAgain TIMEOUT after ${PLAY_AGAIN_TIMEOUT_MS}ms — host did not restart (generation still $requestedGeneration)")
+				_state.value = _state.value.copy(mpPlayAgainRequested = false, mpPlayAgainTimedOut = true)
+			}
+			mpPlayAgainTimeoutJob = null
+		}
+	}
+
+	/** Cancels the pending "Play Again" wait timer, if any. Idempotent. */
+	private fun cancelPlayAgainTimeout() {
+		mpPlayAgainTimeoutJob?.cancel()
+		mpPlayAgainTimeoutJob = null
 	}
 
 	/**
@@ -2491,6 +2558,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 		frustratedVideoFiredThisHand = false
 		setCurrentVideoAsset(null)
 		mpPlayAgainRequestedSeats.clear()
+		cancelPlayAgainTimeout()
 		if (isMPHost) {
 			// A new generation is what tells onGameConfig (on every device, including this
 			// one if it ever re-processes its own echo) that this is a genuine restart, not
@@ -2508,5 +2576,13 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			applyNegotiatedCapabilities(MPProtocol.advertisedCapabilities)
 		}
 		phaseManager.execute()
+	}
+
+	companion object {
+		/** How long a non-host client waits after pressing "Play Again" before it stops
+		 * showing "Waiting for host..." and offers a manual retry. Delivery of the request
+		 * itself is already retried by [MPAdapter]'s receipt layer; this covers the case
+		 * where the host received it but never started the new game (wedged, or gone). */
+		const val PLAY_AGAIN_TIMEOUT_MS = 20_000L
 	}
 }

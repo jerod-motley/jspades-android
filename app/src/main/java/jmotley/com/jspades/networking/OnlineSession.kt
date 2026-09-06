@@ -54,6 +54,16 @@ class OnlineSession(
     /** Emits the player ID of the most recent disconnection; null when no disconnect has occurred. */
     private val _disconnectedPlayer = MutableStateFlow<String?>(null)
     val disconnectedPlayer: StateFlow<String?> = _disconnectedPlayer
+
+    /**
+     * Non-null once the local player's participation in the room has been ended by the
+     * server (idle boot) and cannot resume — carries a user-facing reason. Deliberately
+     * NOT reset by [disconnect] so an active game screen can still read it during teardown;
+     * a freshly constructed session starts null. Consumed by [GameViewModel] to leave the
+     * game with an explanation.
+     */
+    private val _sessionEnded = MutableStateFlow<String?>(null)
+    val sessionEnded: StateFlow<String?> = _sessionEnded
 	/** Active-game hook used to clear transient waiting UI on any socket loss. */
 	var onConnectionLost: (() -> Unit)? = null
 
@@ -309,6 +319,7 @@ class OnlineSession(
             is SpadesMPMessage.StartCountdown -> onStartCountdown(msg)
             is SpadesMPMessage.StartGame      -> onStartGame(msg)
             is SpadesMPMessage.PlayerDisconnected -> onPlayerDisconnected(msg)
+            is SpadesMPMessage.PlayerBooted       -> onPlayerBooted(msg)
             is SpadesMPMessage.PlayerReconnected  -> logI("← PlayerReconnected ${msg.personId.takeLast(8)}")
             is SpadesMPMessage.Unknown        -> {
                 // Suppress warning for types owned by MPAdapter — they arrive here via the
@@ -466,6 +477,26 @@ class OnlineSession(
     private fun onPlayerDisconnected(msg: SpadesMPMessage.PlayerDisconnected) {
         logW("← PlayerDisconnected ${msg.personId.takeLast(8)}")
         _disconnectedPlayer.value = msg.personId
+    }
+
+    /**
+     * Relay evicted a player for inactivity. Previously unparsed → logged as UNKNOWN and
+     * ignored, so the room silently zombied when the host (or any seat) was booted while
+     * its app was wedged behind an ad. Local boot ends the session with a message; a
+     * remote boot is surfaced the same way as a disconnect.
+     */
+    private fun onPlayerBooted(msg: SpadesMPMessage.PlayerBooted) {
+        val isSelf = msg.personId == _lobby.value?.localPlayerId
+        logW("← PlayerBooted ${msg.personId.takeLast(8)} reason=${msg.reason.ifEmpty { "?" }} self=$isSelf")
+        if (isSelf) {
+            val reason = if (msg.reason == "idle") "You were disconnected for inactivity."
+                         else "You were removed from the room."
+            _sessionEnded.value = reason   // active game screen leaves via GameViewModel
+            _joinError.tryEmit(reason)     // lobby view, if that's where we are
+            disconnect()
+        } else {
+            _disconnectedPlayer.value = msg.personId
+        }
     }
 
     /** Set by the host ViewModel on game start to receive remote player bids. */

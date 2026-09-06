@@ -126,6 +126,17 @@ fun EndGameView(
                     }
                 }
             }
+
+            // The client never restarts or re-sends on its own — after the wait times out
+            // it just tells the user why and leaves the button for a manual retry.
+            if (isNonHostMP && state.mpPlayAgainTimedOut) {
+                Text(
+                    text      = "Host didn't respond — tap Play Again to retry.",
+                    color     = Color.White.copy(alpha = 0.75f),
+                    style     = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center
+                )
+            }
         }
     }
 }
