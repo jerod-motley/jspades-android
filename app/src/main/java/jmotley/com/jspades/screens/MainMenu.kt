@@ -136,18 +136,19 @@ fun MainMenuScreen(
                     else onNavigateToChallenges(tapped)
                 }
                 SubMenu.Online -> SubButtons(
-                    labels = listOf("Host Game", "Join Game", "Messages", "Suggestions", "Renege Jokes", "Return"),
+                    //labels = listOf("Host Game", "Join Game", "Messages", "Suggestions", "Renege Jokes", "Return"),
+                    labels = listOf("Messages", "Suggestions", "Renege Jokes", "Return"),
                     font = jennasue
                 ) { tapped ->
                     when (tapped) {
-                        "Host Game"    -> {
-                            if (isRegistered(context)) onNavigateToOnlineLobby("host")
-                            else showRegistrationPrompt = true
-                        }
-                        "Join Game"    -> {
-                            if (isRegistered(context)) onNavigateToOnlineLobby("join")
-                            else showRegistrationPrompt = true
-                        }
+                        //"Host Game"    -> {
+                        //    if (isRegistered(context)) onNavigateToOnlineLobby("host")
+                        //    else showRegistrationPrompt = true
+                        //}
+                        //"Join Game"    -> {
+                        //    if (isRegistered(context)) onNavigateToOnlineLobby("join")
+                        //    else showRegistrationPrompt = true
+                        //} //hidden until multiplayer is more thoroughly tested
                         "Messages"     -> onNavigateToMessages()
                         "Suggestions"  -> onNavigateToSuggestions()
                         "Renege Jokes" -> onNavigateToRenegeJokes()

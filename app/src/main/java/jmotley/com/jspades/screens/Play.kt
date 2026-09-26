@@ -115,6 +115,11 @@ fun PlayScreen(
     var showChallengeResult by remember { mutableStateOf<ChallengeResult?>(null) }
     var showEndHandOverlay by remember { mutableStateOf(false) }
     var showEndGameOverlay by remember { mutableStateOf(false) }
+    // Rewarded-interstitial offer: shown instead of a regular interstitial at an eligible
+    // checkpoint. `onRewardedInterstitialOfferResolved` is whichever overlay the checkpoint
+    // would otherwise have revealed (EndHand or Finished) — run once accept/decline resolves.
+    var showRewardedInterstitialOffer by remember { mutableStateOf(false) }
+    var onRewardedInterstitialOfferResolved by remember { mutableStateOf<() -> Unit>({}) }
     val context = LocalContext.current
     // Cheat overlay state
     var revealedCard by remember { mutableStateOf<jmotley.com.jspades.data.Card?>(null) }
@@ -225,16 +230,30 @@ fun PlayScreen(
                         // Multiplayer: no interstitials mid-match — only once the match is Finished.
                         showEndHandOverlay = true
                     } else {
-                        AdManager.maybeShowInterstitial(activity) {
-                            showEndHandOverlay = true
+                        when (AdManager.recordHandCompletedAndDecide(isMultiplayer = false)) {
+                            AdManager.CheckpointDecision.OFFER_REWARDED_INTERSTITIAL -> {
+                                onRewardedInterstitialOfferResolved = { showEndHandOverlay = true }
+                                showRewardedInterstitialOffer = true
+                            }
+                            AdManager.CheckpointDecision.SHOW_INTERSTITIAL ->
+                                AdManager.showInterstitialNow(activity) { showEndHandOverlay = true }
+                            AdManager.CheckpointDecision.NONE -> showEndHandOverlay = true
                         }
                     }
                     AdManager.showBanner()
                 }
                 GamePhase.Finished -> {
                     showEndGameOverlay = false
-                    AdManager.maybeShowInterstitial(activity) {
-                        showEndGameOverlay = true
+                    // The offer never fires in multiplayer (isMultiplayer), but a regular
+                    // interstitial can still show here at match end, same as before.
+                    when (AdManager.recordHandCompletedAndDecide(isMultiplayer)) {
+                        AdManager.CheckpointDecision.OFFER_REWARDED_INTERSTITIAL -> {
+                            onRewardedInterstitialOfferResolved = { showEndGameOverlay = true }
+                            showRewardedInterstitialOffer = true
+                        }
+                        AdManager.CheckpointDecision.SHOW_INTERSTITIAL ->
+                            AdManager.showInterstitialNow(activity) { showEndGameOverlay = true }
+                        AdManager.CheckpointDecision.NONE -> showEndGameOverlay = true
                     }
                     AdManager.showBanner()
                 }
@@ -844,6 +863,43 @@ fun PlayScreen(
                 },
                 dismissButton = {
                     TextButton(onClick = { pendingRewardAction = null }) { Text("No Thanks") }
+                }
+            )
+        }
+
+        // ── Rewarded interstitial offer — replaces a regular interstitial at an eligible
+        // checkpoint. Must always resolve to accept or decline; dismissing (back/outside tap)
+        // is treated as a decline so the game never gets stuck with neither overlay shown. ──
+        if (showRewardedInterstitialOffer) {
+            val declineOffer: () -> Unit = {
+                AdManager.onRewardOfferDeclined()
+                showRewardedInterstitialOffer = false
+                onRewardedInterstitialOfferResolved()
+                onRewardedInterstitialOfferResolved = {}
+            }
+            AlertDialog(
+                onDismissRequest = declineOffer,
+                title = { Text("Want uninterrupted play?") },
+                text = { Text("Watch one ad and skip your next 3 ad breaks.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val activity = context as? Activity
+                        if (activity == null) {
+                            // No Activity available — close the offer, grant no skips, start no cooldown.
+                            showRewardedInterstitialOffer = false
+                            onRewardedInterstitialOfferResolved()
+                            onRewardedInterstitialOfferResolved = {}
+                        } else {
+                            AdManager.onRewardOfferAccepted(activity, onReward = {}) {
+                                showRewardedInterstitialOffer = false
+                                onRewardedInterstitialOfferResolved()
+                                onRewardedInterstitialOfferResolved = {}
+                            }
+                        }
+                    }) { Text("Watch & Play Ad-Free") }
+                },
+                dismissButton = {
+                    TextButton(onClick = declineOffer) { Text("No Thanks") }
                 }
             )
         }

@@ -122,6 +122,18 @@ val admobInterstitialAdUnitIdProp: String = (project.findProperty("admobIntersti
     ?: readSimpleProp(rootProject.file("local.properties"), "admobInterstitialAdUnitId")
     ?: ""
 
+val admobRewardedInterstitialUnitIdProp: String = (project.findProperty("admobRewardedInterstitialUnitId") as? String)
+    ?: readSimpleProp(rootProject.file("gradle.properties"), "admobRewardedInterstitialUnitId")
+    ?: readSimpleProp(rootProject.file("local.properties"), "admobRewardedInterstitialUnitId")
+    ?: ""
+
+// GMA Next-Gen SDK reads the AdMob App ID programmatically (InitializationConfig) instead of
+// from the AndroidManifest.xml meta-data. Same value that was previously hardcoded there.
+val admobAppIdProp: String = (project.findProperty("admobAppId") as? String)
+    ?: readSimpleProp(rootProject.file("gradle.properties"), "admobAppId")
+    ?: readSimpleProp(rootProject.file("local.properties"), "admobAppId")
+    ?: "ca-app-pub-9978563261260279~9307044127"
+
 val levelPlayBannerAdUnitIdProp: String = (project.findProperty("levelPlayBannerAdUnitId") as? String)
     ?: readSimpleProp(rootProject.file("gradle.properties"), "levelPlayBannerAdUnitId")
     ?: readSimpleProp(rootProject.file("local.properties"), "levelPlayBannerAdUnitId")
@@ -174,6 +186,8 @@ android {
         buildConfigField("String",  "ADMOB_REWARDED_BID_ADJUST",      "\"${admobRewardedBidAdjustProp}\"")
         buildConfigField("String",  "ADMOB_BANNER_AD_UNIT_ID",        "\"${admobBannerAdUnitIdProp}\"")
         buildConfigField("String",  "ADMOB_INTERSTITIAL_AD_UNIT_ID",  "\"${admobInterstitialAdUnitIdProp}\"")
+        buildConfigField("String",  "ADMOB_REWARDED_INTERSTITIAL_UNIT_ID", "\"${admobRewardedInterstitialUnitIdProp}\"")
+        buildConfigField("String",  "ADMOB_APP_ID",                   "\"${admobAppIdProp}\"")
         buildConfigField("String", "WEB_URL", "\"${webUrlProp}\"")
         buildConfigField("String", "GAME_SOCKET_URL", "\"wss://jvvg6azz47.execute-api.us-east-1.amazonaws.com/prod\"")
     }
@@ -197,6 +211,14 @@ android {
     }
 }
 
+// LevelPlay's AdMob adapter (5.10.0+) and the direct AdMob path both run on the GMA Next-Gen
+// SDK now; mediation adapters still pull the classic artifact transitively, so it must be
+// excluded globally to avoid duplicate symbols.
+configurations.configureEach {
+    exclude(group = "com.google.android.gms", module = "play-services-ads")
+    exclude(group = "com.google.android.gms", module = "play-services-ads-lite")
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -214,7 +236,7 @@ dependencies {
     implementation(libs.ktor.client.content.negotiation)
     implementation(libs.ktor.serialization.kotlinx.json)
     implementation(libs.kotlinx.serialization.json)
-    implementation(libs.play.services.ads)
+    implementation(libs.ads.mobile.sdk)
     implementation(libs.androidx.core.splashscreen)
     implementation(libs.unity.mediation)
     implementation(libs.ironsource.admob.adapter)

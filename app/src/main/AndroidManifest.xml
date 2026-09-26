@@ -15,14 +15,11 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.JSpades">
 
-        <!-- AdMob App ID test
-        <meta-data
-            android:name="com.google.android.gms.ads.APPLICATION_ID"
-            android:value="ca-app-pub-9978563261260279~9307044127" />-->
-            
-        <meta-data
-            android:name="com.google.android.gms.ads.APPLICATION_ID"
-            android:value="ca-app-pub-9978563261260279~9307044127" />
+        <!-- AdMob App ID: GMA Next-Gen SDK no longer reads this manifest meta-data; it's passed
+             programmatically via InitializationConfig in AdMobProvider.initialize() instead
+             (BuildConfig.ADMOB_APP_ID, app/build.gradle.kts admobAppIdProp). Also confirm the
+             Google App ID is set in LevelPlay's own AdMob network settings on the dashboard —
+             LevelPlay's adapter (5.10.0+) reads it from there, not from here either. -->
 
         <activity
             android:name=".MainActivity"

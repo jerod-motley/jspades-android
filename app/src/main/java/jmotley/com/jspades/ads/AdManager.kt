@@ -22,7 +22,15 @@ object AdManager {
     private const val SKIPS_PER_REWARD = 2
     private const val PREF_INTERSTITIAL_SKIPS = "interstitial_skips_remaining"
 
+    // ── Rewarded interstitial offer config (v1: compile-time, no remote config yet) ──
+    private const val REWARDED_INTERSTITIAL_OFFER_ENABLED = true
+    private const val REWARDED_INTERSTITIAL_SKIP_COUNT = 3            // R
+    private const val REWARDED_OFFER_DECLINE_COOLDOWN_HOURS = 24      // X
+    private const val PREF_OFFER_DECLINED_AT = "reward_offer_declined_at"
+    private const val PREF_OFFER_ACCEPTED_AT = "reward_offer_accepted_at"
+
     enum class AdMode { LevelPlay, AdMobFallback }
+    enum class CheckpointDecision { NONE, SHOW_INTERSTITIAL, OFFER_REWARDED_INTERSTITIAL }
 
     // ── Session state (observable by UI) ─────────────────────────────────────
 
@@ -32,6 +40,9 @@ object AdManager {
     private val _bannerVisible = MutableStateFlow(false)
     val bannerVisible: StateFlow<Boolean> = _bannerVisible
 
+    private val _rewardedInterstitialOfferReady = MutableStateFlow(false)
+    val rewardedInterstitialOfferReady: StateFlow<Boolean> = _rewardedInterstitialOfferReady
+
     // ── Internal state ────────────────────────────────────────────────────────
 
     // active is null until start() is called — do not initialize here so provider
@@ -40,6 +51,11 @@ object AdManager {
     private var appContext: Context? = null
     private val levelPlay by lazy { LevelPlayProvider() }
     private val admob by lazy { AdMobProvider() }
+    private val rewardedInterstitial by lazy {
+        RewardedInterstitialProvider().apply {
+            onReadinessChanged = { _rewardedInterstitialOfferReady.value = isReady }
+        }
+    }
     private val sessionId: String = UUID.randomUUID().toString()
 
     // ── Startup ───────────────────────────────────────────────────────────────
@@ -60,8 +76,9 @@ object AdManager {
             active = levelPlay
             _sessionAdMode.value = AdMode.LevelPlay
             Log.i("REWARDDEBUG", "active provider set to LevelPlay session=$sessionId")
-            // Preload AdMob fallback inventory once here; LevelPlay preloads after its own init.
-            preloadAdMobFallback()
+            // AdMob (GMA Next-Gen) preloads fallback inventory itself once its async init
+            // completes — see AdMobProvider.initialize(). LevelPlay does the same after its own
+            // init (LevelPlayProvider.kt).
             onReady()
         }
     }
@@ -79,6 +96,16 @@ object AdManager {
         }
     }
 
+    /**
+     * Called by [AdMobProvider] once the shared GMA Next-Gen SDK finishes initializing.
+     * The rewarded-interstitial offer is a sibling of the LevelPlay/AdMob failover chain but
+     * still runs on that same SDK instance, so it can't preload until this fires either.
+     */
+    internal fun onAdMobSdkReady() {
+        preloadAdMobFallback()
+        rewardedInterstitial.startPreloading()
+    }
+
     fun preloadRewarded(placement: RewardedPlacement) {
         active?.preloadRewarded(placement)
         if (active !== admob) admob.preloadRewarded(placement)
@@ -92,22 +119,52 @@ object AdManager {
     // ── Interstitial ──────────────────────────────────────────────────────────
 
     /**
-     * Call at every hand/game end. Shows an interstitial every [INTERSTITIAL_EVERY_N] calls;
-     * the counter persists across sessions in app_prefs. [onClosed] is always invoked exactly once.
+     * Call at every hand/game-end checkpoint. Increments the every-N-hands counter
+     * (persisted in app_prefs) and returns exactly one decision:
+     * - [CheckpointDecision.NONE] — not at a checkpoint, or a banked skip credit absorbed it,
+     * - [CheckpointDecision.OFFER_REWARDED_INTERSTITIAL] — present the accept/decline offer,
+     * - [CheckpointDecision.SHOW_INTERSTITIAL] — caller should run [showInterstitialNow].
+     *
+     * The offer never fires in multiplayer — pass [isMultiplayer] so [offerEligible] can gate
+     * on it; the regular interstitial is unaffected by this flag.
      */
-    fun maybeShowInterstitial(activity: Activity, onClosed: () -> Unit = {}) {
+    fun recordHandCompletedAndDecide(isMultiplayer: Boolean): CheckpointDecision {
         val prefs = appContext?.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
         val counter = prefs?.getInt(PREF_HAND_COUNTER, 0) ?: 0
         val nextCount = counter + 1
-        val shouldShow = nextCount >= INTERSTITIAL_EVERY_N
-        prefs?.edit()?.putInt(PREF_HAND_COUNTER, if (shouldShow) 0 else nextCount)?.apply()
-        val provider = active
-        if (!shouldShow) { onClosed(); return }
+        val atCheckpoint = nextCount >= INTERSTITIAL_EVERY_N
+        prefs?.edit()?.putInt(PREF_HAND_COUNTER, if (atCheckpoint) 0 else nextCount)?.apply()
+        if (!atCheckpoint) return CheckpointDecision.NONE
+
         val skips = prefs?.getInt(PREF_INTERSTITIAL_SKIPS, 0) ?: 0
         if (skips > 0) {
             prefs?.edit()?.putInt(PREF_INTERSTITIAL_SKIPS, skips - 1)?.apply()
-            onClosed(); return
+            return CheckpointDecision.NONE
         }
+
+        return if (offerEligible(isMultiplayer)) {
+            CheckpointDecision.OFFER_REWARDED_INTERSTITIAL
+        } else {
+            CheckpointDecision.SHOW_INTERSTITIAL
+        }
+    }
+
+    private fun offerEligible(isMultiplayer: Boolean): Boolean {
+        if (isMultiplayer) return false
+        if (!REWARDED_INTERSTITIAL_OFFER_ENABLED) return false
+        val prefs = appContext?.getSharedPreferences("app_prefs", Context.MODE_PRIVATE) ?: return false
+        val declinedAt = prefs.getLong(PREF_OFFER_DECLINED_AT, 0L)
+        val cooldownMs = REWARDED_OFFER_DECLINE_COOLDOWN_HOURS * 3_600_000L
+        val cooldownExpired = declinedAt == 0L || System.currentTimeMillis() >= declinedAt + cooldownMs
+        return cooldownExpired && rewardedInterstitial.isReady
+    }
+
+    /**
+     * Runs the existing LevelPlay→AdMob interstitial path with no cadence/skip gating — the
+     * caller (via [recordHandCompletedAndDecide]) already decided this checkpoint shows one.
+     */
+    fun showInterstitialNow(activity: Activity, onClosed: () -> Unit = {}) {
+        val provider = active
         if (provider?.canShowInterstitial() == true) {
             provider.showInterstitial(activity) {
                 preloadInterstitial()
@@ -122,6 +179,33 @@ object AdManager {
         } else {
             onClosed()
         }
+    }
+
+    /**
+     * Show the rewarded-interstitial offer's ad. [onReward] fires only from the SDK's verified
+     * reward callback. Grants [REWARDED_INTERSTITIAL_SKIP_COUNT] skips only if the reward was
+     * actually earned — a load/presentation failure changes no state, so the player stays
+     * eligible for the offer again at a future checkpoint.
+     */
+    fun onRewardOfferAccepted(activity: Activity, onReward: () -> Unit = {}, onComplete: (earned: Boolean) -> Unit = {}) {
+        rewardedInterstitial.present(activity, onReward = onReward) { earned ->
+            if (earned) {
+                val prefs = appContext?.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+                prefs?.edit()
+                    ?.putInt(PREF_INTERSTITIAL_SKIPS, REWARDED_INTERSTITIAL_SKIP_COUNT)
+                    ?.putLong(PREF_OFFER_ACCEPTED_AT, System.currentTimeMillis())
+                    ?.apply()
+                Log.i("REWARDDEBUG", "rewarded-interstitial offer accepted, granted $REWARDED_INTERSTITIAL_SKIP_COUNT skips")
+            }
+            onComplete(earned)
+        }
+    }
+
+    /** Starts the decline cooldown; no interstitial shows at this checkpoint. */
+    fun onRewardOfferDeclined() {
+        appContext?.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+            ?.edit()?.putLong(PREF_OFFER_DECLINED_AT, System.currentTimeMillis())?.apply()
+        Log.i("REWARDDEBUG", "rewarded-interstitial offer declined, cooldown started")
     }
 
     private fun grantInterstitialSkips() {

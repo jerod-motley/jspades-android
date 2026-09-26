@@ -249,13 +249,25 @@ private fun AdBannerView() {
     if (!BuildConfig.GOOGLE_ADS_ENABLED) return
     Column(modifier = Modifier.navigationBarsPadding()) {
         AndroidView(factory = { ctx ->
-            com.google.android.gms.ads.AdView(ctx).apply {
-                val dm = ctx.resources.displayMetrics
-                val widthDp = (dm.widthPixels / dm.density).toInt()
-                setAdSize(com.google.android.gms.ads.AdSize
-                    .getCurrentOrientationAnchoredAdaptiveBannerAdSize(ctx, widthDp))
-                adUnitId = BuildConfig.ADMOB_BANNER_AD_UNIT_ID
-                loadAd(com.google.android.gms.ads.AdRequest.Builder().build())
+            val dm = ctx.resources.displayMetrics
+            val widthDp = (dm.widthPixels / dm.density).toInt()
+            val adSize = com.google.android.libraries.ads.mobile.sdk.banner.AdSize
+                .getLargeAnchoredAdaptiveBannerAdSize(ctx, widthDp)
+            com.google.android.libraries.ads.mobile.sdk.banner.AdView(ctx).apply {
+                loadAd(
+                    com.google.android.libraries.ads.mobile.sdk.banner.BannerAdRequest
+                        .Builder(BuildConfig.ADMOB_BANNER_AD_UNIT_ID, adSize)
+                        .build(),
+                    object : com.google.android.libraries.ads.mobile.sdk.common.AdLoadCallback<
+                        com.google.android.libraries.ads.mobile.sdk.banner.BannerAd> {
+                        override fun onAdLoaded(
+                            ad: com.google.android.libraries.ads.mobile.sdk.banner.BannerAd
+                        ) {}
+                        override fun onAdFailedToLoad(
+                            adError: com.google.android.libraries.ads.mobile.sdk.common.LoadAdError
+                        ) {}
+                    },
+                )
             }
         })
     }
