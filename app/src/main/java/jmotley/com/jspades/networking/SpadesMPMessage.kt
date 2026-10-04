@@ -853,6 +853,13 @@ fun hostWireGameConfig(context: Context, gameType: GameType): WireGameConfig {
     )
 }
 
+/**
+ * Multiplayer always plays the short game, whatever length the host sent (iOS hosts and
+ * older builds may send MEDIUM, or nothing). TEST is honoured so debug sessions stay short.
+ */
+fun mpGameLength(wire: String?): GameLength =
+    if (wire == GameLength.TEST.name) GameLength.TEST else GameLength.SHORT
+
 /** Encodes [this] into the flat string-map fields used by buildLobbySnapshot/buildStartGame. */
 fun WireGameConfig.toLobbyFields(): Map<String, String> = mapOf(
     "cfgGameType"                to gameType,

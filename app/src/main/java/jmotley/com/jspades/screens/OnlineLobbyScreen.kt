@@ -44,6 +44,7 @@ import jmotley.com.jspades.R
 import jmotley.com.jspades.data.*
 import jmotley.com.jspades.models.LobbyUiState
 import jmotley.com.jspades.models.OnlineLobbyViewModel
+import jmotley.com.jspades.networking.mpGameLength
 import jmotley.com.jspades.networking.wireStringToGameType
 
 private val AccentGold   = Color(0xFFFFD700)
@@ -633,7 +634,7 @@ private fun LobbyHeader(lobby: OnlineLobbyState, onBack: () -> Unit) {
 @Composable
 private fun LobbyOptions(settings: WireGameConfig, modifier: Modifier = Modifier) {
     val gameType = wireStringToGameType(settings.gameType) ?: GameType.HOUSE_RULES
-    val gameLength = runCatching { GameLength.valueOf(settings.gameLength) }.getOrDefault(GameLength.SHORT)
+    val gameLength = mpGameLength(settings.gameLength)
     val targetScore = GameState(gameType = gameType, gameLength = gameLength).targetScore
     fun yn(on: Boolean) = if (on) "Y" else "N"
 

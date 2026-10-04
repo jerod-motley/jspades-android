@@ -58,7 +58,7 @@ data class WireGameConfig(
     val enableSandbagPenalty: Boolean = true,
     val allowNilBid: Boolean = false,
     val blindNilExchangeEnabled: Boolean = false,
-    val gameLength: String = "MEDIUM"
+    val gameLength: String = "SHORT"
 )
 
 // ── Wire messages (discriminated by the "type" field) ────────────────────────

@@ -439,7 +439,8 @@ fun PlayScreen(
         when (state.phase) {
 
             // ── Lobby ─────────────────────────────────────────────────────────
-            GamePhase.Lobby -> {
+            // Online games skip the offline seat reveal — they wait for the host's deal.
+            GamePhase.Lobby -> if (!isMultiplayer) {
                 LobbyView(
                     state = state,
                     viewModel = viewModel,

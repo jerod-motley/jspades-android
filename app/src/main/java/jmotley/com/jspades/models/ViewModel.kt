@@ -47,6 +47,7 @@ import jmotley.com.jspades.networking.MPAdapterDelegate
 import jmotley.com.jspades.networking.MPTrickStateApply
 import jmotley.com.jspades.networking.gameTypeToWireString
 import jmotley.com.jspades.networking.hostWireGameConfig
+import jmotley.com.jspades.networking.mpGameLength
 import jmotley.com.jspades.networking.toWireGameConfig
 import jmotley.com.jspades.networking.wireStringToGameType
 import jmotley.com.jspades.networking.suitToWireSuit
@@ -150,6 +151,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 	 * [gameType] drives deck construction, player count, and team assignment.
 	 */
 	fun onLobbyComplete(ids: List<String>, names: List<String>, gameType: GameType) {
+		// Online games are set up by the host's gameConfig/deal, never from local prefs.
+		if (mpAdapter != null) {
+			Log.w(MP_TAG, "onLobbyComplete ignored — MP game is configured by the host")
+			return
+		}
 		require(ids.size == gameType.playerCount && names.size == gameType.playerCount)
 		val players = defaultPlayers(ids, names, gameType)
 		val prefs = context.getSharedPreferences("jspades_prefs", Context.MODE_PRIVATE)
@@ -1229,7 +1235,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			enableSandbagPenalty = config.enableSandbagPenalty,
 			allowNilBid          = config.allowNilBid,
 			allowBlindExchange   = config.blindNilExchangeEnabled,
-			gameLength           = runCatching { GameLength.valueOf(config.gameLength) }.getOrElse { GameLength.MEDIUM }
+			gameLength           = mpGameLength(config.gameLength)
 		)
 		phaseManager.execute()
 	}
@@ -1597,7 +1603,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), M
 			enableSandbagPenalty = config.enableSandbagPenalty,
 			allowNilBid          = config.allowNilBid,
 			allowBlindExchange   = config.blindNilExchangeEnabled,
-			gameLength           = runCatching { GameLength.valueOf(config.gameLength) }.getOrElse { GameLength.MEDIUM },
+			gameLength           = mpGameLength(config.gameLength),
 			score                = Score(),
 			lastHandScore        = Score(),
 			mpPlayAgainRequested = false,
