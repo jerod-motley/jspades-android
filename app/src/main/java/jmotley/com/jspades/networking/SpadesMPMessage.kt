@@ -848,8 +848,8 @@ fun hostWireGameConfig(context: Context, gameType: GameType): WireGameConfig {
         enableSandbagPenalty    = prefs.getBoolean("count_overs", true),
         allowNilBid             = gameType == GameType.TEAM_CLASSIC,
         blindNilExchangeEnabled = gameType == GameType.TEAM_CLASSIC && prefs.getBoolean("blind_nil_exchange", false),
-        gameLength              = if (AppConfig.TEST_MODE) GameLength.TEST.name
-                                   else prefs.getString("game_length", GameLength.MEDIUM.name) ?: GameLength.MEDIUM.name
+        // Multiplayer always plays the shortest game, regardless of the host's local preference.
+        gameLength              = if (AppConfig.TEST_MODE) GameLength.TEST.name else GameLength.SHORT.name
     )
 }
 

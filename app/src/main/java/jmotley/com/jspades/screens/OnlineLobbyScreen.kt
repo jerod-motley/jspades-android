@@ -19,6 +19,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -53,6 +55,10 @@ private val TextSecondary = Color(0xFFB0BEC5)
 private val PanelBg      = Color(0xCC000000)   // semi-transparent dark overlay on felt
 private val ChipBg       = Color(0xBB0A1628)
 private val DividerColor = Color(0x44FFFFFF)
+private val ChatBg           = Color.White
+private val ChatText         = Color(0xFF1A1A1A)
+private val ChatLocalBubble  = Color(0xFF1A3A5C)
+private val ChatRemoteBubble = Color(0xFFE6EBF0)
 
 @Composable
 fun OnlineLobbyScreen(
@@ -235,11 +241,6 @@ private fun LobbyView(
         // ── Header ────────────────────────────────────────────────────────────
         LobbyHeader(lobby, onBack)
 
-        // ── Host settings ─────────────────────────────────────────────────────
-        // Always the host's authoritative values (synced via the lobby snapshot),
-        // never a joining player's own local preferences.
-        LobbySettingsCard(lobby.hostSettings)
-
         // ── Diamond ───────────────────────────────────────────────────────────
         Box(
             modifier = Modifier
@@ -379,14 +380,20 @@ private fun LobbyDiamond(
     fun seatAt(idx: Int) = lobby.seats.find { it.seatIndex == idx }
 
     BoxWithConstraints(modifier = modifier) {
-        val armV: Dp = maxHeight * 0.28f
+        val armV: Dp = maxHeight * 0.20f
         val armH: Dp = maxWidth  * 0.36f
+        // Pin the diamond near the top (north chip ~8dp below the top edge) instead of
+        // centering it, leaving room underneath for lobby details.
+        val northTopGap: Dp = 8.dp
+        val chipHalfH: Dp = 28.dp
+        val shiftY: Dp = northTopGap + chipHalfH + armV - maxHeight / 2
 
         // Connector lines between the four positions
         Canvas(
             modifier = Modifier
                 .size(armH * 2, armV * 2)
                 .align(Alignment.Center)
+                .offset(y = shiftY)
         ) {
             val cx = size.width / 2; val cy = size.height / 2
             val lc = Color(0x55FFFFFF); val sw = 1.5f
@@ -397,7 +404,7 @@ private fun LobbyDiamond(
         }
 
         // South — always local player, locked
-        Box(modifier = Modifier.align(Alignment.Center).offset(y = armV)) {
+        Box(modifier = Modifier.align(Alignment.Center).offset(y = shiftY + armV)) {
             SeatChip(
                 seat        = seatAt(southIdx),
                 label       = "South",
@@ -409,7 +416,7 @@ private fun LobbyDiamond(
         }
 
         // North
-        Box(modifier = Modifier.align(Alignment.Center).offset(y = -armV)) {
+        Box(modifier = Modifier.align(Alignment.Center).offset(y = shiftY - armV)) {
             SeatChip(
                 seat        = seatAt(northIdx),
                 label       = "North",
@@ -421,7 +428,7 @@ private fun LobbyDiamond(
         }
 
         // West
-        Box(modifier = Modifier.align(Alignment.Center).offset(x = -armH)) {
+        Box(modifier = Modifier.align(Alignment.Center).offset(x = -armH, y = shiftY)) {
             SeatChip(
                 seat        = seatAt(westIdx),
                 label       = "West",
@@ -433,7 +440,7 @@ private fun LobbyDiamond(
         }
 
         // East
-        Box(modifier = Modifier.align(Alignment.Center).offset(x = armH)) {
+        Box(modifier = Modifier.align(Alignment.Center).offset(x = armH, y = shiftY)) {
             SeatChip(
                 seat        = seatAt(eastIdx),
                 label       = "East",
@@ -443,6 +450,15 @@ private fun LobbyDiamond(
                 onClick     = { onTapSeat(eastIdx) }
             )
         }
+
+        // Host's game options, just below the South seat. Always the host's authoritative
+        // values (synced via the lobby snapshot), never a joining player's own preferences.
+        LobbyOptions(
+            settings = lobby.hostSettings,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = northTopGap + chipHalfH * 4 + armV * 2 + 12.dp)
+        )
 
         // Hint for host when a seat is selected
         if (selectedSeatIndex != null && lobby.isHost) {
@@ -611,73 +627,38 @@ private fun LobbyHeader(lobby: OnlineLobbyState, onBack: () -> Unit) {
     }
 }
 
-// ── Host settings card ─────────────────────────────────────────────────────────
+// ── Host options ──────────────────────────────────────────────────────────────
 
-/**
- * Displays the room's authoritative settings — always [OnlineLobbyState.hostSettings],
- * synced from the host via the lobby snapshot, never a joining player's own local
- * preferences (which may differ from the host's and must not be shown as this room's
- * settings).
- */
+/** The host's game options for this room, shown as label / Y-N rows. */
 @Composable
-private fun LobbySettingsCard(settings: WireGameConfig) {
+private fun LobbyOptions(settings: WireGameConfig, modifier: Modifier = Modifier) {
     val gameType = wireStringToGameType(settings.gameType) ?: GameType.HOUSE_RULES
-    val gameLength = runCatching { GameLength.valueOf(settings.gameLength) }.getOrDefault(GameLength.MEDIUM)
+    val gameLength = runCatching { GameLength.valueOf(settings.gameLength) }.getOrDefault(GameLength.SHORT)
     val targetScore = GameState(gameType = gameType, gameLength = gameLength).targetScore
-    val gameLengthLabel = when (gameLength) {
-        GameLength.SHORT  -> "Short"
-        GameLength.MEDIUM -> "Medium"
-        GameLength.LONG   -> "Long"
-        GameLength.TEST   -> "Test"
-    }
+    fun yn(on: Boolean) = if (on) "Y" else "N"
 
-    val rules = buildList {
-        if (settings.twoOfSpadesJoker)   add("2♠ Joker")
-        if (settings.twoOfDiamondsJoker) add("2♦ Joker")
-        if (settings.spadesMustBreak)    add("Spades Must Break")
-        if (settings.enableSandbagPenalty) add("Sandbag Penalty")
-        if (settings.allowNilBid)        add("Nil Bidding")
-        if (settings.blindNilExchangeEnabled) add("Blind Nil Exchange")
-        if (settings.enableDoubleBidBonus) add("Double Bid Bonus")
-    }
+    val rows = listOf(
+        "Board"                         to settings.minimumBid.toString(),
+        "2 Spades"                      to yn(settings.twoOfSpadesJoker),
+        "2 Diamonds"                    to yn(settings.twoOfDiamondsJoker),
+        "Spades must break before lead" to yn(settings.spadesMustBreak),
+        "Play to"                       to targetScore.toString()
+    )
 
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(PanelBg)
-            .padding(horizontal = 16.dp, vertical = 8.dp)
+        modifier = modifier
+            .width(260.dp)
+            .background(PanelBg, RoundedCornerShape(10.dp))
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = "$gameLengthLabel Game",
-                color = TextPrimary,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-            Spacer(Modifier.width(10.dp))
-            Text(
-                text = "Playing to $targetScore",
-                color = AccentGold,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                text = "Min bid ${settings.minimumBid}",
-                color = TextSecondary,
-                fontSize = 12.sp
-            )
-        }
-        if (rules.isNotEmpty()) {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = rules.joinToString(" · "),
-                color = TextSecondary,
-                fontSize = 11.sp
-            )
+        rows.forEach { (label, value) ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(label, color = TextSecondary, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                Text(value, color = AccentGold, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
         }
     }
-    HorizontalDivider(color = DividerColor)
 }
 
 // ── Chat ──────────────────────────────────────────────────────────────────────
@@ -692,32 +673,59 @@ private fun ChatSection(messages: List<ChatMessage>, modifier: Modifier, onSend:
     }
 
     Column(modifier = modifier) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-            contentPadding = PaddingValues(vertical = 6.dp)
+        // White message pane with fade + arrow hints when there's more to scroll
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 6.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(ChatBg)
         ) {
-            items(messages) { msg ->
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    if (msg.isLocal) Spacer(Modifier.weight(1f))
-                    Column(
-                        modifier = Modifier
-                            .background(
-                                if (msg.isLocal) Color(0xBB1A3A5C) else Color(0xBB152236),
-                                RoundedCornerShape(8.dp)
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                contentPadding = PaddingValues(vertical = 6.dp)
+            ) {
+                items(messages) { msg ->
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        if (msg.isLocal) Spacer(Modifier.weight(1f))
+                        Column(
+                            modifier = Modifier
+                                .background(
+                                    if (msg.isLocal) ChatLocalBubble else ChatRemoteBubble,
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .widthIn(max = 260.dp)
+                        ) {
+                            if (!msg.isLocal) {
+                                Text(msg.displayName, color = AccentBlue, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                            Text(
+                                msg.text,
+                                color = if (msg.isLocal) Color.White else ChatText,
+                                fontSize = 14.sp
                             )
-                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                            .widthIn(max = 260.dp)
-                    ) {
-                        if (!msg.isLocal) {
-                            Text(msg.displayName, color = AccentBlue, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                         }
-                        Text(msg.text, color = TextPrimary, fontSize = 14.sp)
+                        if (!msg.isLocal) Spacer(Modifier.weight(1f))
                     }
-                    if (!msg.isLocal) Spacer(Modifier.weight(1f))
                 }
             }
+
+            ScrollHint(
+                visible = listState.canScrollBackward,
+                arrow = "▲",
+                fadeColors = listOf(ChatBg, Color.Transparent),
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
+            ScrollHint(
+                visible = listState.canScrollForward,
+                arrow = "▼",
+                fadeColors = listOf(Color.Transparent, ChatBg),
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
         }
 
         Row(
@@ -746,6 +754,28 @@ private fun ChatSection(messages: List<ChatMessage>, modifier: Modifier, onSend:
                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
             ) { Text("Send", fontSize = 13.sp) }
         }
+    }
+}
+
+/** Edge fade with a small arrow badge, shown when the chat list can scroll further that way. */
+@Composable
+private fun ScrollHint(visible: Boolean, arrow: String, fadeColors: List<Color>, modifier: Modifier) {
+    if (!visible) return
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(22.dp)
+            .background(Brush.verticalGradient(fadeColors)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            arrow,
+            color = Color.White,
+            fontSize = 9.sp,
+            modifier = Modifier
+                .background(Color(0x99546E7A), RoundedCornerShape(50))
+                .padding(horizontal = 8.dp, vertical = 1.dp)
+        )
     }
 }
 
